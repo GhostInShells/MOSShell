@@ -7,6 +7,11 @@
 - 依赖方向单向：本包不依赖 `ghoshell-moss`。
 - vendor 源码在 `.vendors/`，源码 gitignore、结论入库，约定见 `.vendors/dsh-research/README.md`。
 
+## 发现先走 ground
+
+本包是一个 field（`GROUND.md`）。skills 和蓝图文件清单在它的 pins 里，用 `moss ground render .`
+（或 `moss ground meta .` 看目录）取得——**不要在这里复制清单**：一处列，另一处会烂。
+
 ## 两种验证，两个家
 
 - **单元测试** → `tests/unit/`，`pytest` 即可，不需要 dsh、不起进程。

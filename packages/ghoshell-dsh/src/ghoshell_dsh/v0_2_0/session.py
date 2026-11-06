@@ -47,16 +47,14 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import contextlib
+import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import Self
-
+from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
 from ghoshell_dsh.v0_2_0.types import sessions
 from ghoshell_dsh.v0_2_0.types.session_events import (
@@ -68,6 +66,8 @@ from ghoshell_dsh.v0_2_0.types.session_events import (
     TurnEnd,
     TurnStart,
 )
+from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import Self
 
 __all__ = ["DshRunResult", "DshSession"]
 
@@ -119,7 +119,7 @@ def _normalize_content(content: list[sessions.PromptContentPart] | str) -> list[
 def _final_response(events: list[SessionEvent]) -> str:
     """取区间内最后一条 assistant/message 的 text 块拼接 (镜像官方 SDK final_response)."""
     for event in reversed(events):
-        message = AssistantMessageEvent.from_session_event(event)
+        message = wire.model_from_event(AssistantMessageEvent, event)
         if message is None:
             continue
         return "".join(block.text or "" for block in message.message.content if block.type == "text")
@@ -330,13 +330,13 @@ class DshSession:
             if state["done"]:
                 return
             if state["turn"] is None:
-                start = TurnStart.from_session_event(event)
+                start = wire.model_from_event(TurnStart, event)
                 if start is None:
                     return
                 state["turn"] = start.turn
                 turn_started.set()
             state["events"].append(event)
-            end = TurnEnd.from_session_event(event)
+            end = wire.model_from_event(TurnEnd, event)
             if end is not None and end.turn == state["turn"]:
                 state["reason"] = end.reason
                 state["done"] = True
@@ -415,7 +415,7 @@ class DshSession:
             maxMessages=max_messages,
         )
         value = await self._client.call("session/page", params, sessions.SessionPageValue)
-        return [SessionEvent.from_dict(record.event) for record in value.records]
+        return [wire.event_from_dict(record.event) for record in value.records]
 
     async def fork(self, *, at_seq: int | None = None) -> sessions.SessionForkValue:
         params = sessions.SessionForkParams(sessionId=self._session_id, atSeq=at_seq)
@@ -636,7 +636,7 @@ class DshSession:
         同一注册-解绑模式.
         """
         async def _dispatch(event: SessionEvent) -> None:
-            model = model_cls.from_session_event(event)
+            model = wire.model_from_event(model_cls, event)
             if model is not None:
                 await callback(model)
 

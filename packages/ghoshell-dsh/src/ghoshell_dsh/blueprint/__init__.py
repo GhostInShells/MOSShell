@@ -30,9 +30,10 @@ Launcher              owns a lifetime; start() brings dsh up, and then it expose
          DshAgentSession       dsh's verbs: prompt, cancel, history, events, state
 ```
 
-`SessionSource` is the smallest thing a conversation can come from: list, create, attach. Both
-`Connection` and `DshController` offer it, so a caller that only wanted conversations never sees
-the rest.
+`SessionSource` is the smallest thing a conversation can come from: list, create, attach. It
+hands back `DshAgentSession` — dsh's own session — and governed creation lives one level up on
+`DshController.create(spec)`, which returns an `AgentSession`. A source of conversations should
+not quietly decide that every one of them is our reinforced kind.
 
 Three relationships are worth stating because they are easy to get wrong:
 

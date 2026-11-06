@@ -73,39 +73,41 @@ spawn 时惰性解析). 可用它把单个 ghost 钉到特定 dsh 安装 (如本
 from __future__ import annotations
 
 import asyncio
-import logging
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import httpx
 import websockets
-from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import Self
-from contextlib import AsyncExitStack
-
 from ghoshell_processes import (
     ManagedProcess,
     ProcessMeta,
     Subprocesses,
     SubprocessesImpl,
 )
-from .types.nouns import WorkspaceView
-from .types.session_events import SessionEvent, SessionEventMeta
+from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import Self
+
+from . import wire
 from .client import DshClient
 from .session import DshSession
+from .types.nouns import WorkspaceView
+from .types.session_events import SessionEvent, SessionEventMeta
 
 __all__ = [
-    "DshConnectionConfig",
     "DshConnection",
-    "DshLauncherConfig",
-    "DshLauncher",
+    "DshConnectionConfig",
     "DshExit",
+    "DshLauncher",
+    "DshLauncherConfig",
 ]
 
 # dsh web 鉴权 token 的环境变量兜底来源: 让无子进程的 DshConnection 也能独立起
@@ -262,7 +264,7 @@ class DshConnection:
 
         self._started = False
         self._stopped = False
-        self._log_prefix: str = f"[DSHConnection] "
+        self._log_prefix: str = "[DSHConnection] "
 
     @property
     def config(self) -> DshConnectionConfig:
@@ -527,7 +529,7 @@ class DshConnection:
             session.accept_follow_snapshot(value.get("header"), int(value.get("cursor") or 0))
             return
         if t == "event":
-            event = SessionEvent.from_dict(value.get("event") or {})
+            event = wire.event_from_dict(value.get("event") or {})
             session.accept_session_event(event)
             return
         if t == "assistant-stream":
@@ -729,7 +731,7 @@ class DshLauncher(DshConnection):
         self._discovered_token: str | None = None
         self._web_url: str | None = None
         self._token_ready = asyncio.Event()
-        self._log_prefix: str = f"[DSHLauncher] "
+        self._log_prefix: str = "[DSHLauncher] "
         # dsh 可执行的解析结果 — 惰性 (spawn 时才解), 构造不该依赖 PATH 上有 dsh.
         self._resolved_binary: str | None = None
 

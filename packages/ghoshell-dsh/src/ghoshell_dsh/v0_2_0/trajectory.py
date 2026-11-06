@@ -22,7 +22,7 @@ from __future__ import annotations
 from ghoshell_dsh.v0_2_0.types.refs import DshSessionRef
 from ghoshell_dsh.v0_2_0.types.session_events import SessionEvent
 
-__all__ = ["SeedUnavailable", "seed_from_log", "render_transcript"]
+__all__ = ["SeedUnavailable", "render_transcript", "seed_from_log"]
 
 _TURN_START = "turn/start"
 _TURN_END = "turn/end"

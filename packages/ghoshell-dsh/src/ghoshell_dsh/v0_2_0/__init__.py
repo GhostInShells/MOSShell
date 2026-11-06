@@ -19,10 +19,10 @@ from ghoshell_dsh.v0_2_0.launcher import (
 DSH_VERSION = "0.2.0-rc.2"
 
 __all__ = [
+    "DSH_VERSION",
     "DshConnection",
     "DshConnectionConfig",
+    "DshExit",
     "DshLauncher",
     "DshLauncherConfig",
-    "DshExit",
-    "DSH_VERSION",
 ]

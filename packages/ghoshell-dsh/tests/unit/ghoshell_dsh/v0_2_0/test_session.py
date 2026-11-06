@@ -13,6 +13,7 @@ import asyncio
 
 import pytest
 
+from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.session import DshSession, WILDCARD_EVENT
 from ghoshell_dsh.v0_2_0.types import sessions
 from ghoshell_dsh.v0_2_0.types.session_events import (
@@ -83,13 +84,13 @@ def _usage_event(input_tokens: int, output_tokens: int) -> SessionEvent:
         usage=TokenUsage(inputTokens=input_tokens, outputTokens=output_tokens),
     )
     model.meta.type = model.event_type()
-    return model.to_session_event()
+    return wire.model_to_event(model)
 
 
 def _request_header_event(system: str) -> SessionEvent:
     model = RequestHeader(header=EpochHeader(system=system), reason="initial")
     model.meta.type = model.event_type()
-    return model.to_session_event()
+    return wire.model_to_event(model)
 
 
 def _session_added_summary(cwd: str, agent_preset: str, session_id: str = "s1") -> dict:
@@ -99,13 +100,13 @@ def _session_added_summary(cwd: str, agent_preset: str, session_id: str = "s1") 
 def _turn_start_event(turn: int) -> SessionEvent:
     model = TurnStart(turn=turn)
     model.meta.type = model.event_type()
-    return model.to_session_event()
+    return wire.model_to_event(model)
 
 
 def _turn_end_event(turn: int, kind: str) -> SessionEvent:
     model = TurnEnd(turn=turn, reason=TurnEndReason(kind=kind))
     model.meta.type = model.event_type()
-    return model.to_session_event()
+    return wire.model_to_event(model)
 
 
 def _assistant_message_event(text: str, turn: int = 1) -> SessionEvent:
@@ -115,7 +116,7 @@ def _assistant_message_event(text: str, turn: int = 1) -> SessionEvent:
         message=Message(content=[ContentBlock(type="text", text=text)]),
     )
     model.meta.type = model.event_type()
-    return model.to_session_event()
+    return wire.model_to_event(model)
 
 
 async def _drain(session: DshSession) -> None:
@@ -307,7 +308,7 @@ async def test_unknown_event_type_safely_ignored():
     async with session:
         turn = TurnStart(turn=1)
         turn.meta.type = turn.event_type()
-        session.accept_session_event(turn.to_session_event())
+        session.accept_session_event(wire.model_to_event(turn))
         session.accept_session_event(_usage_event(5, 0))
         await asyncio.wait_for(got.wait(), 1)
 

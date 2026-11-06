@@ -70,13 +70,22 @@ class DshAgentSession(ABC):
     Two states are distinct and both matter: is the session *alive* (`is_running`), and is a
     turn *in flight* (`is_busy`). Confusing them is how a scheduler sends into a dead session,
     or sends twice into a live one.
+
+    Both are properties, and so is `session_id`: they read facts the object already holds. The
+    verbs in this class — `prompt`, `cancel`, `history`, `close`, `state` — are the ones that
+    ask dsh to do something, and they stay callable.
     """
 
     # ---- identity ------------------------------------------------------- #
 
+    @property
     @abstractmethod
     def session_id(self) -> str:
-        """The address of this conversation, stable for its whole life."""
+        """The address of this conversation, stable for its whole life.
+
+        A property, not a method: it reads a fact the object already holds. A caller writing
+        `session.session_id()` would only be spelling out a call that does nothing.
+        """
 
     # ---- driving -------------------------------------------------------- #
 
@@ -134,10 +143,12 @@ class DshAgentSession(ABC):
 
     # ---- state ---------------------------------------------------------- #
 
+    @property
     @abstractmethod
     def is_running(self) -> bool:
         """Whether the conversation is still there — not whether it is busy."""
 
+    @property
     @abstractmethod
     def is_busy(self) -> bool:
         """Whether a turn is in flight right now."""

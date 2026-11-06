@@ -159,9 +159,14 @@ class SessionSource(ABC):
         cwd: str | None = None,
         agent_preset: str | None = None,
         readonly: bool | None = None,
-    ) -> AgentSession:
-        """Open a new conversation."""
+    ) -> DshAgentSession:
+        """Open a new conversation, in dsh's own terms.
+
+        Returns the low-level session on purpose: this is the source of *conversations*, not of
+        our reinforcement. A caller that wants the governed one asks `DshController.create()`,
+        which takes a spec and hands back an `AgentSession`.
+        """
 
     @abstractmethod
-    async def attach_session(self, session_id: str) -> AgentSession:
-        """Take up an existing conversation by its id."""
+    async def attach_session(self, session_id: str) -> DshAgentSession:
+        """Take up an existing conversation by its id — the operation dsh calls "attach"."""

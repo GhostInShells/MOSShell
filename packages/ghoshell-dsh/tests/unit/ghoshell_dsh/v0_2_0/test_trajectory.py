@@ -10,6 +10,7 @@
 
 import pytest
 
+from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.trajectory import (
     SeedUnavailable,
     render_transcript,
@@ -30,7 +31,7 @@ TT = "session/title"
 def _log(*specs):
     """(type, data) → seq 连续的 SessionEvent 列表 (seq == index)."""
     return [
-        SessionEvent.from_dict({"type": t, "seq": i, "data": d})
+        wire.event_from_dict({"type": t, "seq": i, "data": d})
         for i, (t, d) in enumerate(specs)
     ]
 

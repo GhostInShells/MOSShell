@@ -23,10 +23,9 @@ import logging
 from typing import Any, TypeVar
 
 import httpx
-from pydantic import BaseModel
-
 from ghoshell_dsh.v0_2_0.types import sessions
 from ghoshell_dsh.v0_2_0.types.rpc import RpcError
+from pydantic import BaseModel
 
 __all__ = [
     "DshClient",
