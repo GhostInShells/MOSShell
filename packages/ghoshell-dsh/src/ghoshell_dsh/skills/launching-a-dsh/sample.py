@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import shutil
 import socket
@@ -44,6 +45,12 @@ async def main() -> int:
     parser.add_argument("--keep-home", action="store_true", help="do not delete the home on exit")
     parser.add_argument("--timeout", type=float, default=30.0, help="readiness timeout in seconds")
     args = parser.parse_args()
+
+    # One stream, so the landmarks and the package's own diagnostics keep their order.
+    # WARNING is the right floor: below it, startup chatter is the reconnect loop working.
+    logging.basicConfig(
+        level=logging.WARNING, stream=sys.stdout, format="%(levelname)s: %(message)s",
+    )
 
     home = Path(args.home) if args.home else Path(tempfile.mkdtemp(prefix="dsh-skill-"))
     port = args.port or free_port()

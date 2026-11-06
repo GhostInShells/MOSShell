@@ -74,9 +74,9 @@ It prints one line per landmark — port, token discovered (redacted), mux conne
 the launch path works. If it hangs, readiness never happened: check `dsh --version` against
 `DSH_VERSION` first, then the profile.
 
-**Expected noise.** Before `READY`, one or two `mux TCP refused (dsh not up)` warnings are
-normal — that is the reconnect loop finding the port before the server binds. They are logged
-at WARNING, which overstates them; do not read them as failure.
+**Expected noise.** Before `READY` the reconnect loop may refuse the port a couple of times
+while the server binds. That is the mechanism working, and it logs below WARNING; what you see
+above WARNING is real. If a connection that had already worked drops, *that* is a warning.
 
 **Verified 2026-11-06**, dsh `0.2.0-rc.2` on macOS: `READY`, `stopped cleanly`, exit 0. The
 same run confirmed the side-effect claims — a fresh *empty* `DSH_HOME` is enough (`dsh` does not

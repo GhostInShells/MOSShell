@@ -257,6 +257,7 @@ class DshConnection:
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
         self._dsh_started = asyncio.Event()
+        self._connect_attempts = 0
         # 标记 dsh 是否已经运行.
 
         self._started = False
@@ -308,6 +309,7 @@ class DshConnection:
                         max_size=None,
                 ) as ws:
                     self._ws = ws
+                    self._connect_attempts = 0
                     self._dsh_started.set()
                     self._logger.info("%smux connected", self._log_prefix)
                     await self._open_events_stream(ws)
@@ -323,12 +325,28 @@ class DshConnection:
             except asyncio.CancelledError:
                 raise
             except ConnectionRefusedError as exc:
-                self._logger.warning("mux TCP refused (dsh not up): %s", exc)
+                self._log_connect_retry("mux TCP refused (dsh not up)", exc)
             except websockets.exceptions.InvalidHandshake as exc:
-                self._logger.warning("mux handshake failed (mux not ready): %s", exc)
+                self._log_connect_retry("mux handshake failed (mux not ready)", exc)
             except websockets.exceptions.ConnectionClosed as exc:
                 self._logger.warning("mux connection closed: %s", exc)
+            self._connect_attempts += 1
             await asyncio.sleep(1.0)
+
+    def _log_connect_retry(self, what: str, exc: BaseException) -> None:
+        """Report a failed mux attempt at the level it deserves.
+
+        Before the first successful connection, a refused socket is the ordinary startup
+        race — the server has not bound yet, and the reconnect loop is the mechanism that
+        handles it. Calling that WARNING reads as a fault and buries the real one. After a
+        connection has worked, the same failure means the connection *broke*, which is news.
+        """
+        if self._dsh_started.is_set():
+            self._logger.warning("%s: %s", what, exc)
+        elif self._connect_attempts <= 1:
+            self._logger.info("%s — retrying until dsh is up: %s", what, exc)
+        else:
+            self._logger.debug("%s — retrying: %s", what, exc)
 
     async def _authorize(self) -> None:
         """token → cookie 交换, 注入 http client 与 DshClient (后续 /api 调用需鉴权).
