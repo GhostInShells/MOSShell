@@ -118,13 +118,25 @@ class AdditionType(ABC):
     def set(self, target: HasAdditional) -> None:
         """
         将 Addition 数据结构加工到目标上.
-        """
-        if target.additional is None:
-            target.additional = {}
 
+        与 :meth:`read` 对称: 先 ``additional``, 不可用再退 ``metadata`` —— 机制层的对象
+        (如 ``ProcessMeta``) 用 ``metadata`` 这个行业惯例名, 不必实现 ``additional`` 协议.
+        """
         keyword = self.keyword()
         data = self.normalize()
-        target.additional[keyword] = data
+        for attr in ("additional", "metadata"):
+            if not hasattr(target, attr):
+                continue
+            holder = getattr(target, attr)
+            if holder is None:
+                holder = {}
+                setattr(target, attr, holder)
+            if isinstance(holder, dict):
+                holder[keyword] = data
+                return
+        raise AttributeError(
+            f"{type(target).__name__} has neither a dict 'additional' nor 'metadata' slot"
+        )
 
     def get_or_create(self, target: HasAdditional) -> Self:
         """

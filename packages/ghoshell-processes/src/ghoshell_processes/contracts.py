@@ -20,6 +20,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -89,6 +90,11 @@ class ProcessMeta(BaseModel):
     updated: float = Field(
         default_factory=time.time,
         description="最后状态更新时间戳",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="弱类型扩展槽 (HasAdditional). 调用方可把强类型附加数据以 dict 形式挂在这里,"
+                    " 随 meta 经 on_exit 回调等通路流转; 机制层只透传, 不解释其内容.",
     )
 
 
