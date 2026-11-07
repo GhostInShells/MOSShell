@@ -20,7 +20,8 @@ updated: '2026-11-05'
 > wrong; it is kept as the record of how a conclusion was reached.
 >
 > - **Maintained documents:** this file (plan + index), `todo.md` (construction tasks),
->   `clone.md` (the clone scheme, 23 points acked).
+>   `clone.md` (the clone scheme, 23 points acked), `ghoshell-dsh-integration.md` (D07: the
+>   dsh v0.2.0 reintegration points).
 > - **Discussion:** `discuss/round1/`, `discuss/round2/`. Do not cite them as decisions.
 > - **Attribution:** `他` = thirdgerb stated it; `我推` = moss's inference, **not ratified** —
 >   attack it; `待定` = known unresolved.
@@ -136,6 +137,7 @@ shape of a friction point first. This is his call.
 | `discuss/round2/README.md` | round 2's index, including the clone session | — |
 | `clone.md` | the clone scheme: 23 points, every one acked | D12–D20 detail |
 | `todo.md` | construction tasks | — |
+| `ghoshell-dsh-integration.md` | D07 对齐的操作点清单：声明/安装、进程/连接、会话/事件、路由、冷读、模型、测试、版本基线 | the v0.2.0 reintegration backlog |
 | memento `1-585`–`1-593` | the commit notes; for rounds without verbatim text this is all there is | — |
 
 ## Not in scope
