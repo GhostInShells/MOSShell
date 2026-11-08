@@ -591,15 +591,17 @@ class Branch(ABC):
         """IO-costly: re-read the inbox from disk."""
 
     @abstractmethod
-    def children(self) -> list[Child]:
+    def pending_children(self) -> list[Child]:
         """Branches created from this one that the next commit has not absorbed yet.
 
-        Same shape as the confluence inbox and the same reason: the act happens between two
-        commits, and it earns its place in history only when the trajectory is written.
+        **Not** the answer to "which branches are mine" — that question is answered by the
+        roster and each child's ``fork_from``, and it holds whether or not this branch ever
+        commits again (``Memento.children_of``). This is only the gap between creating a child
+        and recording that creation in the trajectory.
         """
 
     @abstractmethod
-    async def achildren(self) -> list[Child]:
+    async def apending_children(self) -> list[Child]:
         """IO-costly: re-read the pending children from disk."""
 
     @abstractmethod
@@ -735,6 +737,17 @@ class Memento(ABC):
     @abstractmethod
     def get_branch_by_index(self, index: int) -> Branch | None:
         """Take a branch by its ordinal within the owner; None when it does not exist."""
+
+    @abstractmethod
+    def children_of(self, name: str) -> list[Address]:
+        """Every branch created from this one — **derived**, not read off a trajectory.
+
+        The roster gives all branches and each child's ``meta.fork_from`` gives its parent, so
+        the answer is a join over branch data: complete from the moment a child exists, and
+        independent of whether the parent ever commits again. What it cannot say is *when in
+        the trajectory* the child appeared — that is ``CommitRef.children``, and it only exists
+        once the parent has absorbed the staged ``Child`` row.
+        """
 
     @abstractmethod
     def resolve_commit(self, coord: str) -> CommitView | None:

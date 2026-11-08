@@ -94,6 +94,18 @@ class Confluence(BaseModel):     # 谁 + 哪一步 + 说了什么
 - 子侧沿用 `BranchMeta.fork_from`（已存在），不需要新字段。
 - 不用 `checkout` 这个词 —— 它该留给"memento 当前主分支"这个概念。
 
+**三个问题，三个家（D09 校正）：**
+
+| 问题 | 答案在哪 | 何时存在 |
+|---|---|---|
+| 我有哪些 children | 花名册 + 子 meta 的 `fork_from`，`Memento.children_of()` **算出来** | 建子那一刻起，永远成立 |
+| 哪条 commit 创建了哪个子 | `CommitRef.children` | 父下一次 commit 之后 |
+| 建了但还没进历史 | `Branch.pending_children()` 读 staging | 建子之后、commit 之前 |
+
+把第一条实现成"读 staging + 读 commit"是错的 —— 父此后再也不 commit，children 依然存在。
+`children_of` 的代价是 O(branch 数) 次 meta 读取；要压掉它得把父指针也写进花名册行，
+那是同一事实存两份，暂时不换。
+
 **和 confluences 的镜像关系：**
 
 | | `confluences.jsonl` | `children.jsonl` |

@@ -386,11 +386,11 @@ class FsBranch(Branch):
             return  # already absorbed by an earlier commit
         _append_jsonl(self._inbox_path(), [confluence.model_dump(mode="json")])
 
-    def children(self) -> list[Child]:
+    def pending_children(self) -> list[Child]:
         """Branches created from this one that the next commit has not absorbed yet."""
         return [Child(**row) for row in _read_jsonl(self._children_inbox_path())]
 
-    async def achildren(self) -> list[Child]:
+    async def apending_children(self) -> list[Child]:
         """IO-costly: re-read the pending children from disk."""
         rows = await _aread_jsonl(self._children_inbox_path())
         return [Child(**row) for row in rows]
@@ -398,7 +398,7 @@ class FsBranch(Branch):
     def add_child(self, child: Child) -> None:
         """Record a branch created from this one — written by the parent, absorbed at commit."""
         key = child.branch.branch_id
-        if any(c.branch.branch_id == key for c in self.children()):
+        if any(c.branch.branch_id == key for c in self.pending_children()):
             return
         _append_jsonl(self._children_inbox_path(), [child.model_dump(mode="json")])
 
@@ -796,6 +796,31 @@ class FsMemento(Memento):
             return None
         ref = BranchRef(**rows[index - 1])
         return self._branch_by_id(ref.branch_id)
+
+    def children_of(self, name: str) -> list[Address]:
+        """Join the roster with each child's ``fork_from`` — the branch-data answer to "my children".
+
+        Complete the moment a child exists, and unaffected by whether this branch ever commits
+        again. What it deliberately cannot say is *when in the trajectory* the child appeared;
+        that is ``CommitRef.children``, which only exists after the staged row is absorbed.
+        """
+        parent = self.get_branch(name)
+        if parent is None:
+            raise FileNotFoundError(f"branch '{name}' not found")
+        parent_id = parent.ref.branch_id
+        result: list[Address] = []
+        for index, row in enumerate(_read_jsonl(self._branches_jsonl()), start=1):
+            ref = BranchRef(**row)
+            branch = self._branch_by_id(ref.branch_id)
+            if branch is None:
+                continue
+            try:
+                fork_from = branch.meta().fork_from
+            except FileNotFoundError:
+                continue
+            if fork_from is not None and fork_from.branch_id == parent_id:
+                result.append(Address(branch_id=ref.branch_id, branch_name=ref.name, branch_index=index))
+        return result
 
     def resolve_commit(self, coord: str) -> CommitView | None:
         parts = coord.split("-", 1)
