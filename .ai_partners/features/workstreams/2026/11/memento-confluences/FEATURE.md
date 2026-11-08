@@ -1,27 +1,99 @@
 ---
-title: Memento Confluences
-status: draft
-# priority: importance within the current stage (iteration cycle) — not development urgency
-priority: P1
 created: 2026-11-08
-updated: 2026-11-08
 depends: []
+description: Branch 之间的引用：出向写在 Note.recipients，入向在 commit 时吸收进 CommitRef.confluences；为折叠后的 history 服务。它是 memento-agent 的前置。
 milestone: dsh 0.2.0-rc.2
-description: >-
-  Branch 之间的汇流（通知 / MR / PR）：出向地址记在 note 上、入向记录在提交时吸收进 commit；
-  运行时的投递与轨迹的记录是两条独立通道。它是 memento-agent 的前置。
+priority: P1
+status: in-progress
+status_note: 'D09: Address/Confluence + inbox absorb implemented; 42 memento tests
+  pass'
+title: Memento Confluences
+updated: '2026-11-09'
 ---
 
 # Memento Confluences
 
 > Use `moss features set-status memento-confluences <status> -m "note"` to update state.
 
-状态: **draft** — 结构已收敛，实现为零。
+状态: **in-progress** — `Cite` / `Note.outbound` 已落地（D09）；汇流的交换机制按 D09 决定暂缓。
 
 > 归因沿用项目约定：`他` = thirdgerb 说的；`我推` = moss 的推断，未经裁决；`待定` = 已知未决。
 > 来源：D08 17:2x–18:1x 的一轮讨论（`dsh-node` 的 agent 建模引出）。本轮之前的两条岔路
 > （把汇流放进 `CommitRef.metadata`、把汇流当成 `commits.jsonl` 里的一行）都已被否掉，理由见
 > 「走过的岔路」。
+
+## D09 修订（本节覆盖下文 D08 的相应判断）
+
+D09 深夜按「先定验收效果，再倒退实现」重做了一遍。**结论：两半都做，而且是为 history 服务的。**
+
+### 验收效果（这一节是设计的锚）
+
+一条发过消息的 commit，重新在自己的 branch 里看：
+
+```
+1-12  propose(dev): 交给你合并
+      → child-a
+```
+
+被压进 history 的那条 commit，看的是收侧：
+
+```
+history
+  1-9   report: 第一版跑通
+        <from name="child-a" at="5-3">落位了，锚点取到了</from>
+```
+
+**history 是压缩之后仍要自给自足的一层。** 预算从我自己的正文里省，不能从"别人对我说过的话"里省 ——
+否则重建后的第一件事就是去读一堆 commit，这个结构就白存在了。渲染形态（标签名、inline 与否）
+归逻辑层，随时可改；契约只保证字段在。
+
+### 数据结构（已实现）
+
+```python
+class Address(BaseModel):        # 谁
+    branch_id: str               # 身份：解析从这儿开始
+    branch_name: str             # 显示/业务用；会腐烂，不参与解析
+    branch_index: int            # 坐标前半段
+
+class Confluence(BaseModel):     # 谁 + 哪一步 + 说了什么
+    branch: Address
+    commit_seq: int
+    title: str                   # 唯一被复制的内容
+```
+
+| 位置 | 字段 | 语义 |
+|---|---|---|
+| `Note.recipients` | `list[Address]` | 出：这条消息发给谁。只有地址，没有内容（内容就是这条 note） |
+| `CommitRef.confluences` | `list[Confluence]` | 入：这条 commit 之前收到过什么 |
+
+**为什么两半不对称**：出向指向一条还没写下第一步的 branch，没有 seq 可指；入向指向已经落盘的
+一条 commit，seq 就是它的地址。一个类型套两个方向，必然有一个字段恒为 0 —— D09 前半场就是这么错的。
+
+### 机制（已实现）
+
+1. 写 note 时若带 recipients，**首次落盘**即向每个接收方的 `confluences.jsonl` 写一行。
+   重写 note 不重投（recipients 不是 last-wins：`None` 沿用、`[]` 显式清空）。
+2. 接收方下次 `commit` 时**认领** inbox（`os.replace` → `.confluences.jsonl`，同目录 rename 原子），
+   读出来、按来源坐标去重、写进该 commit 的 `confluences`，落盘后删点文件。
+3. 两个崩溃窗口都由"重读 + 去重"兜住：认领后没提交 → 下次重读；提交后没删 → 下次重读并去重。
+4. 投递失败抛错（对端不可解析）；note 已经 durable，重试免费，因为接收侧按坐标去重。
+   **轨迹里没有投递回执** —— 只有声明。
+
+### 锁口径（订正）
+
+- 契约只承诺"一个写者"，不提 file lock。
+- 只有 read-modify-write 需要围栏：`commit`（seq 推导）/ `fork`。`note` 与 `confluence` 是纯 append，
+  不需要 —— `anote` 因此不再取写权限。
+
+### 命名
+
+- 出侧 `recipients`（零解释成本）；入侧 `confluences`（项目原生词，解释成本在渲染标签，不在数据键）。
+- 不用 `from` / `to`：Python 关键字。
+
+### 验证
+
+- `tests/ghoshell_moss/memento` 42 passed。
+- 端到端：投递 → inbox → 吸收 → 重写不重投 → 多接收方 → 未知目标抛错 → 两个崩溃窗口。
 
 ## Motivation
 

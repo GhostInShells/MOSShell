@@ -9,6 +9,7 @@ Storage binds to one local path (the owner root):
         meta.json                           # BranchMeta
         commits.jsonl                       # append-only CommitRef, in order (authoritative)
         commit_notes.jsonl                  # bypass Notes (last-wins, droppable, rebuildable)
+        confluences.jsonl                   # inbox: references received from other branches
         .lock                               # FileLocker write gate
       commits/{YYYY}/{MM}/cmt_{coord}/       # the commit's node space (a convention, lazy)
         MEMENTO.md                          # the node's index file, self-explaining entry
@@ -16,7 +17,8 @@ Storage binds to one local path (the owner root):
 Discipline:
 - Writes are ordered appends and atomic replaces; a reader skips a torn trailing line.
 - A sync read is the cached fast path; an ``a``-prefixed method re-reads through aiofiles (IO-costly).
-- Write gating is ``async with branch:`` (FileLocker, fail fast) plus a process-local asyncio.Lock.
+- Write gating is ``async with branch:`` (FileLocker, fail fast) — one writer per branch.
+  Only read-modify-write operations take it (``commit`` / ``fork``); appends do not.
 - The node space is an **unmanaged asset area**: memento only reports whether ``MEMENTO.md``
   exists — one walk per branch view, one stat per single read — and never reads or cleans it.
   A directory appears only when something is put there: ``ensure_memento``, or a hook moving a
@@ -41,8 +43,10 @@ from ghoshell_moss.memento.abcd import (
     Branch,
     BranchMeta,
     BranchRef,
+    Address,
     BranchView,
     CommitRef,
+    Confluence,
     CommitView,
     ForkRef,
     Memento,
@@ -209,6 +213,12 @@ class FsBranch(Branch):
     def _lock_path(self) -> Path:
         return self._dir() / ".lock"
 
+    def _inbox_path(self) -> Path:
+        return self._dir() / "confluences.jsonl"
+
+    def _claimed_path(self) -> Path:
+        return self._dir() / ".confluences.jsonl"
+
     # ── construction-time facts ──
     @property
     def ref(self) -> BranchRef:
@@ -265,19 +275,153 @@ class FsBranch(Branch):
             message: str = "",
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
+            recipients: list[Address] | None = None,
     ) -> CommitRef:
-        ref = CommitRef(seq=len(self.commits()) + 1, metatype=metatype, metadata=metadata or {})
+        absorbed = self._absorb()
+        ref = CommitRef(
+            seq=len(self.commits()) + 1,
+            metatype=metatype,
+            metadata=metadata or {},
+            confluences=absorbed,
+        )
         _append_jsonl(self._commits_path(), [ref.model_dump(mode="json")])
         self._commits_cache = None
+        # The anchor is durable, so the claimed batch now belongs to it: drop the file. A crash
+        # before this line leaves it behind, and the next commit re-reads and de-duplicates.
+        if self._claimed_path().exists():
+            self._claimed_path().unlink()
         if message:
-            self.note(ref.id, message)
+            self.note(ref.id, message, recipients=recipients)
         return ref
 
-    def note(self, commit_id: str, message: str, error: str = "") -> Note:
-        note = Note(commit_id=commit_id, message=message, error=error)
+    # ── inbox ──
+    def _claim_inbox(self) -> list[dict[str, Any]]:
+        """Take the inbox atomically, and leave it where a crash can still find it.
+
+        ``os.replace`` rather than copy + delete: a same-directory rename has no "two copies"
+        and no "no copy" in between. Rows arriving after the claim land in a fresh inbox and
+        belong to the next commit.
+        """
+        rows: list[dict[str, Any]] = []
+        claimed = self._claimed_path()
+        if claimed.exists():  # a previous attempt died before it could absorb or unlink
+            rows.extend(_read_jsonl(claimed))
+        inbox = self._inbox_path()
+        if inbox.exists():
+            os.replace(inbox, claimed)
+            rows.extend(_read_jsonl(claimed))
+        return rows
+
+    def _absorb(self) -> list[Confluence]:
+        """Turn the claimed rows into this commit's ``confluences``, dropping duplicates.
+
+        De-duplication happens here and only here, keyed on the source coordinate: a delivery
+        the sender retried, or a batch re-read after a crash, must not enter the trajectory
+        twice.
+        """
+        incoming = self._claim_inbox()
+        if not incoming:
+            return []
+        taken: set[tuple[str, int]] = set()
+        commits = self.commits()
+        if commits:  # crash after append, before unlink: the last anchor already holds them
+            for received in commits[-1].confluences:
+                taken.add((received.branch.branch_id, received.commit_seq))
+        absorbed: list[Confluence] = []
+        for row in incoming:
+            item = Confluence(**row)
+            key = (item.branch.branch_id, item.commit_seq)
+            if key in taken:
+                continue
+            taken.add(key)
+            absorbed.append(item)
+        return absorbed
+
+    def confluences(self) -> list[Confluence]:
+        """The inbox: what arrived and has not been absorbed into a commit yet."""
+        return [Confluence(**row) for row in _read_jsonl(self._inbox_path())]
+
+    async def aconfluences(self) -> list[Confluence]:
+        """IO-costly: re-read the inbox from disk."""
+        rows = await _aread_jsonl(self._inbox_path())
+        return [Confluence(**row) for row in rows]
+
+    def confluence(self, confluence: Confluence) -> None:
+        """Deliver one reference into this branch's inbox — the only cross-branch write."""
+        key = (confluence.branch.branch_id, confluence.commit_seq)
+        if any((c.branch.branch_id, c.commit_seq) == key for c in self.confluences()):
+            return  # already waiting in the inbox
+        if any(
+            (r.branch.branch_id, r.commit_seq) == key
+            for commit in self.commits() for r in commit.confluences
+        ):
+            return  # already absorbed by an earlier commit
+        _append_jsonl(self._inbox_path(), [confluence.model_dump(mode="json")])
+
+    def note(
+            self,
+            commit_id: str,
+            message: str,
+            error: str = "",
+            *,
+            recipients: list[Address] | None = None,
+    ) -> Note:
+        # ``recipients`` is the one field that is not last-wins: a rewrite must not re-address
+        # a message a summarizer merely restated.
+        previous = self.notes().get(commit_id)
+        if recipients is None:
+            recipients = previous.recipients if previous is not None else []
+        note = Note(commit_id=commit_id, message=message, error=error, recipients=list(recipients))
         _append_jsonl(self._notes_path(), [note.model_dump(mode="json")])
         self._notes_cache = None
+        # Delivery happens once, on the first note: the address is part of the message, and a
+        # rewrite is only a restatement.
+        if previous is None and recipients:
+            self._deliver(note)
         return note
+
+    def _deliver(self, note: Note) -> None:
+        """Write one ``Confluence`` into every recipient's inbox.
+
+        A failure raises: the note is already durable, and the caller can retry — the receiver
+        de-duplicates on the source coordinate, so a retry is free. Nothing records a delivery
+        receipt: the trajectory holds the declaration only.
+        """
+        ref = next((c for c in self.commits() if c.id == note.commit_id), None)
+        if ref is None:
+            raise KeyError(f"cannot deliver note: no commit {note.commit_id} in branch '{self._name}'")
+        title = note.message.split("\n", 1)[0]
+        source = Address(branch_id=self._branch_id, branch_name=self._name, branch_index=self.index)
+        for recipient in note.recipients:
+            target = self._resolve(recipient)
+            target.confluence(Confluence(branch=source, commit_seq=ref.seq, title=title))
+
+    def _resolve(self, address: Address) -> "FsBranch":
+        """Find a branch from an address — by position first, by name as a fallback.
+
+        Position is the stable half: the roster is append-only, so an index survives archive.
+        The name is only a fallback, and the id is checked whenever it is present — a reused
+        name must never silently point at a different branch.
+        """
+        target: FsBranch | None = None
+        if address.branch_index > 0:
+            candidate = self._memento.get_branch_by_index(address.branch_index)
+            if candidate is not None and (
+                not address.branch_id or candidate.ref.branch_id == address.branch_id
+            ):
+                target = candidate
+        if target is None and address.branch_name:
+            candidate = self._memento.get_branch(address.branch_name)
+            if candidate is not None and (
+                not address.branch_id or candidate.ref.branch_id == address.branch_id
+            ):
+                target = candidate
+        if target is None:
+            raise NameError(
+                f"confluence target not resolvable: name='{address.branch_name}' "
+                f"index={address.branch_index} id='{address.branch_id}'"
+            )
+        return target
 
     def fork(self, name: str, description: str = "") -> "Branch":
         commits = self.commits()
@@ -293,13 +437,25 @@ class FsBranch(Branch):
             message: str = "",
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
+            recipients: list[Address] | None = None,
     ) -> CommitRef:
         async with self:
-            return self.commit(message=message, metatype=metatype, metadata=metadata)
+            return self.commit(
+                message=message, metatype=metatype, metadata=metadata, recipients=recipients
+            )
 
-    async def anote(self, commit_id: str, message: str, error: str = "") -> Note:
-        async with self:
-            return self.note(commit_id, message, error)
+    async def anote(
+            self,
+            commit_id: str,
+            message: str,
+            error: str = "",
+            *,
+            recipients: list[Address] | None = None,
+    ) -> Note:
+        # No write permission: a note is one appended line, and a duplicated decision is
+        # idempotent downstream. Taking the branch lock here would only make a delivery
+        # queue behind an unrelated commit.
+        return self.note(commit_id, message, error, recipients=recipients)
 
     async def afork(self, name: str, description: str = "") -> "Branch":
         async with self:

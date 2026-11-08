@@ -30,8 +30,16 @@ than v3 (abc.py) by design:
   it, an unmanaged asset area whose versioning is that writer's call.
   ``Branch.ensure_memento`` is the writer-side explicit get-or-create (directory +
   index template) and never happens on a read path.
-- Dropped in this version: confluence / segment as a first-class citizen / per-commit
-  directory / staging / dual-source message.
+- **References go both ways, and the two halves are not symmetric.** A commit view has an
+  outgoing half — the addresses the message is sent to, written once on the Note
+  (``recipients``), because an address is part of the message. And an incoming half — the
+  references this branch had received before it made this commit, absorbed from the branch's
+  inbox into the anchor (``CommitRef.confluences``), carrying the source coordinate and the
+  title and nothing else. The incoming half exists for **folded history**: a rebuild must be
+  able to see what was asked of it without reading every commit and without walking into
+  another branch.
+- Dropped in this version: segment as a first-class citizen / per-commit directory /
+  a staging directory / dual-source message.
 
 memento binds to a single local path and is not strongly tied to a storage backend; the
 contract surface does not own any storage implementation. The operation surface is
@@ -52,6 +60,8 @@ import ulid
 __all__ = [
     "COMMIT_MEMENTO_FILE",
     "CommitRef",
+    "Address",
+    "Confluence",
     "Note",
     "BranchRef",
     "ForkRef",
@@ -80,8 +90,59 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class Address(BaseModel):
+    """A durable pointer at another branch — the half of a reference that says *who*.
+
+    Three fields do three different jobs, and they must not take each other's place:
+
+    - ``branch_id`` is the identity. **Every resolution starts here.**
+    - ``branch_index`` is the position — the first half of the coordinate, so a reference can
+      be rendered as ``{index}-{seq}`` without touching the disk.
+    - ``branch_name`` is for the eye. Names rot (a deleted name can be given to a new branch),
+      so a name must never be used to resolve a relationship — only to show one.
+    """
+
+    branch_id: str = Field(description="Stable identity (ULID). The only field a relationship resolves on.")
+    branch_name: str = Field(description="Human-readable name. Display only — never a resolution key.")
+    branch_index: int = Field(
+        default=0,
+        description="Branch ordinal within the owner (1-based) — first half of the coordinate; 0 = not filled.",
+    )
+
+
+class Confluence(BaseModel):
+    """One message that arrived from another branch before this commit — the *what* half.
+
+    It exists for the folded history, not for the live session. A rebuild must be able to see
+    what was asked of it without reading every commit and without walking into another branch,
+    so the title is copied here even though the full message lives at the origin.
+
+    Four semantics, and none of them may be dropped:
+
+    1. it came from a branch — carried by the type itself;
+    2. that branch's name — ``branch.branch_name``, for display and for business logic;
+    3. its real identity and position — ``branch.branch_id`` and ``commit_seq``;
+    4. what it said — ``title``, the only copied content.
+
+    How this is rendered is the renderer's business; the fields are the contract.
+    """
+
+    branch: Address = Field(description="Which branch it came from.")
+    commit_seq: int = Field(
+        description="That branch's seq for the commit that sent it — the address half only an incoming reference has.",
+    )
+    title: str = Field(description="The only copied content: the first line of the source note.")
+
+    @property
+    def coord(self) -> str:
+        """The source commit's coordinate (``{index}-{seq}``); empty when the index was never filled."""
+        if self.branch.branch_index <= 0:
+            return ""
+        return f"{self.branch.branch_index}-{self.commit_seq}"
+
+
 class CommitRef(BaseModel):
-    """One commit anchor — one row of ``commits.jsonl``. **A bare anchor, no message.**
+    """One commit anchor — one row of ``commits.jsonl``. **An anchor, no message.**
 
     Carries no moment. ``metadata`` holds "the keys sufficient to restore one session";
     the concrete convention is defined by the consumer (e.g. ``{'ref': ..., 'prev_turn':
@@ -101,6 +162,14 @@ class CommitRef(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Opaque extension, conventionally defined by the consumer. memento only gets/sets, never parses.",
+    )
+    confluences: list[Confluence] = Field(
+        default_factory=list,
+        description=(
+            "What this commit received from other branches: everything the branch's inbox held "
+            "when this anchor was written, absorbed at commit time. Only the source coordinate "
+            "and the title travel; the rest is read at the origin when it is actually needed."
+        ),
     )
     created: AwareDatetime = Field(default_factory=_now_utc)
 
@@ -127,6 +196,16 @@ class Note(BaseModel):
     error: str = Field(
         default="",
         description="Broken-placeholder marker; non-empty means the message is not a real summary (terminal state, never retried).",
+    )
+    recipients: list[Address] = Field(
+        default_factory=list,
+        description=(
+            "Who this message is sent to: one address per receiving branch — the outgoing half "
+            "of a commit view. Written once, with the note; a later rewrite of ``message`` must "
+            "keep it (pass ``recipients=None`` to keep the existing value, ``[]`` to declare "
+            "that this note is sent to nobody). Delivery is a separate act; this list is only "
+            "the declaration."
+        ),
     )
 
 
@@ -233,6 +312,23 @@ class CommitView(BaseModel):
         return "\n".join(lines[1:])
 
     @property
+    def recipients(self) -> list[Address]:
+        """Who this commit's message is sent to — read off its note; empty while there is no note.
+
+        The outgoing half of a commit view. A commit whose message has not been written yet has
+        no recipients, because the address is part of the message.
+        """
+        return self.note.recipients if self.note is not None else []
+
+    @property
+    def confluences(self) -> list[Confluence]:
+        """What arrived from other branches before this commit — the incoming half of the view.
+
+        Read off the anchor, so a rebuild sees it without touching another branch.
+        """
+        return self.ref.confluences
+
+    @property
     def error(self) -> str:
         """Broken-placeholder marker (empty = a real summary, or not produced yet)."""
         return self.note.error if self.note is not None else ""
@@ -298,23 +394,24 @@ class BranchView(BaseModel):
 
 
 class Branch(ABC):
-    """A branch object pointing at a directory: meta.json / commits.jsonl / commit_notes.jsonl.
+    """A branch object pointing at a directory: meta.json / commits.jsonl / commit_notes.jsonl /
+    confluences.jsonl (the inbox of references received from other branches).
 
-    Reads come in two tiers whose meaning is "do we go back to disk / do we take write
-    permission":
+    Reads come in two tiers whose meaning is "do we go back to disk":
 
     - A sync read is the cached fast path; ``a<name>`` is a real disk read (aiofiles) and
       its docstring is marked **"IO-costly"**. The explicit ``a*`` tier exists to give the
       caller an offload point, so it is not forced into ``asyncio.to_thread`` with a
       hand-rolled task it will forget to await.
-    - ``async with branch:`` is **write-permission gating**: take the branch's write
-      permission or fail fast. This is a non-enforcing, cooperative probe, not a security
-      or permission boundary. The default implementation is a process-level file lock and
-      **does not enforce per-file admission constraints** (an out-of-band writer that edits
-      files directly cannot be stopped — that is a closed storage system's job).
-    - The write operations ``acommit`` / ``afork`` / ``anote`` declare that they hold the
-      coroutine lock, and they are **mutually exclusive** (only one writer on a branch at
-      a time).
+    - ``async with branch:`` is **write permission**: one writer at a time, taken or failed
+      fast. How that is achieved is the implementation's business — a file lock, an
+      in-memory lock, or nothing where a single writer is guaranteed. It is a cooperative
+      convention, not a security boundary, and it **does not enforce per-file admission
+      constraints** (an out-of-band writer editing files directly cannot be stopped — that
+      is a closed storage system's job).
+    - Only read-modify-write operations need it: ``commit`` (``seq`` is derived) and
+      ``fork``. ``note`` and anything purely appended do not — an append is already atomic,
+      and a duplicate is idempotent downstream.
     """
 
     @property
@@ -371,13 +468,20 @@ class Branch(ABC):
         message: str = "",
         metatype: str = "",
         metadata: dict[str, Any] | None = None,
+        recipients: list[Address] | None = None,
     ) -> CommitRef:
-        """Write one commit anchor to ``commits.jsonl`` (append-only). A bare anchor, no message.
+        """Write one commit anchor to ``commits.jsonl`` (append-only). An anchor, no message.
+
+        This is the branch's only read-modify-write: ``seq`` is derived from what is already
+        there. That — not the append — is the single reason an implementation may need one
+        writer at a time. Every other write here is a plain append.
 
         Convenience sugar: when ``message`` is non-empty, a Note is seeded internally (the
-        message still lands only in the Note — single source of truth). The default
-        implementation appends atomically with O_APPEND; a single writer takes this fast
-        path. The message may be filled in later (``note``).
+        message still lands only in the Note — single source of truth). The message may be
+        filled in later through ``note``.
+
+        ``recipients`` is only meaningful together with ``message``: an address belongs to a
+        message, and there is no message without a note.
         """
 
     @abstractmethod
@@ -387,11 +491,24 @@ class Branch(ABC):
         message: str = "",
         metatype: str = "",
         metadata: dict[str, Any] | None = None,
+        recipients: list[Address] | None = None,
     ) -> CommitRef:
-        """Locked write, mutually exclusive with ``afork``: commit while holding the lock."""
+        """The same commit, taken under the branch's write permission.
+
+        The gate is an implementation concern, not part of this contract's meaning: a file
+        lock, an in-memory lock, or nothing at all are all valid answers to "one writer at a
+        time". What the contract promises is the one-writer property — never the mechanism.
+        """
 
     @abstractmethod
-    def note(self, commit_id: str, message: str, error: str = "") -> Note:
+    def note(
+        self,
+        commit_id: str,
+        message: str,
+        error: str = "",
+        *,
+        recipients: list[Address] | None = None,
+    ) -> Note:
         """Step 2 (side channel, may be late): write the one and only summary message for an existing
         commit_id, last-wins.
 
@@ -399,11 +516,58 @@ class Branch(ABC):
         length is guaranteed by the producer (admission). title is derived from the first line.
         A non-empty ``error`` is the terminal broken-placeholder state (side-channel fatal
         failure): the commit still enters the view but is never retried.
+
+        ``recipients`` is the one field that is **not** last-wins. On the first note it is
+        stored as given (``None`` = send to nobody, same as ``[]``); on a rewrite ``None``
+        keeps the stored value and a non-empty list replaces it. Otherwise a summarizer
+        restating a message would silently re-address it.
+
+        Delivery happens here, once, on the first note: each recipient's inbox gets one
+        ``Confluence`` line. It raises on failure — the note is already durable, and a retry
+        is safe because the receiver de-duplicates on the source coordinate. What is *not*
+        recorded anywhere is a delivery receipt: the trajectory holds the declaration only.
         """
 
     @abstractmethod
-    async def anote(self, commit_id: str, message: str, error: str = "") -> Note:
-        """Locked write, mutually exclusive with ``afork``: note while holding the lock."""
+    async def anote(
+        self,
+        commit_id: str,
+        message: str,
+        error: str = "",
+        *,
+        recipients: list[Address] | None = None,
+    ) -> Note:
+        """Async variant of ``note``.
+
+        No write permission is needed: a note is one appended line, and the only decision it
+        makes (first write or rewrite) is idempotent downstream.
+        """
+
+    # -- inbox: what other branches sent here ---------------------------------- #
+
+    @abstractmethod
+    def confluences(self) -> list[Confluence]:
+        """The inbox: references that arrived and have not been absorbed into a commit yet.
+
+        A row leaves the inbox by being absorbed, not by being deleted on read — the file is
+        claimed (renamed) at commit time. A non-empty inbox is therefore a queryable fact
+        ("something arrived and this branch has not stepped since"), not a queue.
+        """
+
+    @abstractmethod
+    async def aconfluences(self) -> list[Confluence]:
+        """IO-costly: re-read the inbox from disk."""
+
+    @abstractmethod
+    def confluence(self, confluence: Confluence) -> None:
+        """Deliver one reference into this branch's inbox — the only cross-branch write.
+
+        The caller is the *source* branch, at the moment its note landed. The row must stay
+        small (a single O_APPEND line is atomic only below ``PIPE_BUF``), and no write
+        permission is taken: the receiver's gate belongs to its own writer, and a delivery
+        must not queue behind an unrelated commit. Duplicates are dropped on the source
+        coordinate.
+        """
 
     @abstractmethod
     def view(self, *, n: int = 10) -> BranchView:

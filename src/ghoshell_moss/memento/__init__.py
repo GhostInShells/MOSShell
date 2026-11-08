@@ -1,6 +1,8 @@
 from .abcd import (
     COMMIT_MEMENTO_FILE,
+    Address,
     CommitRef,
+    Confluence,
     Note,
     BranchRef,
     ForkRef,
