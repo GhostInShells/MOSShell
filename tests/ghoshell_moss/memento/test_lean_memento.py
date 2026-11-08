@@ -37,12 +37,12 @@ def test_create_duplicate_raises(memento):
         memento.create_branch("main")
 
 
-def test_delete_keeps_dir_removes_pointer(memento):
+def test_archive_keeps_dir_removes_pointer(memento):
     b = memento.create_branch("main")
     branch_dir = b.path
     b.commit(message="keep me")
 
-    memento.delete_branch("main")
+    memento.archive_branch("main")
 
     assert memento.get_branch("main") is None
     assert branch_dir.exists()  # 目录与 commits 保留
@@ -58,7 +58,7 @@ def test_branch_index_is_creation_ordinal(memento):
     assert memento.get_branch_by_index(9) is None
 
     # 删 name 指针不回退序号: branch 目录仍在, 序号不复用
-    memento.delete_branch("main")
+    memento.archive_branch("main")
     assert memento.get_branch_by_index(1) is not None
     assert memento.create_branch("again").index == 4
 

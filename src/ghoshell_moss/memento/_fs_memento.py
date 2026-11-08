@@ -29,6 +29,7 @@ Discipline:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -44,7 +45,8 @@ from ghoshell_moss.memento.abcd import (
     Branch,
     BranchMeta,
     BranchRef,
-    Address,
+    BranchAddr,
+    BranchEvent,
     BranchView,
     Child,
     CommitRef,
@@ -57,6 +59,8 @@ from ghoshell_moss.memento.abcd import (
 from ghoshell_moss.memento.hooks import hook_env, hook_paths, render_view_text, run_slot
 
 __all__ = ["FsBranch", 'FsMemento', 'new_local_memento']
+
+logger = logging.getLogger(__name__)
 
 _MEMENTO_TEMPLATE = """# MEMENTO — {coord}
 
@@ -189,12 +193,24 @@ def _collapse_broken_commits(views: list[CommitView]) -> list[CommitView]:
 class FsBranch(Branch):
     """A branch object pointing at one directory."""
 
-    def __init__(self, memento: "FsMemento", branch_id: str, name: str, description: str, created: datetime):
+    def __init__(
+            self,
+            memento: "FsMemento",
+            branch_id: str,
+            name: str,
+            description: str,
+            created: datetime,
+            *,
+            index: int | None = None,
+            parent_id: str = "",
+    ):
         self._memento = memento
         self._branch_id = branch_id
         self._name = name
         self._description = description
         self._created = created
+        self._index = index
+        self._parent_id = parent_id
         self._locker: FileLocker | None = None
         self._commits_cache: list[CommitRef] | None = None
         self._notes_cache: dict[str, Note] | None = None
@@ -231,7 +247,11 @@ class FsBranch(Branch):
     @property
     def ref(self) -> BranchRef:
         return BranchRef(name=self._name, description=self._description, branch_id=self._branch_id,
-                         created=self._created)
+                         parent_id=self._parent_id, created=self._created)
+
+    def address(self) -> BranchAddr:
+        """Who this branch is, in the shape a record stores — the input to every event."""
+        return BranchAddr(branch_id=self._branch_id, branch_name=self._name, branch_index=self.index)
 
     @property
     def path(self) -> Path:
@@ -245,7 +265,9 @@ class FsBranch(Branch):
 
     @property
     def index(self) -> int:
-        return self.meta().index
+        if self._index is None:  # one meta read per branch object, then memory
+            self._index = self.meta().index
+        return self._index
 
     # ── reads (cached fast path) ──
     def commits(self) -> list[CommitRef]:
@@ -283,7 +305,7 @@ class FsBranch(Branch):
             message: str = "",
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
-            recipients: list[Address] | None = None,
+            recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
         confluences = self._absorb_confluences()
         children = self._absorb_children()
@@ -301,6 +323,7 @@ class FsBranch(Branch):
         for claimed in (self._claimed_path(), self._claimed_children_path()):
             if claimed.exists():
                 claimed.unlink()
+        self._memento._emit("commit", self.address(), coord=f"{self.index}-{ref.seq}")
         if message:
             self.note(ref.id, message, recipients=recipients)
         return ref
@@ -385,6 +408,7 @@ class FsBranch(Branch):
         ):
             return  # already absorbed by an earlier commit
         _append_jsonl(self._inbox_path(), [confluence.model_dump(mode="json")])
+        self._memento._emit("confluence", self.address(), coord=confluence.coord)
 
     def pending_children(self) -> list[Child]:
         """Branches created from this one that the next commit has not absorbed yet."""
@@ -408,7 +432,7 @@ class FsBranch(Branch):
             message: str,
             error: str = "",
             *,
-            recipients: list[Address] | None = None,
+            recipients: list[BranchAddr] | None = None,
     ) -> Note:
         # ``recipients`` is the one field that is not last-wins: a rewrite must not re-address
         # a message a summarizer merely restated.
@@ -435,12 +459,12 @@ class FsBranch(Branch):
         if ref is None:
             raise KeyError(f"cannot deliver note: no commit {note.commit_id} in branch '{self._name}'")
         title = note.message.split("\n", 1)[0]
-        source = Address(branch_id=self._branch_id, branch_name=self._name, branch_index=self.index)
+        source = self.address()
         for recipient in note.recipients:
             target = self._resolve(recipient)
             target.confluence(Confluence(branch=source, commit_seq=ref.seq, title=title))
 
-    def _resolve(self, address: Address) -> "FsBranch":
+    def _resolve(self, address: BranchAddr) -> "FsBranch":
         """Find a branch from an address — by position first, by name as a fallback.
 
         Position is the stable half: the roster is append-only, so an index survives archive.
@@ -477,11 +501,8 @@ class FsBranch(Branch):
         # Two sides of one relation, each written by its own owner: the child records where it
         # came from (its meta), the parent records that it exists (this row). Nobody writes into
         # the other's trajectory, and the parent's record only becomes history at its next commit.
-        self.add_child(Child(branch=Address(
-            branch_id=branch.ref.branch_id,
-            branch_name=branch.ref.name,
-            branch_index=branch.index,
-        )))
+        self.add_child(Child(branch=branch.address()))
+        self._memento._emit("child", self.address())
         return branch
 
     async def acommit(
@@ -490,7 +511,7 @@ class FsBranch(Branch):
             message: str = "",
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
-            recipients: list[Address] | None = None,
+            recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
         async with self:
             return self.commit(
@@ -503,7 +524,7 @@ class FsBranch(Branch):
             message: str,
             error: str = "",
             *,
-            recipients: list[Address] | None = None,
+            recipients: list[BranchAddr] | None = None,
     ) -> Note:
         # No write permission: a note is one appended line, and a duplicated decision is
         # idempotent downstream. Taking the branch lock here would only make a delivery
@@ -709,6 +730,8 @@ class FsMemento(Memento):
 
     def __init__(self, root: Path):
         self._root = root
+        self._hooks: list[Callable[[BranchEvent], None]] = []
+        self._roster_cache: list[dict[str, Any]] | None = None
 
     @property
     def root(self) -> Path:
@@ -758,27 +781,38 @@ class FsMemento(Memento):
             fork_from=fork_from,
             created=created,
         )
-        ref = BranchRef(name=name, description=description, branch_id=branch_id, created=created)
+        ref = BranchRef(
+            name=name,
+            description=description,
+            branch_id=branch_id,
+            parent_id=fork_from.branch_id if fork_from else "",
+            created=created,
+        )
 
         self._branch_dir(branch_id).mkdir(parents=True, exist_ok=True)
         _write_json(self._branch_dir(branch_id) / "meta.json", meta.model_dump(mode="json"))
         _write_json(self._ref_path(name), ref.model_dump(mode="json"))
         _append_jsonl(self._branches_jsonl(), [ref.model_dump(mode="json")])
-        return FsBranch(self, branch_id, name, description, created)
+        self._roster_cache = None
+        return FsBranch(self, branch_id, name, description, created, index=index,
+                        parent_id=fork_from.branch_id if fork_from else "")
 
     def _branch_by_id(self, branch_id: str) -> FsBranch | None:
         data = _read_json(self._branch_dir(branch_id) / "meta.json")
         if data is None:
             return None
         meta = BranchMeta(**data)
-        return FsBranch(self, meta.branch_id, meta.name, meta.description, meta.created)
+        return FsBranch(self, meta.branch_id, meta.name, meta.description, meta.created,
+                        index=meta.index,
+                        parent_id=meta.fork_from.branch_id if meta.fork_from else "")
 
     def get_branch(self, name: str) -> Branch | None:
         data = _read_json(self._ref_path(name))
         if data is None:
             return None
         ref = BranchRef(**data)
-        return FsBranch(self, ref.branch_id, ref.name, ref.description, ref.created)
+        return FsBranch(self, ref.branch_id, ref.name, ref.description, ref.created,
+                        parent_id=ref.parent_id)
 
     def list_branches(self) -> list[BranchRef]:
         result: list[BranchRef] = []
@@ -797,30 +831,29 @@ class FsMemento(Memento):
         ref = BranchRef(**rows[index - 1])
         return self._branch_by_id(ref.branch_id)
 
-    def children_of(self, name: str) -> list[Address]:
-        """Join the roster with each child's ``fork_from`` — the branch-data answer to "my children".
+    def _roster(self) -> list[dict[str, Any]]:
+        """``branches.jsonl`` in memory. One load, then pure lookups until the next write."""
+        if self._roster_cache is None:
+            self._roster_cache = _read_jsonl(self._branches_jsonl())
+        return self._roster_cache
 
-        Complete the moment a child exists, and unaffected by whether this branch ever commits
-        again. What it deliberately cannot say is *when in the trajectory* the child appeared;
-        that is ``CommitRef.children``, which only exists after the staged row is absorbed.
+    def children_of(self, name: str) -> list[BranchAddr]:
+        """The parent-child tree, read off branch data — never off a trajectory.
+
+        A roster row carries ``parent_id`` (written once, at creation), so the tree is a filter
+        over one cached list: no meta read, no commit scan. Complete from the moment a child
+        exists — including children whose parent never commits again. What it cannot say is
+        *when in the trajectory* the child appeared; that is ``CommitRef.children``.
         """
         parent = self.get_branch(name)
         if parent is None:
             raise FileNotFoundError(f"branch '{name}' not found")
         parent_id = parent.ref.branch_id
-        result: list[Address] = []
-        for index, row in enumerate(_read_jsonl(self._branches_jsonl()), start=1):
-            ref = BranchRef(**row)
-            branch = self._branch_by_id(ref.branch_id)
-            if branch is None:
-                continue
-            try:
-                fork_from = branch.meta().fork_from
-            except FileNotFoundError:
-                continue
-            if fork_from is not None and fork_from.branch_id == parent_id:
-                result.append(Address(branch_id=ref.branch_id, branch_name=ref.name, branch_index=index))
-        return result
+        return [
+            BranchAddr(branch_id=row["branch_id"], branch_name=row["name"], branch_index=index)
+            for index, row in enumerate(self._roster(), start=1)
+            if (row.get("parent_id") or "") == parent_id
+        ]
 
     def resolve_commit(self, coord: str) -> CommitView | None:
         parts = coord.split("-", 1)
@@ -835,11 +868,61 @@ class FsMemento(Memento):
             return None
         return branch.get_commit(seq)
 
-    def delete_branch(self, name: str) -> None:
-        ref = self._ref_path(name)
-        if not ref.exists():
+    def archive_branch(self, name: str) -> list[BranchAddr]:
+        """Archive this branch and its subtree, deepest first. The pointer goes; the data stays."""
+        branch = self.get_branch(name)
+        if branch is None:
             raise FileNotFoundError(f"branch '{name}' not found")
-        ref.unlink()
+
+        children: dict[str, list[BranchAddr]] = {}
+        for index, row in enumerate(self._roster(), start=1):
+            parent_id = row.get("parent_id") or ""
+            if parent_id:
+                children.setdefault(parent_id, []).append(
+                    BranchAddr(branch_id=row["branch_id"], branch_name=row["name"], branch_index=index)
+                )
+
+        order: list[BranchAddr] = []
+
+        def walk(address: BranchAddr) -> None:
+            for child in children.get(address.branch_id, []):
+                walk(child)
+            order.append(address)
+
+        walk(branch.address())
+
+        archived: list[BranchAddr] = []
+        for address in order:
+            ref = self._ref_path(address.branch_name)
+            if not ref.exists():  # already archived, e.g. a child archived on its own
+                continue
+            ref.unlink()
+            archived.append(address)
+            self._emit("archived", address)
+        self._roster_cache = None
+        return archived
+
+    def on_event(self, callback: Callable[[BranchEvent], None]) -> Callable[[], None]:
+        self._hooks.append(callback)
+
+        def _off() -> None:
+            try:
+                self._hooks.remove(callback)
+            except ValueError:
+                pass
+
+        return _off
+
+    def _emit(self, kind: str, branch: BranchAddr, coord: str = "") -> None:
+        """Tell whoever is watching. A failing subscriber never turns a write into a failure."""
+        if not self._hooks:
+            return
+        event = BranchEvent(kind=kind, branch=branch, coord=coord)
+        for callback in list(self._hooks):
+            try:
+                callback(event)
+            except Exception:  # noqa: BLE001 — the write already happened
+                logger.exception("branch event hook failed: %s", kind)
 
 
 def new_local_memento(root: Path) -> FsMemento:

@@ -50,6 +50,7 @@ the model's sovereignty; the contract layer is human-reviewed.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,11 +61,12 @@ import ulid
 __all__ = [
     "COMMIT_MEMENTO_FILE",
     "CommitRef",
-    "Address",
+    "BranchAddr",
     "Child",
     "Confluence",
     "Note",
     "BranchRef",
+    "BranchEvent",
     "ForkRef",
     "BranchMeta",
     "CommitView",
@@ -91,8 +93,10 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Address(BaseModel):
-    """A durable pointer at another branch — the half of a reference that says *who*.
+class BranchAddr(BaseModel):
+    """A branch address — the half of a reference that says *who*.
+
+    Its boundary is one thing only: a branch. Never a commit, never an owner, never a URL.
 
     Three fields do three different jobs, and they must not take each other's place:
 
@@ -109,6 +113,23 @@ class Address(BaseModel):
         default=0,
         description="Branch ordinal within the owner (1-based) — first half of the coordinate; 0 = not filled.",
     )
+
+
+class BranchEvent(BaseModel):
+    """Something happened at a branch address — told to whoever is watching.
+
+    Thin on purpose: it carries the address, never the content. A subscriber that needs the
+    content reads it from that address; memento does not interpret what it announced.
+
+    Kinds: ``commit`` (an anchor became durable, ``coord`` filled), ``confluence`` (a
+    reference landed in this branch's inbox), ``child`` (a branch was created from this one),
+    ``archived`` (this branch left the active set).
+    """
+
+    kind: str = Field(description="commit | confluence | child | archived")
+    branch: BranchAddr = Field(description="Where it happened.")
+    coord: str = Field(default="", description="Commit coordinate when the event is about one.")
+    created: AwareDatetime = Field(default_factory=_now_utc)
 
 
 class Confluence(BaseModel):
@@ -128,7 +149,7 @@ class Confluence(BaseModel):
     How this is rendered is the renderer's business; the fields are the contract.
     """
 
-    branch: Address = Field(description="Which branch it came from.")
+    branch: BranchAddr = Field(description="Which branch it came from.")
     commit_seq: int = Field(
         description="That branch's seq for the commit that sent it — the address half only an incoming reference has.",
     )
@@ -157,7 +178,7 @@ class Child(BaseModel):
     memento keeps one operation and one record.
     """
 
-    branch: Address = Field(description="The created branch's address.")
+    branch: BranchAddr = Field(description="The created branch's address.")
     created: AwareDatetime = Field(default_factory=_now_utc, description="When it was created.")
 
 
@@ -224,7 +245,7 @@ class Note(BaseModel):
         default="",
         description="Broken-placeholder marker; non-empty means the message is not a real summary (terminal state, never retried).",
     )
-    recipients: list[Address] = Field(
+    recipients: list[BranchAddr] = Field(
         default_factory=list,
         description=(
             "Who this message is sent to: one address per receiving branch — the outgoing half "
@@ -242,6 +263,14 @@ class BranchRef(BaseModel):
     name: str = Field(...)
     description: str = Field(default="")
     branch_id: str = Field(...)
+    parent_id: str = Field(
+        default="",
+        description=(
+            "Branch this one was created from; empty for a root. Written once, with the row, so "
+            "the parent-child tree is derivable from the roster alone — no meta read, no "
+            "trajectory scan."
+        ),
+    )
     created: AwareDatetime = Field(default_factory=_now_utc)
 
 
@@ -339,7 +368,7 @@ class CommitView(BaseModel):
         return "\n".join(lines[1:])
 
     @property
-    def recipients(self) -> list[Address]:
+    def recipients(self) -> list[BranchAddr]:
         """Who this commit's message is sent to — read off its note; empty while there is no note.
 
         The outgoing half of a commit view. A commit whose message has not been written yet has
@@ -500,7 +529,7 @@ class Branch(ABC):
         message: str = "",
         metatype: str = "",
         metadata: dict[str, Any] | None = None,
-        recipients: list[Address] | None = None,
+        recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
         """Write one commit anchor to ``commits.jsonl`` (append-only). An anchor, no message.
 
@@ -523,7 +552,7 @@ class Branch(ABC):
         message: str = "",
         metatype: str = "",
         metadata: dict[str, Any] | None = None,
-        recipients: list[Address] | None = None,
+        recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
         """The same commit, taken under the branch's write permission.
 
@@ -539,7 +568,7 @@ class Branch(ABC):
         message: str,
         error: str = "",
         *,
-        recipients: list[Address] | None = None,
+        recipients: list[BranchAddr] | None = None,
     ) -> Note:
         """Step 2 (side channel, may be late): write the one and only summary message for an existing
         commit_id, last-wins.
@@ -567,7 +596,7 @@ class Branch(ABC):
         message: str,
         error: str = "",
         *,
-        recipients: list[Address] | None = None,
+        recipients: list[BranchAddr] | None = None,
     ) -> Note:
         """Async variant of ``note``.
 
@@ -739,7 +768,7 @@ class Memento(ABC):
         """Take a branch by its ordinal within the owner; None when it does not exist."""
 
     @abstractmethod
-    def children_of(self, name: str) -> list[Address]:
+    def children_of(self, name: str) -> list[BranchAddr]:
         """Every branch created from this one — **derived**, not read off a trajectory.
 
         The roster gives all branches and each child's ``meta.fork_from`` gives its parent, so
@@ -755,5 +784,23 @@ class Memento(ABC):
         returns None."""
 
     @abstractmethod
-    def delete_branch(self, name: str) -> None:
-        """Delete a name pointer (remove ref.json); the branch directory and its commits survive."""
+    def archive_branch(self, name: str) -> list[BranchAddr]:
+        """Archive this branch and its whole subtree — **deepest first**.
+
+        Archiving is not deletion: it removes the name pointer (``{name}.ref.json``) and
+        nothing else. The directory, the meta and every commit survive, and the roster keeps
+        the row, so the branch stays resolvable by index and can be restored from meta later.
+        Children are archived before their parent, so a crash midway leaves a parent that still
+        exists and can account for what happened, rather than live fragments of a vanished one.
+
+        Returns what was archived, in the order it was archived. memento cannot know whether a
+        branch is in use — stopping live work is the caller's business.
+        """
+
+    @abstractmethod
+    def on_event(self, callback: Callable[[BranchEvent], None]) -> Callable[[], None]:
+        """Subscribe to branch events; returns an unsubscribe.
+
+        Fired after the write is durable, synchronously. A subscriber that raises is the
+        consumer's bug: it is logged and never turns a completed write into a failure.
+        """

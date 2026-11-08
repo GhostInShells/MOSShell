@@ -51,20 +51,20 @@ history
 ### 数据结构（已实现）
 
 ```python
-class Address(BaseModel):        # 谁
+class BranchAddr(BaseModel):     # 谁
     branch_id: str               # 身份：解析从这儿开始
     branch_name: str             # 显示/业务用；会腐烂，不参与解析
     branch_index: int            # 坐标前半段
 
 class Confluence(BaseModel):     # 谁 + 哪一步 + 说了什么
-    branch: Address
+    branch: BranchAddr
     commit_seq: int
     title: str                   # 唯一被复制的内容
 ```
 
 | 位置 | 字段 | 语义 |
 |---|---|---|
-| `Note.recipients` | `list[Address]` | 出：这条消息发给谁。只有地址，没有内容（内容就是这条 note） |
+| `Note.recipients` | `list[BranchAddr]` | 出：这条消息发给谁。只有地址，没有内容（内容就是这条 note） |
 | `CommitRef.confluences` | `list[Confluence]` | 入：这条 commit 之前收到过什么 |
 
 **为什么两半不对称**：出向指向一条还没写下第一步的 branch，没有 seq 可指；入向指向已经落盘的
@@ -116,6 +116,42 @@ class Confluence(BaseModel):     # 谁 + 哪一步 + 说了什么
 | 回收 | 我的下一次 commit | 我的下一次 commit |
 
 同一套 claim（`os.replace` 原子认领）+ 去重 + 崩溃窗口处理。
+
+### 事件出口（D09 恢复）
+
+D09 中途我删掉了 `on_commit` / `on_note`，理由是"没有真实消费者的事件比没有事件更糟"。
+**那是错的**：这个 workstream 的动机就是**给 branch 间通讯一个触发点**（见「Motivation」最后一句），
+删掉事件等于删掉动机。恢复成 owner 级的一个出口：
+
+```python
+Memento.on_event(callback) -> unsubscribe
+BranchEvent{kind, branch: BranchAddr, coord, created}
+kind = commit | confluence | child | archived
+```
+
+薄的：只报地址，不塞内容；同步，写盘之后发；订阅方抛异常只记日志，绝不让已完成的写看起来失败。
+
+### 归档（D09）
+
+`delete_branch` → `archive_branch(name) -> list[BranchAddr]`：
+
+- 删的是**名字指针**（`{name}.ref.json`），目录 / meta / commits 全在；
+- 递归整棵子树，**先子后父** —— 崩在中途时父还在，能交代发生了什么；反过来是活着的碎片；
+- 每条被归档的 branch 各发一个 `archived`；
+- memento 不知道 branch 是否正在被使用 —— 停活是调用方（Hive）的事。
+
+契约口径：**ref 是投影，meta 是真相**。ref 可删可重建（将来的 restore 就是拿 meta 重建 ref）。
+
+### 父子关系从哪来（D09）
+
+`BranchRef` 加 `parent_id`，写一次。roster 在内存里缓存，于是：
+
+- `children_of(name)` = 对缓存列表做一次过滤，**不读 meta、不扫 commit**；
+- `archive_branch` 的递归用同一张表，O(N)；
+- `meta.fork_from` 退成"重建 ref 时"才用的耐久真相。
+
+三个问题三个家：**我有哪些 children**（roster + parent_id）/ **哪条 commit 创建了谁**（`CommitRef.children`）/
+**建了但还没进历史**（`Branch.pending_children`）。
 
 ### 锁口径（订正）
 
