@@ -321,8 +321,12 @@ class FsBranch(Branch):
         # The anchor is durable, so the claimed batches now belong to it: drop the files. A
         # crash before this point leaves them behind, and the next commit re-reads and de-dupes.
         for claimed in (self._claimed_path(), self._claimed_children_path()):
-            if claimed.exists():
+            if not claimed.exists():
+                continue
+            try:
                 claimed.unlink()
+            except OSError:  # the commit is durable; a leftover file is re-read and de-duped
+                logger.warning("could not clear claimed staging file %s", claimed, exc_info=True)
         self._memento._emit("commit", self.address(), coord=f"{self.index}-{ref.seq}")
         if message:
             self.note(ref.id, message, recipients=recipients)
@@ -647,6 +651,7 @@ class FsBranch(Branch):
         try:
             results = await run_slot(slot, roots, env_base=env, log_root=self._memento.root)
         except Exception:  # noqa: BLE001 — the read surface must not die because a hook did
+            logger.exception("view slot %r failed on branch %r", slot, self._name)
             return ""
         return render_view_text(results)
 
@@ -894,7 +899,10 @@ class FsMemento(Memento):
         archived: list[BranchAddr] = []
         for address in order:
             ref = self._ref_path(address.branch_name)
-            if not ref.exists():  # already archived, e.g. a child archived on its own
+            if not ref.exists():
+                # Already archived, e.g. a child archived on its own before its parent. Not a
+                # failure and not a silent omission: the return value is "what this call
+                # archived", so a branch that was already out of the active set is not in it.
                 continue
             ref.unlink()
             archived.append(address)
