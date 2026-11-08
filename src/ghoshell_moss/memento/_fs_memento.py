@@ -88,48 +88,91 @@ def _ensure_aware(t: datetime) -> datetime:
 # ── filesystem helpers ─────────────────────────────────────────────────────────
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Read jsonl, skipping a torn trailing line (append-crash debris). A non-tail parse failure raises."""
-    if not path.exists():
-        return []
-    raw = path.read_text(encoding="utf-8")
+JsonRow = dict[str, Any] | str
+"""A parsed row, or the raw line that could not be parsed.
+
+Readers never raise on a bad line: they hand it back as text and let the caller decide. A
+trajectory that refuses to advance because one line is unreadable is worse than one that
+records what it lost.
+"""
+
+
+def _parse_lenient(raw: str) -> list[JsonRow]:
+    """Split jsonl without raising. Positions are preserved: a bad line keeps its slot."""
     if not raw.strip():
         return []
-    lines = raw.rstrip("\n").split("\n")
-    result: list[dict[str, Any]] = []
-    for i, line in enumerate(lines):
+    rows: list[JsonRow] = []
+    for line in raw.rstrip("\n").split("\n"):
         stripped = line.strip()
         if not stripped:
             continue
         try:
-            result.append(json.loads(stripped))
+            parsed = json.loads(stripped)
         except json.JSONDecodeError:
-            if i == len(lines) - 1:
-                continue  # torn last line, legal
-            raise ValueError(f"jsonl parse error at line {i + 1} in {path}") from None
-    return result
+            rows.append(stripped)
+            continue
+        rows.append(parsed if isinstance(parsed, dict) else stripped)
+    return rows
 
 
-async def _aread_jsonl(path: Path) -> list[dict[str, Any]]:
-    """The aiofiles jsonl read (IO-costly). Same semantics as _read_jsonl."""
+def _read_jsonl(path: Path) -> list[JsonRow]:
+    """Read jsonl leniently — a bad line is returned as text, not raised."""
+    if not path.exists():
+        return []
+    return _parse_lenient(path.read_text(encoding="utf-8"))
+
+
+async def _aread_jsonl(path: Path) -> list[JsonRow]:
+    """The aiofiles variant (IO-costly). Same lenient semantics."""
     if not path.exists():
         return []
     async with aiofiles.open(path, "r", encoding="utf-8") as f:
-        raw = await f.read()
-    if not raw.strip():
-        return []
-    lines = raw.rstrip("\n").split("\n")
-    result: list[dict[str, Any]] = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
+        return _parse_lenient(await f.read())
+
+
+def _parse_commits(rows: list[JsonRow]) -> list[CommitRef]:
+    """The authoritative timeline, with positions preserved as the coordinates depend on them.
+
+    A row that cannot be read becomes a **corrupt placeholder** at its own position: the
+    coordinate space stays intact, ``len(commits) + 1`` still yields the next seq, and the loss
+    is visible on the anchor instead of being buried in a log.
+    """
+    refs: list[CommitRef] = []
+    for position, row in enumerate(rows, start=1):
+        if isinstance(row, str):
+            logger.error("corrupt commit row at %s:%d", "commits.jsonl", position)
+            refs.append(CommitRef(seq=position, metatype="corrupt",
+                                  metadata={"error": f"unreadable row: {row[:120]}"}))
             continue
         try:
-            result.append(json.loads(stripped))
-        except json.JSONDecodeError:
-            if i == len(lines) - 1:
-                continue
-            raise ValueError(f"jsonl parse error at line {i + 1} in {path}") from None
+            ref = CommitRef(**row)
+        except Exception as error:  # noqa: BLE001 — a corrupt row must not wedge the branch
+            logger.exception("invalid commit row at position %d", position)
+            refs.append(CommitRef(seq=position, metatype="corrupt",
+                                  metadata={"error": f"invalid row: {type(error).__name__}"}))
+            continue
+        if ref.seq != position:
+            logger.error("commit seq mismatch at position %d: row says %d", position, ref.seq)
+            refs.append(CommitRef(seq=position, metatype="corrupt",
+                                  metadata={"error": f"seq mismatch: row says {ref.seq}"}))
+            continue
+        refs.append(ref)
+    return refs
+
+
+def _parse_notes(rows: list[JsonRow]) -> dict[str, Note]:
+    """Notes are a side channel the contract allows to be lost: an unreadable row is dropped."""
+    result: dict[str, Note] = {}
+    for row in rows:
+        if isinstance(row, str):
+            logger.warning("dropping unreadable note row: %r", row[:80])
+            continue
+        try:
+            note = Note(**row)
+        except Exception:  # noqa: BLE001 — a droppable channel never blocks a read
+            logger.warning("dropping invalid note row", exc_info=True)
+            continue
+        result[note.commit_id] = note
     return result
 
 
@@ -272,31 +315,22 @@ class FsBranch(Branch):
     # ── reads (cached fast path) ──
     def commits(self) -> list[CommitRef]:
         if self._commits_cache is None:
-            self._commits_cache = [CommitRef(**row) for row in _read_jsonl(self._commits_path())]
+            self._commits_cache = _parse_commits(_read_jsonl(self._commits_path()))
         return list(self._commits_cache)
 
     def notes(self) -> dict[str, Note]:
         if self._notes_cache is None:
-            result: dict[str, Note] = {}
-            for row in _read_jsonl(self._notes_path()):
-                note = Note(**row)
-                result[note.commit_id] = note  # last-wins
-            self._notes_cache = result
+            self._notes_cache = _parse_notes(_read_jsonl(self._notes_path()))
         return dict(self._notes_cache)
 
     # ── reads (aiofiles, IO-costly) ──
     async def acommits(self) -> list[CommitRef]:
-        rows = await _aread_jsonl(self._commits_path())
-        self._commits_cache = [CommitRef(**row) for row in rows]
+        self._commits_cache = _parse_commits(await _aread_jsonl(self._commits_path()))
         return list(self._commits_cache)
 
     async def anotes(self) -> dict[str, Note]:
-        result: dict[str, Note] = {}
-        for row in await _aread_jsonl(self._notes_path()):
-            note = Note(**row)
-            result[note.commit_id] = note
-        self._notes_cache = result
-        return dict(result)
+        self._notes_cache = _parse_notes(await _aread_jsonl(self._notes_path()))
+        return dict(self._notes_cache)
 
     # ── writes ──
     def commit(
@@ -307,14 +341,15 @@ class FsBranch(Branch):
             metadata: dict[str, Any] | None = None,
             recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
-        confluences = self._absorb_confluences()
-        children = self._absorb_children()
+        confluences, rejected_confluences = self._absorb_confluences()
+        children, rejected_children = self._absorb_children()
         ref = CommitRef(
             seq=len(self.commits()) + 1,
             metatype=metatype,
             metadata=metadata or {},
             confluences=confluences,
             children=children,
+            rejected=[*rejected_confluences, *rejected_children],
         )
         _append_jsonl(self._commits_path(), [ref.model_dump(mode="json")])
         self._commits_cache = None
@@ -334,14 +369,14 @@ class FsBranch(Branch):
 
     # ── staging: both directions, one shape ──
     @staticmethod
-    def _claim(inbox: Path, claimed: Path) -> list[dict[str, Any]]:
+    def _claim(inbox: Path, claimed: Path) -> list[JsonRow]:
         """Take a staging file atomically, and leave it where a crash can still find it.
 
         ``os.replace`` rather than copy + delete: a same-directory rename has no "two copies"
         and no "no copy" in between. Rows arriving after the claim land in a fresh file and
         belong to the next commit.
         """
-        rows: list[dict[str, Any]] = []
+        rows: list[JsonRow] = []
         if claimed.exists():  # a previous attempt died before it could absorb or unlink
             rows.extend(_read_jsonl(claimed))
         if inbox.exists():
@@ -349,57 +384,104 @@ class FsBranch(Branch):
             rows.extend(_read_jsonl(claimed))
         return rows
 
-    def _absorb_confluences(self) -> list[Confluence]:
-        """Turn the claimed inbox rows into this commit's ``confluences``, dropping duplicates.
+    def _quarantine(self, kind: str, raw: str, reason: str) -> None:
+        """Keep a row we could not read, instead of dropping it. The commit carries the fact."""
+        _append_jsonl(self._dir() / f"{kind}.rejected.jsonl", [{
+            "raw": raw[:4000],
+            "reason": reason,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }])
 
-        De-duplication happens here and only here, keyed on the source coordinate: a delivery
-        the sender retried, or a batch re-read after a crash, must not enter the trajectory
-        twice.
+    @staticmethod
+    def _parse_staged(row: JsonRow, model: type) -> tuple[Any, str]:
+        """Parse one staged row. Returns (item, "") on success, (None, reason) on failure."""
+        if isinstance(row, str):
+            return None, f"unreadable row: {row[:60]!r}"
+        try:
+            return model(**row), ""
+        except Exception as error:  # noqa: BLE001 — a bad row must never wedge the branch
+            return None, f"invalid row: {type(error).__name__}: {error}"[:200]
+
+    def _absorb_confluences(self) -> tuple[list[Confluence], list[str]]:
+        """Absorb the claimed inbox, de-duplicating on the source coordinate.
+
+        A row that cannot be read is quarantined and reported on the commit — the branch keeps
+        moving, and nothing is silently dropped.
         """
         incoming = self._claim(self._inbox_path(), self._claimed_path())
         if not incoming:
-            return []
+            return [], []
         taken: set[tuple[str, int]] = set()
         commits = self.commits()
         if commits:  # crash after append, before unlink: the last anchor already holds them
             for received in commits[-1].confluences:
                 taken.add((received.branch.branch_id, received.commit_seq))
         absorbed: list[Confluence] = []
+        rejected: list[str] = []
         for row in incoming:
-            item = Confluence(**row)
+            item, reason = self._parse_staged(row, Confluence)
+            if item is None:
+                self._quarantine("confluences", row if isinstance(row, str) else json.dumps(row), reason)
+                rejected.append(reason)
+                continue
             key = (item.branch.branch_id, item.commit_seq)
             if key in taken:
                 continue
             taken.add(key)
             absorbed.append(item)
-        return absorbed
+        return absorbed, rejected
 
-    def _absorb_children(self) -> list[Child]:
+    def _absorb_children(self) -> tuple[list[Child], list[str]]:
         """The outgoing mirror: branches created since the last commit, de-duplicated by identity."""
         incoming = self._claim(self._children_inbox_path(), self._claimed_children_path())
         if not incoming:
-            return []
+            return [], []
         taken: set[str] = set()
         commits = self.commits()
         if commits:
             taken.update(c.branch.branch_id for c in commits[-1].children)
         absorbed: list[Child] = []
+        rejected: list[str] = []
         for row in incoming:
-            item = Child(**row)
+            item, reason = self._parse_staged(row, Child)
+            if item is None:
+                self._quarantine("children", row if isinstance(row, str) else json.dumps(row), reason)
+                rejected.append(reason)
+                continue
             if item.branch.branch_id in taken:
                 continue
             taken.add(item.branch.branch_id)
             absorbed.append(item)
-        return absorbed
+        return absorbed, rejected
+
+    def _read_staged_view(self, path: Path, model: type, kind: str) -> list[Any]:
+        """Read a staging file for observation: unreadable rows are skipped and logged.
+
+        Quarantine happens at commit time; a read only reports what is readable.
+        """
+        items: list[Any] = []
+        for row in _read_jsonl(path):
+            item, reason = self._parse_staged(row, model)
+            if item is None:
+                logger.warning("skipping %s row on branch %r: %s", kind, self._name, reason)
+                continue
+            items.append(item)
+        return items
 
     def confluences(self) -> list[Confluence]:
         """The inbox: what arrived and has not been absorbed into a commit yet."""
-        return [Confluence(**row) for row in _read_jsonl(self._inbox_path())]
+        return self._read_staged_view(self._inbox_path(), Confluence, "confluences")
 
     async def aconfluences(self) -> list[Confluence]:
         """IO-costly: re-read the inbox from disk."""
-        rows = await _aread_jsonl(self._inbox_path())
-        return [Confluence(**row) for row in rows]
+        items: list[Confluence] = []
+        for row in await _aread_jsonl(self._inbox_path()):
+            item, reason = self._parse_staged(row, Confluence)
+            if item is None:
+                logger.warning("skipping confluences row on branch %r: %s", self._name, reason)
+                continue
+            items.append(item)
+        return items
 
     def confluence(self, confluence: Confluence) -> None:
         """Deliver one reference into this branch's inbox — the only cross-branch write."""
@@ -416,12 +498,18 @@ class FsBranch(Branch):
 
     def pending_children(self) -> list[Child]:
         """Branches created from this one that the next commit has not absorbed yet."""
-        return [Child(**row) for row in _read_jsonl(self._children_inbox_path())]
+        return self._read_staged_view(self._children_inbox_path(), Child, "children")
 
     async def apending_children(self) -> list[Child]:
         """IO-costly: re-read the pending children from disk."""
-        rows = await _aread_jsonl(self._children_inbox_path())
-        return [Child(**row) for row in rows]
+        items: list[Child] = []
+        for row in await _aread_jsonl(self._children_inbox_path()):
+            item, reason = self._parse_staged(row, Child)
+            if item is None:
+                logger.warning("skipping children row on branch %r: %s", self._name, reason)
+                continue
+            items.append(item)
+        return items
 
     def add_child(self, child: Child) -> None:
         """Record a branch created from this one — written by the parent, absorbed at commit."""
@@ -830,16 +918,30 @@ class FsMemento(Memento):
     def get_branch_by_index(self, index: int) -> "FsBranch | None":
         if index < 1:
             return None
-        rows = _read_jsonl(self._branches_jsonl())
+        rows = self._roster()
         if index > len(rows):
             return None
-        ref = BranchRef(**rows[index - 1])
+        try:
+            ref = BranchRef(**rows[index - 1])
+        except Exception:  # a corrupt slot has no branch behind it
+            return None
         return self._branch_by_id(ref.branch_id)
 
     def _roster(self) -> list[dict[str, Any]]:
-        """``branches.jsonl`` in memory. One load, then pure lookups until the next write."""
+        """``branches.jsonl`` in memory, with positions preserved even if a row is corrupt.
+
+        Index is the first half of every coordinate, so a bad row keeps its slot as a
+        placeholder rather than shifting everyone after it.
+        """
         if self._roster_cache is None:
-            self._roster_cache = _read_jsonl(self._branches_jsonl())
+            rows: list[dict[str, Any]] = []
+            for position, row in enumerate(_read_jsonl(self._branches_jsonl()), start=1):
+                if isinstance(row, str):
+                    logger.error("corrupt roster row at position %d", position)
+                    rows.append({"branch_id": f"__corrupt_{position}", "name": "", "parent_id": ""})
+                    continue
+                rows.append(row)
+            self._roster_cache = rows
         return self._roster_cache
 
     def children_of(self, name: str) -> list[BranchAddr]:

@@ -219,6 +219,14 @@ class CommitRef(BaseModel):
             "and the title travel; the rest is read at the origin when it is actually needed."
         ),
     )
+    rejected: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Staged rows this commit could not absorb. The commit still lands — a branch must "
+            "never need file-level repair to move again — and the raw lines are kept in the "
+            "branch's ``*.rejected.jsonl``. Empty on a healthy commit."
+        ),
+    )
     created: AwareDatetime = Field(default_factory=_now_utc)
 
 
@@ -375,6 +383,11 @@ class CommitView(BaseModel):
         no recipients, because the address is part of the message.
         """
         return self.note.recipients if self.note is not None else []
+
+    @property
+    def rejected(self) -> list[str]:
+        """What this commit could not absorb — visible on the anchor, not buried in a log."""
+        return self.ref.rejected
 
     @property
     def children(self) -> list[Child]:

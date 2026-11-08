@@ -153,6 +153,21 @@ kind = commit | confluence | child | archived
 三个问题三个家：**我有哪些 children**（roster + parent_id）/ **哪条 commit 创建了谁**（`CommitRef.children`）/
 **建了但还没进历史**（`Branch.pending_children`）。
 
+### 容错（D09）
+
+原则：**坏数据不许要求做文件级修复才能继续**。
+
+| 文件 | 坏行怎么处理 | 为什么 |
+|---|---|---|
+| `commits.jsonl` | 原位留一个 `metatype="corrupt"` 占位 | 坐标 = 位置；跳过会让后面全体错位 |
+| `commit_notes.jsonl` | 丢弃 + 日志 | note 是契约允许丢的侧道 |
+| `branches.jsonl` | 原位留占位（合成 id） | index 是坐标前半段，不能移位 |
+| `confluences.jsonl` / `children.jsonl` | 隔离到 `*.rejected.jsonl`；**commit 照常落盘**，拒绝清单进 `CommitRef.rejected` | 一条坏行不该让整条 branch 停摆 |
+
+判据来自他：**commit 可以容纳并感知错误，但不能彻底卡死**；而**主动行为**（投递、归档）出错抛异常是合理的。
+
+锁：lean 版本保留了 `FileLocker`（flock），进程死亡时内核自动释放，不存在"崩溃留下的死锁"。
+
 ### 锁口径（订正）
 
 - 契约只承诺"一个写者"，不提 file lock。
