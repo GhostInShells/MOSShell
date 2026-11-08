@@ -41,6 +41,7 @@ D09 深夜按「先定验收效果，再倒退实现」重做了一遍。**结�
 history
   1-9   report: 第一版跑通
         <from name="child-a" at="5-3">落位了，锚点取到了</from>
+        <child name="child-b" at="2"/>
 ```
 
 **history 是压缩之后仍要自给自足的一层。** 预算从我自己的正文里省，不能从"别人对我说过的话"里省 ——
@@ -78,6 +79,31 @@ class Confluence(BaseModel):     # 谁 + 哪一步 + 说了什么
 3. 两个崩溃窗口都由"重读 + 去重"兜住：认领后没提交 → 下次重读；提交后没删 → 下次重读并去重。
 4. 投递失败抛错（对端不可解析）；note 已经 durable，重试免费，因为接收侧按坐标去重。
    **轨迹里没有投递回执** —— 只有声明。
+
+### 子 branch：同一条路，反向的一侧（D09 追加）
+
+早期 v3 契约（`143633b5^:src/ghoshell_moss/memento/abc.py`）里有 `CheckoutRecord` +
+`checkouts.jsonl`，还有 `BranchMeta.fork_ref`。lean 版把父侧那半边删掉了，只剩子侧的指针。
+
+本轮补回来，**不加新词**：
+
+- memento 只有一种操作：**从一个父创建一条 branch**（`fork`）。是"委派"还是"同线分叉"是业务，
+  memento 不认识 —— 所以没有 kind，没有 spawn/child 的区分。
+- `CommitRef.children: list[Child]`；`Child{branch: Address, created}`。
+- 缓冲文件 `children.jsonl`：`fork` 时由**父自己**写一行，父的下一次 commit 回收。
+- 子侧沿用 `BranchMeta.fork_from`（已存在），不需要新字段。
+- 不用 `checkout` 这个词 —— 它该留给"memento 当前主分支"这个概念。
+
+**和 confluences 的镜像关系：**
+
+| | `confluences.jsonl` | `children.jsonl` |
+|---|---|---|
+| 谁写 | 别的 branch 投递 | 父自己 |
+| 为什么需要缓冲 | 跨 branch，我不知道 | 动作发生在两次 commit 之间，压缩时才进轨迹 |
+| 边 | 入 | 出 |
+| 回收 | 我的下一次 commit | 我的下一次 commit |
+
+同一套 claim（`os.replace` 原子认领）+ 去重 + 崩溃窗口处理。
 
 ### 锁口径（订正）
 

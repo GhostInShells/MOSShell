@@ -1,6 +1,7 @@
 from .abcd import (
     COMMIT_MEMENTO_FILE,
     Address,
+    Child,
     CommitRef,
     Confluence,
     Note,

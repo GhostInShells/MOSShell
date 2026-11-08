@@ -61,6 +61,7 @@ __all__ = [
     "COMMIT_MEMENTO_FILE",
     "CommitRef",
     "Address",
+    "Child",
     "Confluence",
     "Note",
     "BranchRef",
@@ -132,6 +133,7 @@ class Confluence(BaseModel):
         description="That branch's seq for the commit that sent it — the address half only an incoming reference has.",
     )
     title: str = Field(description="The only copied content: the first line of the source note.")
+    created: AwareDatetime = Field(default_factory=_now_utc, description="When this reference was delivered.")
 
     @property
     def coord(self) -> str:
@@ -139,6 +141,24 @@ class Confluence(BaseModel):
         if self.branch.branch_index <= 0:
             return ""
         return f"{self.branch.branch_index}-{self.commit_seq}"
+
+
+class Child(BaseModel):
+    """A branch created from this one — the *outgoing* half of the same exchange.
+
+    Mirror of ``Confluence``, and the opposite in one respect only: its author is this branch
+    itself. Nothing has to notify us of what we did, so there is no delivery — the row is
+    appended when the branch is created and absorbed by the next commit, exactly like an
+    incoming reference. That is what makes the creation show up in history at a position,
+    instead of living only in the child's meta.
+
+    A ``Child`` says *that a branch was made from here and when*, never *why*. Whether it was
+    a delegation, a split of the same line, or anything else, is the consumer's vocabulary —
+    memento keeps one operation and one record.
+    """
+
+    branch: Address = Field(description="The created branch's address.")
+    created: AwareDatetime = Field(default_factory=_now_utc, description="When it was created.")
 
 
 class CommitRef(BaseModel):
@@ -162,6 +182,13 @@ class CommitRef(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Opaque extension, conventionally defined by the consumer. memento only gets/sets, never parses.",
+    )
+    children: list[Child] = Field(
+        default_factory=list,
+        description=(
+            "Branches created from this commit's branch before it was written, absorbed from "
+            "the branch's ``children.jsonl`` at commit time. Says that and when, never why."
+        ),
     )
     confluences: list[Confluence] = Field(
         default_factory=list,
@@ -319,6 +346,11 @@ class CommitView(BaseModel):
         no recipients, because the address is part of the message.
         """
         return self.note.recipients if self.note is not None else []
+
+    @property
+    def children(self) -> list[Child]:
+        """Branches created from this one before this commit — the other outgoing half."""
+        return self.ref.children
 
     @property
     def confluences(self) -> list[Confluence]:
@@ -557,6 +589,26 @@ class Branch(ABC):
     @abstractmethod
     async def aconfluences(self) -> list[Confluence]:
         """IO-costly: re-read the inbox from disk."""
+
+    @abstractmethod
+    def children(self) -> list[Child]:
+        """Branches created from this one that the next commit has not absorbed yet.
+
+        Same shape as the confluence inbox and the same reason: the act happens between two
+        commits, and it earns its place in history only when the trajectory is written.
+        """
+
+    @abstractmethod
+    async def achildren(self) -> list[Child]:
+        """IO-costly: re-read the pending children from disk."""
+
+    @abstractmethod
+    def add_child(self, child: Child) -> None:
+        """Record that a branch was created from this one — written by the parent itself.
+
+        No notification and no delivery: the author is the branch, so the row is simply
+        appended and the next commit absorbs it.
+        """
 
     @abstractmethod
     def confluence(self, confluence: Confluence) -> None:

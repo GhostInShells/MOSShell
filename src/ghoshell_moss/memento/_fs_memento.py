@@ -10,6 +10,7 @@ Storage binds to one local path (the owner root):
         commits.jsonl                       # append-only CommitRef, in order (authoritative)
         commit_notes.jsonl                  # bypass Notes (last-wins, droppable, rebuildable)
         confluences.jsonl                   # inbox: references received from other branches
+        children.jsonl                      # outbox: branches created from this one
         .lock                               # FileLocker write gate
       commits/{YYYY}/{MM}/cmt_{coord}/       # the commit's node space (a convention, lazy)
         MEMENTO.md                          # the node's index file, self-explaining entry
@@ -45,6 +46,7 @@ from ghoshell_moss.memento.abcd import (
     BranchRef,
     Address,
     BranchView,
+    Child,
     CommitRef,
     Confluence,
     CommitView,
@@ -219,6 +221,12 @@ class FsBranch(Branch):
     def _claimed_path(self) -> Path:
         return self._dir() / ".confluences.jsonl"
 
+    def _children_inbox_path(self) -> Path:
+        return self._dir() / "children.jsonl"
+
+    def _claimed_children_path(self) -> Path:
+        return self._dir() / ".children.jsonl"
+
     # ── construction-time facts ──
     @property
     def ref(self) -> BranchRef:
@@ -277,49 +285,51 @@ class FsBranch(Branch):
             metadata: dict[str, Any] | None = None,
             recipients: list[Address] | None = None,
     ) -> CommitRef:
-        absorbed = self._absorb()
+        confluences = self._absorb_confluences()
+        children = self._absorb_children()
         ref = CommitRef(
             seq=len(self.commits()) + 1,
             metatype=metatype,
             metadata=metadata or {},
-            confluences=absorbed,
+            confluences=confluences,
+            children=children,
         )
         _append_jsonl(self._commits_path(), [ref.model_dump(mode="json")])
         self._commits_cache = None
-        # The anchor is durable, so the claimed batch now belongs to it: drop the file. A crash
-        # before this line leaves it behind, and the next commit re-reads and de-duplicates.
-        if self._claimed_path().exists():
-            self._claimed_path().unlink()
+        # The anchor is durable, so the claimed batches now belong to it: drop the files. A
+        # crash before this point leaves them behind, and the next commit re-reads and de-dupes.
+        for claimed in (self._claimed_path(), self._claimed_children_path()):
+            if claimed.exists():
+                claimed.unlink()
         if message:
             self.note(ref.id, message, recipients=recipients)
         return ref
 
-    # ── inbox ──
-    def _claim_inbox(self) -> list[dict[str, Any]]:
-        """Take the inbox atomically, and leave it where a crash can still find it.
+    # ── staging: both directions, one shape ──
+    @staticmethod
+    def _claim(inbox: Path, claimed: Path) -> list[dict[str, Any]]:
+        """Take a staging file atomically, and leave it where a crash can still find it.
 
         ``os.replace`` rather than copy + delete: a same-directory rename has no "two copies"
-        and no "no copy" in between. Rows arriving after the claim land in a fresh inbox and
+        and no "no copy" in between. Rows arriving after the claim land in a fresh file and
         belong to the next commit.
         """
         rows: list[dict[str, Any]] = []
-        claimed = self._claimed_path()
         if claimed.exists():  # a previous attempt died before it could absorb or unlink
             rows.extend(_read_jsonl(claimed))
-        inbox = self._inbox_path()
         if inbox.exists():
             os.replace(inbox, claimed)
             rows.extend(_read_jsonl(claimed))
         return rows
 
-    def _absorb(self) -> list[Confluence]:
-        """Turn the claimed rows into this commit's ``confluences``, dropping duplicates.
+    def _absorb_confluences(self) -> list[Confluence]:
+        """Turn the claimed inbox rows into this commit's ``confluences``, dropping duplicates.
 
         De-duplication happens here and only here, keyed on the source coordinate: a delivery
         the sender retried, or a batch re-read after a crash, must not enter the trajectory
         twice.
         """
-        incoming = self._claim_inbox()
+        incoming = self._claim(self._inbox_path(), self._claimed_path())
         if not incoming:
             return []
         taken: set[tuple[str, int]] = set()
@@ -334,6 +344,24 @@ class FsBranch(Branch):
             if key in taken:
                 continue
             taken.add(key)
+            absorbed.append(item)
+        return absorbed
+
+    def _absorb_children(self) -> list[Child]:
+        """The outgoing mirror: branches created since the last commit, de-duplicated by identity."""
+        incoming = self._claim(self._children_inbox_path(), self._claimed_children_path())
+        if not incoming:
+            return []
+        taken: set[str] = set()
+        commits = self.commits()
+        if commits:
+            taken.update(c.branch.branch_id for c in commits[-1].children)
+        absorbed: list[Child] = []
+        for row in incoming:
+            item = Child(**row)
+            if item.branch.branch_id in taken:
+                continue
+            taken.add(item.branch.branch_id)
             absorbed.append(item)
         return absorbed
 
@@ -357,6 +385,22 @@ class FsBranch(Branch):
         ):
             return  # already absorbed by an earlier commit
         _append_jsonl(self._inbox_path(), [confluence.model_dump(mode="json")])
+
+    def children(self) -> list[Child]:
+        """Branches created from this one that the next commit has not absorbed yet."""
+        return [Child(**row) for row in _read_jsonl(self._children_inbox_path())]
+
+    async def achildren(self) -> list[Child]:
+        """IO-costly: re-read the pending children from disk."""
+        rows = await _aread_jsonl(self._children_inbox_path())
+        return [Child(**row) for row in rows]
+
+    def add_child(self, child: Child) -> None:
+        """Record a branch created from this one — written by the parent, absorbed at commit."""
+        key = child.branch.branch_id
+        if any(c.branch.branch_id == key for c in self.children()):
+            return
+        _append_jsonl(self._children_inbox_path(), [child.model_dump(mode="json")])
 
     def note(
             self,
@@ -427,9 +471,18 @@ class FsBranch(Branch):
         commits = self.commits()
         tip = commits[-1].id if commits else ""
         fork_from = ForkRef(branch_id=self._branch_id, commit_id=tip)
-        return self._memento._create_branch(
+        branch = self._memento._create_branch(
             name, description, metatype="", metadata=None, fork_from=fork_from
         )
+        # Two sides of one relation, each written by its own owner: the child records where it
+        # came from (its meta), the parent records that it exists (this row). Nobody writes into
+        # the other's trajectory, and the parent's record only becomes history at its next commit.
+        self.add_child(Child(branch=Address(
+            branch_id=branch.ref.branch_id,
+            branch_name=branch.ref.name,
+            branch_index=branch.index,
+        )))
+        return branch
 
     async def acommit(
             self,
