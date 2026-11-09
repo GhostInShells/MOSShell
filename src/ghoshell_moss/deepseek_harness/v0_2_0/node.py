@@ -34,6 +34,7 @@ from ghoshell_dsh.v0_2_0.launcher import DshLauncher, DshLauncherConfig, resolve
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.deepseek_harness.v0_2_0.hive import DshHive
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel, new_prime_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
 
@@ -209,9 +210,14 @@ class DshNodeRuntime:
         return f"dsh {DSH_VERSION} · {state} · :{self.port} · {self._root.name}"
 
 
-def new_dsh_node_channel(runtime: DshNodeRuntime) -> MutableChannel:
-    """The minimal channel: where this node is, and how to reach its page."""
-    chan = new_channel(
+def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None) -> PrimeChannel:
+    """The node's own channel — and the parent that *owns* the agents organ.
+
+    ``gate=True`` declares the agents channel without mounting it. The framework already ships the
+    verbs that govern this (``mount_child`` / ``unmount_child``), so nothing here reimplements
+    them: the child is listed in the notice as closed, and the ghost opens it with one action.
+    """
+    chan = new_prime_channel(gate=True, 
         name=CHANNEL_NAME,
         description="dsh node — one dsh web process, its page announced as a window.",
     )
@@ -229,6 +235,14 @@ def new_dsh_node_channel(runtime: DshNodeRuntime) -> MutableChannel:
             "This generation exposes environment reads only — the delegation surface (hive) "
             "is not wired yet."
         )
+
+    if hive is not None:
+        agents_channel = hive.agents().as_channel()
+
+        @chan.build.virtual_children
+        def _children() -> dict[str, MutableChannel]:
+            # Declared, not mounted: the catalog. Mounting is the command below.
+            return {"agents": agents_channel} if agents_channel is not None else {}
 
     @chan.build.command(name="status", blocking=False, always_observe=True)
     async def _status() -> str:
@@ -289,14 +303,10 @@ async def main(matrix: Matrix) -> None:
         send_signal=matrix.session.add_signal,
         logger=matrix.logger,
     )
-    channel = new_dsh_node_channel(runtime)
+    channel = new_dsh_node_channel(runtime, hive)
     try:
         async with hive:
             await hive.refresh_if_stale()
-            agents_channel = hive.agents().as_channel()
-            if agents_channel is not None:
-                # A sustain child: the node is the address, the agents are its organ.
-                channel.build.import_channels(agents_channel)
             await WebViewServer.serve(
                 matrix,
                 WebViewDeclaration(

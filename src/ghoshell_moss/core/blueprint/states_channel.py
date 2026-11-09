@@ -266,7 +266,21 @@ def new_stateful_channel(name: str, description: str = "") -> StatefulChannel:
 
 
 def new_prime_channel(name: str, description: str = "", gate: bool = False) -> PrimeChannel:
+    """Build a Prime channel — the kind that can own virtual children.
+
+    ``new_channel`` builds a plain channel; use this one for a **parent**. The argument that
+    matters is ``gate``:
+
+    - ``False`` (default): every child declared through ``build.virtual_children`` is mounted and
+      visible from the start.
+    - ``True``: those children stay **closed**. The catalog reaches the ghost through the notice
+      instead, and a child appears only when a command mounts one (``add_virtual_channel``).
+
+    That is progressive disclosure enforced by the channel rather than by a caller's discipline:
+    the ghost asks for the organ it needs, and the surface stays small until it does.
+    """
     from ghoshell_moss.core.py_channel import PyChannel
+
     return PyChannel(name=name, description=description, gate=gate)
 
 

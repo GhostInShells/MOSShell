@@ -51,6 +51,7 @@ from ghoshell_moss.agents.blueprint.hive import Hive
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
+from ghoshell_moss.message import Message
 
 from .agent import DshAgentSession
 
@@ -433,8 +434,21 @@ class DshAgents(Agents):
         """
         who = event.session_name or event.session_id[:8]
         text = (event.description or "").strip() or "(no text)"
+        # A callback must be readable as a callback: an XML container with the hive, the agent's
+        # runtime name, its session id and a timestamp. The ghost should never mistake it for the
+        # human speaking.
+        container = Message.new(
+            tag="dsh",
+            attributes={
+                "hive": self._hive.name,
+                "agent": who,
+                "session": event.session_id,
+                "engine": self._hive.engine_name,
+            },
+            timestamp=True,
+        ).with_content(text)
         signal = new_notify_signal(
-            f"[dsh {who}] output: {text}",
+            container,
             priority=Priority.NOTICE if bumped else Priority.BACKGROUND,
             next=True,
             description=f"dsh agent {who} finished a turn",
