@@ -24,6 +24,7 @@ from ghoshell_moss.agents.blueprint.agent import (
     AgentSession,
     AgentState,
     MessageMode,
+    Workspace,
 )
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.message import Message
@@ -40,12 +41,14 @@ _MODE_VALUES = {mode.value for mode in MessageMode}
 _INSTRUCTION = """\
 The agents this node holds, addressed by the name each was opened under.
 
-`create_workspace(path, name)` declares a place; `open(name, workspace, preset, readonly)` creates
-an agent in one; `watch(name, session_id)` takes up one that already exists. `send(name, text)` is
-fire-and-forget — it answers `ok` or `failed`, and the reply arrives later as a `dsh` message
-signal. `cancel` stops a turn, `retire` ends a membership, `state` and `presets` are cold reads.
+`open(name, workspace, preset, readonly)` creates one inside a declared workspace;
+`watch(name, session_id)` takes up one that already exists. `send(name, text)` is fire-and-forget —
+it answers `ok` or `failed`, and the reply arrives later as one message tagged with the hive's name —
+the turn's final answer, nothing in between. `cancel` stops a turn (its reason reaches the agent),
+`retire` ends a membership, `state` and `presets` are cold reads.
 
-A workspace is a declared place, not a path; the notice lists the ones declared here.
+Places are declared on the node's own channel (`workspaces` lists them); a path is never an address
+here.
 """
 
 
@@ -65,7 +68,7 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
         running = sum(1 for item in sessions if item.state().phase.value == "running")
         places = ", ".join(space.name or space.id for space in hive.workspaces()) or "(none)"
         return (
-            f"dsh {hive.version} · {len(sessions)} agent(s), {running} running · "
+            f"{hive.name} · {len(sessions)} agent(s), {running} running · "
             f"workspaces: {places}"
         )
 
@@ -82,23 +85,6 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
         await hive.refresh_if_stale()
 
     # -- lifecycle ------------------------------------------------------------------ #
-
-    @chan.build.command(name="create_workspace", blocking=False, always_observe=True)
-    async def _create_workspace(path: str, name: str = "") -> str:
-        """Declare a place inside the hive root — nothing is predefined.
-
-        A workspace is the industry's constraint mechanism: a directory an agent may act inside.
-        Creating one is a runtime act, not something the environment hands you.
-
-        :param path: resolved against the hive root. Outside it is refused, never clamped.
-        :param name: what callers address it by from then on; empty = the engine names it.
-        :return: `ok: <name>`, or `failed: <reason>`.
-        """
-        try:
-            place = await hive.create_workspace(path, name)
-        except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
-        return f"ok: {place.name or place.id}"
 
     @chan.build.command(name="open", blocking=False, always_observe=True)
     async def _open(name: str, workspace: str, preset: str = "", readonly: bool = False) -> str:
@@ -247,16 +233,31 @@ def _agent(agents: Agents, name: str) -> AgentSession:
     return agents.get(name)
 
 
+def workspace_row(item: Workspace) -> str:
+    """One place, as a ghost reads it: what to call it, its id, and the directory it bounds."""
+    name = item.name or item.title or item.id
+    return f"{name} · {item.id} · {item.path}"
+
+
 def _preset_row(item: "AgentPreset") -> str:
     head = f"{item.id} · {item.name}" if item.name else item.id
     return f"{head} — {item.description}" if item.description else head
 
 
 def _row(item: AgentState) -> str:
-    return (
-        f"{item.name} · {item.id} · {item.phase.value} · "
-        f"preset={item.preset or '-'} · {item.cwd or '-'}"
-    )
+    bits = [
+        item.name,
+        item.id,
+        item.phase.value,
+        f"preset={item.preset or '-'}",
+        item.cwd or "-",
+    ]
+    sandbox = (item.config or {}).get("sandbox")
+    if sandbox:
+        # The permission boundary is part of a state read: "what may this agent touch" is not
+        # answerable from cwd alone when the session was created read-only.
+        bits.append(f"sandbox={sandbox}")
+    return " · ".join(bits)
 
 
 def _prompt_messages(text: str, path: str, project_root: str) -> list[Message]:

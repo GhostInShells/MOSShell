@@ -1,7 +1,7 @@
 ---
-name: dsh_v0_2_0
+name: dsh_0_2_0_rc_2
 description: dsh 0.2.0 node — own a dsh web process, show its page as a window, and drive the agents inside it
-category: dsh_swarm
+category: hive
 singleton: true
 exec:
   command: python
@@ -18,6 +18,9 @@ holds the agent sessions you drive through it.
 
 - `status` — home, profile, port, running state, and the page URL.
 - `web_url` — the page URL, including the per-launch token.
+- `workspaces` — the places an agent may be created in: name, id, and the directory each one
+  bounds. `create_workspace(path, name)` declares a new one; nothing is predefined, and a path
+  outside the node's home is refused.
 - `agents` — a child channel holding the agents. It stays **closed** until you open it with
   the parent channel's `mount_child`; then its own commands become available. Opening it is a
   deliberate act, so the node stays small until something is actually being driven.
@@ -27,14 +30,14 @@ holds the agent sessions you drive through it.
 Every agent is addressed by a name you choose.
 
 1. **Declare a place first.** A workspace is a directory inside the node's home, and the only
-   place an agent may act in. `create_workspace(path, name)` declares one — nothing is
-   predefined, and a path outside the node's home is refused.
+   place an agent may act in. It is declared on the node's own channel, not on this one — ask
+   `workspaces` for what exists, `create_workspace` for a new one.
 2. **Open.** `open(name, workspace, preset, readonly)` creates one. `preset` selects the
    composition (empty takes the deployment's default); `readonly` makes it read-only from
    creation, before its first message.
 3. **Talk.** `send(name, text)` is fire-and-forget: it answers `ok` or `failed`, and the answer
-   arrives later as a `dsh` message signal carrying the agent's name, its session and a
-   timestamp — a callback, not something you said.
+   arrives later as one message tagged with the hive's name, carrying the agent's name and a
+   timestamp — the turn's final answer, and nothing in between.
 4. **End.** `cancel` stops the turn in flight; `retire` ends the membership. `state` and
    `presets` are the cold reads; the notice carries only the roster.
 

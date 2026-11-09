@@ -37,7 +37,7 @@ accepts and returns; what came out arrives as events. The synchronous convenienc
 **Two observation faces, and they are not the same thing.** *Lifecycle events* feed the
 observability surface: one event per position, never a chunk delta, with the engine's own
 ``event_name`` passed through untouched and the layer's own ``phase`` as the only vocabulary it
-owns. *The output face* (``on_output``) is the precise field a ghost needs: the turn's final answer
+owns. *The turn-end face* (``on_turn_end``) is the precise field a ghost needs: the turn's answer
 as plain text. Conflating them is how a lifecycle stream gets mistaken for a return value.
 
 **What is deliberately absent.** No ops, no commits (nothing parses a reply's first line); no
@@ -401,15 +401,16 @@ class AgentSession(ABC):
         """
 
     @abstractmethod
-    def on_output(
+    def on_turn_end(
         self,
         callback: Callable[[str, AgentSessionEvent], Awaitable[None] | None],
     ) -> Callable[[], None]:
-        """Observe finished answers: ``(final_answer, event)`` per output.
+        """Observe the end of a turn: ``(final_answer, event)``, **once per turn**.
 
-        The one precise field a ghost needs — the turn's final answer as **plain text** — paired
-        with the event that carried it, so a caller can tell where the text came out without
-        reading ``payload`` and without knowing the engine.
+        Deliberately not "every message the model emits". A turn that uses tools produces several
+        assistant messages — the preamble, then the calls — and only the last one is the answer.
+        Process data belongs to ``on_session_event``; this face promises exactly one thing per
+        turn, as **plain text**, so a caller never has to guess which message counted.
         """
 
 

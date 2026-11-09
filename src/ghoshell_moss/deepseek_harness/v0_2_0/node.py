@@ -33,6 +33,7 @@ from ghoshell_dsh.v0_2_0.install import install_plugin, installed_patch
 from ghoshell_dsh.v0_2_0.launcher import DshLauncher, DshLauncherConfig, resolve_dsh_binary
 
 from ghoshell_moss.contracts.subprocesses import Subprocesses
+from ghoshell_moss.deepseek_harness.v0_2_0.channel import workspace_row
 from ghoshell_moss.deepseek_harness.v0_2_0.hive import DshHive
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel, new_prime_channel
@@ -205,13 +206,25 @@ class DshNodeRuntime:
         ]
         return "\n".join(lines)
 
-    def notice(self) -> str:
+    def notice(self, name: str = "") -> str:
+        """The one-line self-description. ``name`` is the hive's, i.e. this node's own name.
+
+        The name already carries the engine version by convention (``dsh_0_2_0_rc_2``), so the
+        notice does not repeat it: one identity, stated once, in the same words the channel path
+        and every callback use.
+        """
         running = self._launcher is not None and self._launcher.is_running()
         state = "running" if running else "stopped"
-        return f"dsh {DSH_VERSION} · {state} · :{self.port} · home {self._root.name}"
+        head = name or f"dsh {DSH_VERSION}"
+        return f"{head} · {state} · :{self.port} · home {self._root.name}"
 
 
-def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None) -> PrimeChannel:
+def new_dsh_node_channel(
+    runtime: DshNodeRuntime,
+    hive: "DshHive | None" = None,
+    *,
+    name: str = CHANNEL_NAME,
+) -> PrimeChannel:
     """The node's own channel — and the parent that *owns* the agents organ.
 
     ``gate=True`` declares the agents channel without mounting it. The framework already ships the
@@ -220,13 +233,13 @@ def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None)
     """
     chan = new_prime_channel(
         gate=True,
-        name=CHANNEL_NAME,
-        description="dsh node — one dsh web process, its page as a window, and the agents it holds.",
+        name=name,
+        description="a dsh hive — one dsh web process, its page as a window, and the agents it holds.",
     )
 
     @chan.build.notice
     def _notice() -> str:
-        line = runtime.notice()
+        line = runtime.notice(name)
         if hive is not None:
             # One number, and only one: whether opening the child is worth an action.
             line += f" · agents: {len(hive.agents().list_sessions())}"
@@ -239,6 +252,8 @@ def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None)
             "holds the agent sessions you drive through it.\n\n"
             "- `status` — home, profile, port, running state, page URL.\n"
             "- `web_url` — the page URL, token included.\n"
+            "- `workspaces` — the declared places an agent may be created in, each with the "
+            "directory it bounds. `create_workspace(path, name)` declares a new one.\n"
             "- `agents` — the agents, as a child channel. It stays closed until `mount_child` "
             "opens it; open it when you actually need to drive one."
         )
@@ -250,6 +265,40 @@ def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None)
         def _children() -> dict[str, MutableChannel]:
             # Declared, not mounted: the catalog. Mounting is the command below.
             return {"agents": agents_channel} if agents_channel is not None else {}
+
+    @chan.build.command(name="workspaces", blocking=False, always_observe=True)
+    async def _workspaces() -> str:
+        """Cold read: the declared places, each with the directory it bounds.
+
+        A place is the permission boundary an agent acts inside, so the path is part of the answer,
+        not decoration — and the id is what `open` resolves behind the name.
+        """
+        if hive is None:
+            return "failed: this node holds no agents runtime"
+        places = hive.workspaces()
+        if not places:
+            return "(no workspaces)"
+        return "\n".join(workspace_row(item) for item in places)
+
+    @chan.build.command(name="create_workspace", blocking=False, always_observe=True)
+    async def _create_workspace(path: str, name: str = "") -> str:
+        """Declare a place inside the node's home — nothing is predefined.
+
+        A workspace is a directory an agent may act inside; creating one is a runtime act, not
+        something the environment hands you. The call returns only after the engine has reported
+        the place back, so a following `open` can use it immediately.
+
+        :param path: resolved against the node's home. Outside it is refused, never clamped.
+        :param name: what callers address it by from then on; empty = the engine names it.
+        :return: `ok: <name> · <id>`, or `failed: <reason>`.
+        """
+        if hive is None:
+            return "failed: this node holds no agents runtime"
+        try:
+            place = await hive.create_workspace(path, name)
+        except Exception as exc:  # noqa: BLE001 — a refused place is a fact, not a crash
+            return f"failed: {exc}"
+        return f"ok: {place.name or place.id} · {place.id}"
 
     @chan.build.command(name="status", blocking=False, always_observe=True)
     async def _status() -> str:
@@ -302,15 +351,19 @@ async def main(matrix: Matrix) -> None:
     print(f"[dsh-node] home: {runtime.root}", flush=True)
     print(f"[dsh-node] dsh web: {url}", flush=True)
 
+    # The node's name comes from its own declaration (``NODE.md`` -> the cell), never from the
+    # alias a launcher happened to pick: one name for the declaration, the channel and every
+    # callback, so a result can always be walked back to the thing that produced it.
+    hive_name = getattr(matrix.this, "name", "") or CHANNEL_NAME
     hive = DshHive(
         runtime.launcher,
-        name=CHANNEL_NAME,
+        name=hive_name,
         root=matrix.project_home,
         # The signal channel belongs to the Matrix session; the hive only holds it.
         send_signal=matrix.session.add_signal,
         logger=matrix.logger,
     )
-    channel = new_dsh_node_channel(runtime, hive)
+    channel = new_dsh_node_channel(runtime, hive, name=hive_name)
     try:
         async with hive:
             await hive.refresh_if_stale()

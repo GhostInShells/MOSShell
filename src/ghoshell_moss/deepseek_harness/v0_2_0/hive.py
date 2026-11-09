@@ -20,6 +20,7 @@ them, and the channel's meta refresh is what calls it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from contextlib import AsyncExitStack
@@ -60,8 +61,21 @@ __all__ = ["DshAgents", "DshHive"]
 SignalSender = Callable[[Any], None]
 """How a signal reaches the ghost — injected, so this module never imports Matrix."""
 
+_SNAPSHOT_WAIT = 5.0
+"""How long ``open`` waits for the follow snapshot before falling back to an RPC read."""
+
 _REFRESH_TTL = 30.0
 """How long the cached declared places/templates stay good enough to read without asking again."""
+
+
+def _to_workspace(view: Any) -> Workspace:
+    """The engine's workspace row → this layer's model. One conversion, one place."""
+    return Workspace(
+        id=view.workspaceId,
+        name=view.title or Path(view.path).name,
+        path=view.path,
+        title=view.title,
+    )
 
 
 class DshHive(Hive):
@@ -155,7 +169,10 @@ class DshHive(Hive):
             if ref in (item.name, item.id, item.title):
                 return item
         known = ", ".join(item.name or item.id for item in self._workspaces) or "(none)"
-        raise KeyError(f"dsh hive {self._name}: no workspace named {ref!r}; declared: {known}")
+        raise KeyError(
+            f"dsh hive {self._name}: no workspace named {ref!r} inside root {self._root}; "
+            f"declared here: {known}"
+        )
 
     async def create_workspace(self, path: str, name: str = "") -> Workspace:
         """Declare a place inside ``root`` — resolved against it, and refused outside it.
@@ -174,24 +191,37 @@ class DshHive(Hive):
         # A declared place has to exist to be a boundary; dsh refuses a path that does not. The
         # hive owns everything under its root, so creating the directory is part of declaring it.
         target.mkdir(parents=True, exist_ok=True)
-        value = await self._connection.client.remote("workspace/create", {"path": str(target)})
-        workspace = (value.get("workspace") or {}) if isinstance(value, dict) else {}
-        workspace_id = str(workspace.get("workspaceId") or "")
-        if name and workspace_id:
-            await self._connection.client.remote(
-                "workspace/rename", {"workspaceId": workspace_id, "title": name}
+        # The engine's own answer is authoritative for *what was created*; the follow stream is
+        # what keeps the list live. `create_workspace` waits for the frame and falls back to the
+        # receipt, so nothing here has to re-read a possibly stale list.
+        view, _created = await self._connection.create_workspace(str(target))
+        if name and view.title != name:
+            view = await self._connection.rename_workspace(view.workspaceId, name)
+        workspace = _to_workspace(view)
+        self._remember(workspace)
+        return workspace
+
+    def _owns(self, workspace: Workspace) -> bool:
+        """Whether this place is inside the hive's root — the edge of what it may hand out."""
+        if not workspace.path:
+            return False
+        try:
+            Path(workspace.path).expanduser().resolve().relative_to(self._root)
+        except ValueError:
+            self._logger.debug(
+                "dsh hive %s: ignoring workspace %s — outside root %s",
+                self._name, workspace.path, self._root,
             )
-        await self.refresh(force=True)
-        if name:
-            for item in self._workspaces:
-                if item.id == workspace_id:
-                    return item
-        return Workspace(
-            id=workspace_id,
-            name=name or workspace.get("title") or target.name,
-            path=str(workspace.get("path") or target),
-            title=str(workspace.get("title") or ""),
-        )
+            return False
+        return True
+
+    def _remember(self, workspace: Workspace) -> None:
+        """Upsert one place into the cached list — the mutation's answer lands here at once."""
+        for index, item in enumerate(self._workspaces):
+            if item.id == workspace.id:
+                self._workspaces[index] = workspace
+                return
+        self._workspaces.append(workspace)
 
     # -- the runtime --------------------------------------------------------------- #
 
@@ -205,14 +235,13 @@ class DshHive(Hive):
         if not force and (time.monotonic() - self._refreshed_at) < ttl:
             return
         self._refreshed_at = time.monotonic()
+        # A place is this hive's only if it lives inside the hive's root. The engine's list is
+        # global — a node's dsh may carry a default workspace somewhere else on the machine — and
+        # handing that out would give an agent a boundary this hive never granted.
         self._workspaces = [
-            Workspace(
-                id=item.workspaceId,
-                name=item.title or Path(item.path).name,
-                path=item.path,
-                title=item.title,
-            )
-            for item in await self._connection.workspaces()
+            workspace
+            for workspace in (_to_workspace(view) for view in await self._connection.workspaces())
+            if self._owns(workspace)
         ]
         roster = await self._surface.presets()
         self._presets = [
@@ -241,6 +270,7 @@ class DshAgents(Agents):
         self._agents: dict[SessionName, DshAgentSession] = {}
         self._hooks: list[EventHook] = []
         self._tasks: dict[SessionName, asyncio.Task] = {}
+        self._subs: dict[SessionName, Callable[[], None]] = {}
         self._fresh: set[SessionName] = set()
         self._started = False
 
@@ -321,21 +351,33 @@ class DshAgents(Agents):
         if not await self._session_exists(session_id):
             raise KeyError(f"dsh agents: no session {session_id!r} exists to watch")
         agent = await self._attach(session_id, name=name, bumped=True)
-        preset_id = await agent.engine_session.agent_preset(force=True) or ""
+        preset_id = await agent.engine_session.agent_preset() or ""
         if preset_id:
             agent.prime(preset=preset_id)
             agent._preset = self._preset_snapshot(preset_id)  # noqa: SLF001 — the snapshot is ours
         return agent
 
     async def retire(self, name: SessionName, reason: str = "") -> None:
+        """End an agent's membership by stopping the runtime that carries it.
+
+        There is no separate "close the session" step here on purpose: the task **is** the runtime,
+        so cancelling it stops the session, drops the subscriptions and takes it off the roster —
+        all in one place, in one order.
+        """
         agent = self._agents.get(name)
         if agent is None:
             raise NameError(f"dsh agents: no agent named {name!r}")
-        await agent.close()
-        self._agents.pop(name, None)
-        task = self._tasks.pop(name, None)
+        if reason:
+            with contextlib.suppress(Exception):
+                await agent.cancel(reason)
+        task = self._tasks.get(name)
         if task is not None and not task.done():
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        else:
+            await agent.close()
+            self._discord(name, agent)
         self._hive.logger.info("dsh agents: retired %s (%s)", name, reason or "-")
 
     async def clear(self) -> None:
@@ -365,6 +407,10 @@ class DshAgents(Agents):
         # The session is a lifecycle object: `__aenter__` starts the consume loop that turns
         # follow frames into dispatched events. Without it the stream is alive and silent.
         await session.__aenter__()
+        # ...and the constant facts (cwd / preset) arrive as the follow snapshot, not as part of
+        # create. Wait for that frame; an RPC for what the stream is already sending is the same
+        # mistake as reading the workspace list right after a mutation.
+        await session.wait_follow_snapshot(timeout=_SNAPSHOT_WAIT)
         agent = DshAgentSession(
             session,
             hive=self._hive.name,
@@ -377,24 +423,57 @@ class DshAgents(Agents):
         )
         if not cwd:
             try:
-                cwd = await session.cwd(force=True) or ""
+                cwd = await session.cwd() or ""
             except Exception:  # noqa: BLE001 — an unknown cwd is not a reason to refuse a session
                 cwd = ""
         agent.prime(preset=preset, cwd=cwd, workspace_id=workspace_id)
         self._agents[name] = agent
         if bumped:
             self._fresh.add(name)
+        # The subscription belongs to the runtime task's lifetime, not to the caller's: `_discord`
+        # drops it, and `_govern` calls `_discord` however the task ends.
+        self._subs[name] = agent.on_turn_end(self._turn_end_hook(name))
         # One task per session: the task *is* the agent's lifetime. When the carrier closes, the
         # task wakes and the roster follows — a dead task can never look like a live agent.
         self._tasks[name] = asyncio.create_task(self._govern(name, agent))
         return agent
 
     async def _govern(self, name: SessionName, agent: DshAgentSession) -> None:
-        await agent.wait_closed()
-        held = self._agents.get(name)
-        if held is agent:
+        """The agent's runtime task — one session, owned for its whole life.
+
+        Stopping this task **is** stopping the session: a cancelled task becomes
+        ``cancel(reason)`` + ``close()``, so no carrier is ever left running with nobody holding
+        it. Whichever way it ends, the subscriptions go with it — after this task returns, nothing
+        that session emits can reach a caller.
+        """
+        try:
+            await agent.wait_closed()
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await agent.cancel("the agent's runtime was stopped")
+            with contextlib.suppress(Exception):
+                await agent.close()
+            raise
+        finally:
+            self._discord(name, agent)
+
+    def _discord(self, name: SessionName, agent: DshAgentSession) -> None:
+        """Cut every subscription this agent had, and take it off the roster.
+
+        "Discord" is the whole point of an orderly end: a closed session can still have frames
+        queued behind it, and a hook that survives would deliver them to a caller who believes the
+        agent is gone. Unsubscribing first is what makes "closed" mean "silent".
+        """
+        disposer = self._subs.pop(name, None)
+        if disposer is not None:
+            try:
+                disposer()
+            except Exception:  # noqa: BLE001 — a broken disposer must not block the teardown
+                pass
+        if self._agents.get(name) is agent:
             self._agents.pop(name, None)
         self._tasks.pop(name, None)
+        self._fresh.discard(name)
 
     def _preset_snapshot(self, preset_id: str) -> AgentPreset:
         """The declaration as it stands now — the snapshot a session keeps for its lifetime."""
@@ -420,44 +499,48 @@ class DshAgents(Agents):
                 hook(event)
             except Exception:  # noqa: BLE001 — one bad subscriber must not stop the others
                 continue
-        if event.phase.value == "output" and self._hive.send_signal is not None:
-            bumped = event.session_name in self._fresh
-            self._fresh.discard(event.session_name)
-            self._signal_output(event, bumped)
 
-    def _signal_output(self, event: AgentSessionEvent, bumped: bool = False) -> None:
-        """Every output reaches the ghost as a notify that is guaranteed a turn.
 
-        ``next=True`` for all of them: an answer that loses the arbitration is an answer the ghost
-        never learns about. The level starts at BACKGROUND and only an agent's first turn — the one
-        a creating command just asked for — is raised, capped at NOTICE.
+    def _turn_end_hook(self, name: SessionName) -> Callable[[str, AgentSessionEvent], None]:
+        """The callback for one agent — bound to its name, so the signal can address it back."""
+
+        def _hook(text: str, event: AgentSessionEvent) -> None:
+            self._signal_answer(name, text)
+
+        return _hook
+
+    def _signal_answer(self, name: SessionName, text: str) -> None:
+        """Deliver one agent's turn end as a callback addressed by the hive's name.
+
+        The container carries only what is needed to walk back to the source: the hive (as the tag
+        — and the hive's name is the node's name), the agent's runtime name, and a timestamp.
+        Nothing else. Not the session id: that is the engine's internal handle, and a name can
+        outlive it, so carrying one only invites a stale one to be trusted.
+
+        ``next=True`` on every one of them — an answer that loses the arbitration is an answer the
+        ghost never learns about. The level starts at BACKGROUND; only an agent's first turn after
+        ``open``/``watch`` is raised, capped at NOTICE.
         """
-        who = event.session_name or event.session_id[:8]
-        text = (event.description or "").strip() or "(no text)"
-        # A callback must be readable as a callback: an XML container with the hive, the agent's
-        # runtime name, its session id and a timestamp. The ghost should never mistake it for the
-        # human speaking.
+        sender = self._hive.send_signal
+        if sender is None or not text.strip():
+            return
+        first = name in self._fresh
+        self._fresh.discard(name)
         container = Message.new(
-            tag="dsh",
-            attributes={
-                "hive": self._hive.name,
-                "agent": who,
-                "session": event.session_id,
-                "engine": self._hive.engine_name,
-            },
+            tag=self._hive.name,
+            attributes={"agent": name},
             timestamp=True,
         ).with_content(text)
         signal = new_notify_signal(
             container,
-            priority=Priority.NOTICE if bumped else Priority.BACKGROUND,
+            priority=Priority.NOTICE if first else Priority.BACKGROUND,
             next=True,
-            description=f"dsh agent {who} finished a turn",
-            hint="output",
+            description=f"{self._hive.name} · {name} ended a turn",
         )
         try:
-            self._hive.send_signal(signal)
+            sender(signal)
         except Exception:  # noqa: BLE001 — a signal that cannot be sent must not kill the stream
-            self._hive.logger.debug("dsh agents: output signal dropped", exc_info=True)
+            self._hive.logger.debug("dsh agents: turn-end signal dropped", exc_info=True)
 
 
 # The patch surface below is dsh 0.2.0's own: engine knowledge, kept in the implementation.

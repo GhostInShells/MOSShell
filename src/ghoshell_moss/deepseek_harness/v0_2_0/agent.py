@@ -11,6 +11,7 @@ exist, it belongs to the layer above this one.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -91,7 +92,8 @@ class DshAgentSession(AgentSession):
         self._preset = preset if preset is not None else AgentPreset(id="")
         self._on_event = on_event
         self._event_hooks: list[EventHook] = []
-        self._output_hooks: list[Callable[[str, AgentSessionEvent], Any]] = []
+        self._turn_end_hooks: list[Callable[[str, AgentSessionEvent], Any]] = []
+        self._turn_answer: tuple[str, bool] | None = None
         self._disposers: list[Callable[[], None]] = []
         self._closed = False
         self._closed_event = asyncio.Event()
@@ -169,12 +171,16 @@ class DshAgentSession(AgentSession):
             self._emit(AgentPhase.running, event_type(event), "")
 
         async def _on_assistant(event: AssistantMessageEvent) -> None:
+            # A step's message is only a *candidate*: it becomes the turn's answer only if the turn
+            # ends right here. Nothing is published — a step is working, and the trace says so.
             text = assistant_text(event)
-            payload = {"text": text, "message": event.model_dump(mode="json")}
-            item = self._emit(AgentPhase.output, event_type(event), _preview(text), payload)
-            self._update(phase=AgentPhase.idle)
-            for hook in list(self._output_hooks):
-                _call(hook, text, item)
+            self._turn_answer = (text, is_final_answer(event))
+            self._emit(
+                AgentPhase.running,
+                event_type(event),
+                _preview(text),
+                {"text": text, "message": event.model_dump(mode="json")},
+            )
 
         async def _on_tool_call(event: ToolCallEvent) -> None:
             name = getattr(event, "name", "") or getattr(event, "tool", "")
@@ -184,8 +190,21 @@ class DshAgentSession(AgentSession):
             self._emit(AgentPhase.tool_use, event_type(event), "", event.model_dump(mode="json"))
 
         async def _on_turn_end(event: TurnEnd) -> None:
-            self._update(phase=AgentPhase.idle)
+            # The turn is the unit of delivery: whatever the last step said *is* the answer, and
+            # it leaves here whole — the event's own description carries the text, not a preview.
+            answer, self._turn_answer = self._turn_answer, None
             reason = getattr(getattr(event, "reason", None), "kind", "") or ""
+            self._update(phase=AgentPhase.idle)
+            if answer is not None and answer[1] and answer[0].strip():
+                text = answer[0]
+                item = self._emit(
+                    AgentPhase.output,
+                    event_type(event),
+                    text,
+                    {"text": text, "reason": reason},
+                )
+                for hook in list(self._turn_end_hooks):
+                    _call(hook, text, item)
             self._emit(AgentPhase.idle, event_type(event), reason)
 
         self._disposers = [
@@ -232,12 +251,12 @@ class DshAgentSession(AgentSession):
 
         return _dispose
 
-    def on_output(self, callback: Callable[[str, AgentSessionEvent], Any]) -> Callable[[], None]:
-        self._output_hooks.append(callback)
+    def on_turn_end(self, callback: Callable[[str, AgentSessionEvent], Any]) -> Callable[[], None]:
+        self._turn_end_hooks.append(callback)
 
         def _dispose() -> None:
-            if callback in self._output_hooks:
-                self._output_hooks.remove(callback)
+            if callback in self._turn_end_hooks:
+                self._turn_end_hooks.remove(callback)
 
         return _dispose
 
@@ -255,6 +274,16 @@ class DshAgentSession(AgentSession):
         await self._session.prompt(content=content, mode=_PROMPT_MODE[mode])
 
     async def cancel(self, reason: str = "") -> None:
+        """Stop the turn in flight. ``reason`` is for the agent, not just for a log.
+
+        The engine's cancel carries no text, so the reason travels the only way a model can read
+        it: as an injected system reminder, claimed at the next step boundary.
+        """
+        if reason:
+            with contextlib.suppress(Exception):
+                await self._session.inject(
+                    f"<system_reminder>{reason}</system_reminder>", wait="accepted"
+                )
         await self._session.cancel()
 
     async def configure(self, patch: dict[str, Any]) -> str:
@@ -297,7 +326,7 @@ class DshAgentSession(AgentSession):
         self._disposers.clear()
         self._emit(AgentPhase.closed, "session/closed")
         self._event_hooks.clear()
-        self._output_hooks.clear()
+        self._turn_end_hooks.clear()
         try:
             await self._session.close()
         finally:
@@ -364,6 +393,29 @@ def blocks_text(blocks: Any) -> str:
     return "\n".join(parts).strip()
 
 
+_TOOL_CALL_BLOCK = "tool-call"
+"""dsh's content block type for a requested tool call (see ``ContentBlock``)."""
+
+
+def is_final_answer(event: AssistantMessageEvent) -> bool:
+    """Whether this step's message is the turn's answer rather than a preamble to tool calls.
+
+    dsh emits **one assistant message per step**, so a turn that uses tools produces several: the
+    prose that explains what it is about to do, then the calls, then (finally) the answer. Only the
+    step that asks for nothing more is the answer; the rest is working. Reading the block types is
+    what separates them — a role check cannot, and neither can "it has text".
+    """
+    message = getattr(event, "message", None)
+    blocks = getattr(message, "content", None)
+    if not isinstance(blocks, list):
+        return False
+    for block in blocks:
+        kind = getattr(block, "type", "") or (block.get("type") if isinstance(block, dict) else "")
+        if kind == _TOOL_CALL_BLOCK:
+            return False
+    return bool(blocks_text(blocks))
+
+
 def assistant_text(event: AssistantMessageEvent) -> str:
     """The assistant's prose for this turn — text blocks only.
 
@@ -371,7 +423,7 @@ def assistant_text(event: AssistantMessageEvent) -> str:
     decides "what counts as the answer".
 
     Reasoning and tool traffic travel in the same message; they are the agent's working, not its
-    answer, so they never reach ``on_output`` or a signal.
+    answer, so they never reach ``on_turn_end`` or a signal.
     """
     message = getattr(event, "message", None)
     if message is None:
