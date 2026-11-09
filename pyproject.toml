@@ -59,6 +59,8 @@ ghost = [
     "pydantic-ai-slim[anthropic,openai]>=1.90.0",
     "anthropic>=0.84.0",
 ]
+# dsh engine — the multi-version wrapper behind deepseek_harness
+dsh = ["ghoshell-dsh"]
 
 # Bridges — optional transport backends
 zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
@@ -133,6 +135,7 @@ members = ["packages/ghoshell-agent-swarm", "packages/ghoshell-processes", "pack
 [tool.uv.sources]
 # 本地 workspace 依赖: 不发包, 由 uv 以 workspace 成员解析.
 ghoshell-processes = { workspace = true }
+ghoshell-dsh = { workspace = true }
 
 
 [dependency-groups]

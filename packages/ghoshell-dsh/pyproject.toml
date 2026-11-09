@@ -6,10 +6,19 @@ authors = [{ name = "thirdgerb" }]
 license = { text = "MIT" }
 requires-python = ">=3.10"
 
-# One dependency, and it is a mechanism layer, not MOSShell: child-process governance comes
-# from `ghoshell-processes` in this workspace. Nothing here imports `ghoshell-moss` — the
-# MOSS-facing pieces (channel, message mapper, runtime) live there, not here.
-dependencies = ["ghoshell-processes"]
+# Two kinds of dependency, both mechanism layers: child-process governance comes from
+# `ghoshell-processes` in this workspace; the transport and models are declared here because
+# this package imports them directly (httpx / websockets for the web wire, pydantic and
+# typing-extensions for the models, pyyaml for the anchor artifact). Nothing here imports
+# `ghoshell-moss` — the MOSS-facing pieces (channel, message mapper, runtime) live there.
+dependencies = [
+    "ghoshell-processes",
+    "httpx>=0.28.0",
+    "websockets>=15.0.1",
+    "pydantic>=2.7.0",
+    "typing-extensions>=4.12.0",
+    "pyyaml>=6.0",
+]
 
 [tool.uv.sources]
 ghoshell-processes = { workspace = true }
