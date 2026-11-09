@@ -10,6 +10,7 @@ exist, it belongs to the layer above this one.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
@@ -26,6 +27,7 @@ from ghoshell_dsh.v0_2_0.types.session_events import (
 
 from ghoshell_moss.agents.blueprint.agent import (
     AgentPhase,
+    AgentPreset,
     AgentSession,
     AgentSessionEvent,
     AgentState,
@@ -75,7 +77,8 @@ class DshAgentSession(AgentSession):
         *,
         hive: str,
         engine: str,
-        alias: str = "",
+        name: str = "",
+        preset: "AgentPreset | None" = None,
         title: str = "",
         cwd: str = "",
         workspace_id: str = "",
@@ -84,14 +87,17 @@ class DshAgentSession(AgentSession):
         self._session = session
         self._hive = hive
         self._engine = engine
-        self._alias = alias
+        self._name = name
+        self._preset = preset if preset is not None else AgentPreset(id="")
         self._on_event = on_event
         self._event_hooks: list[EventHook] = []
         self._output_hooks: list[Callable[[str, AgentSessionEvent], Any]] = []
         self._disposers: list[Callable[[], None]] = []
         self._closed = False
+        self._closed_event = asyncio.Event()
         self._state = AgentState(
             id=session.session_id,
+            name=name,
             title=title,
             preset="",
             cwd=cwd,
@@ -102,9 +108,18 @@ class DshAgentSession(AgentSession):
     # -- identity -------------------------------------------------------------- #
 
     @property
-    def alias(self) -> str:
-        """The runtime alias this session was opened under; empty when it has none."""
-        return self._alias
+    def preset(self) -> "AgentPreset":
+        """The preset as it was when this carrier was created — a snapshot, never a lookup."""
+        return self._preset
+
+    async def wait_closed(self) -> None:
+        """Resolve when this carrier has been closed. The hook a supervisor task waits on."""
+        await self._closed_event.wait()
+
+    @property
+    def name(self) -> str:
+        """The runtime name this session was opened under — the address its collection uses."""
+        return self._name
 
     @property
     def session_id(self) -> str:
@@ -193,6 +208,7 @@ class DshAgentSession(AgentSession):
             hive=self._hive,
             engine=self._engine,
             session_id=self._state.id,
+            session_name=self._state.name,
             preset=self._state.preset,
             event_name=name,
             description=description,
@@ -286,11 +302,22 @@ class DshAgentSession(AgentSession):
             await self._session.close()
         finally:
             self._update(phase=AgentPhase.closed)
+            self._closed_event.set()
 
     # -- state priming (called by the hive after the engine answers) -------------------- #
 
-    def prime(self, *, title: str = "", preset: str = "", cwd: str = "", workspace_id: str = "") -> None:
+    def prime(
+        self,
+        *,
+        title: str = "",
+        preset: str = "",
+        cwd: str = "",
+        workspace_id: str = "",
+        readonly: bool = False,
+    ) -> None:
         """Fill the structural facts once, from the engine's own answer."""
+        if readonly:
+            self._update(config={**self._state.config, "sandbox": "read-only"})
         self._update(
             title=title or self._state.title,
             preset=preset or self._state.preset,

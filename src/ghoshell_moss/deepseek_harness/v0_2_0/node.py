@@ -22,6 +22,7 @@ only.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ from ghoshell_dsh.v0_2_0.install import install_plugin, installed_patch
 from ghoshell_dsh.v0_2_0.launcher import DshLauncher, DshLauncherConfig, resolve_dsh_binary
 
 from ghoshell_moss.contracts.subprocesses import Subprocesses
+from ghoshell_moss.deepseek_harness.v0_2_0.hive import DshHive
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
@@ -129,18 +131,25 @@ class DshNodeRuntime:
         port: int = DEFAULT_PORT,
         subprocesses: Subprocesses | None = None,
         title: str = DEFAULT_TITLE,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._root = Path(root).expanduser().resolve()
         self._profile = profile
         self._port = int(port)
         self._title = title
         self._subprocesses = subprocesses
+        self._logger = logger or logging.getLogger("moss.dsh_node")
         self._launcher: DshLauncher | None = None
         self._url: str = ""
 
     @property
     def root(self) -> Path:
         return self._root
+
+    @property
+    def launcher(self) -> "DshLauncher | None":
+        """The live launcher once started — the connection the hive is built on."""
+        return self._launcher
 
     @property
     def title(self) -> str:
@@ -251,7 +260,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def main(matrix: Matrix) -> None:
-    """The cell main: start dsh, announce its page, serve the channel until closed."""
+    """The cell main: start dsh, serve the channel, announce its page — governed by the Matrix.
+
+    Every dependency comes from the Matrix container rather than from this file: the subprocess
+    manager, the logger, and the signal channel. The hive's runtime is entered inside the same
+    ``async with``, so the node's own lifetime governs it (倒挂): when the cell goes down, the
+    agents go down with it, not the other way round.
+    """
     args = parse_args(sys.argv[1:])
     root = Path(args.home).expanduser() if args.home else Path(matrix.home)
     runtime = DshNodeRuntime(
@@ -260,22 +275,38 @@ async def main(matrix: Matrix) -> None:
         port=args.port,
         subprocesses=matrix.processes,
         title=args.title,
+        logger=matrix.logger,
     )
     url = await runtime.start()
     print(f"[dsh-node] home: {runtime.root}", flush=True)
     print(f"[dsh-node] dsh web: {url}", flush=True)
-    await WebViewServer.serve(
-        matrix,
-        WebViewDeclaration(
-            url=url,
-            title=runtime.title,
-            description="the dsh web surface owned by this node",
-            icon="brain",
-        ),
+
+    hive = DshHive(
+        runtime.launcher,
+        name=CHANNEL_NAME,
+        root=matrix.project_home,
+        # The signal channel belongs to the Matrix session; the hive only holds it.
+        send_signal=matrix.session.add_signal,
+        logger=matrix.logger,
     )
     channel = new_dsh_node_channel(runtime)
     try:
-        await matrix.provide_channel(channel)
+        async with hive:
+            await hive.refresh_if_stale()
+            agents_channel = hive.agents().as_channel()
+            if agents_channel is not None:
+                # A sustain child: the node is the address, the agents are its organ.
+                channel.build.import_channels(agents_channel)
+            await WebViewServer.serve(
+                matrix,
+                WebViewDeclaration(
+                    url=url,
+                    title=runtime.title,
+                    description="the dsh web surface owned by this node",
+                    icon="brain",
+                ),
+            )
+            await matrix.provide_channel(channel)
     finally:
         await runtime.close()
         print("[dsh-node] stopped", flush=True)

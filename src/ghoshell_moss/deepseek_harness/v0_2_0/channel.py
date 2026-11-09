@@ -1,64 +1,58 @@
-"""The dsh hive's channel — one place to drive every session, one fragment per session.
+"""The agents channel — a child of its owner's main channel, one fragment per held agent.
 
-Shape, and why it is shaped this way:
+Shape, and why:
 
-- **A single control plane.** Every verb lives on this one channel and takes an address. Splitting
-  verbs across child channels would make the model pick where a verb lives before it can use it;
-  with one flat set of verbs the only thing to know is the address.
-- **Virtual children are the sessions themselves.** Each held session appears as a channel named
-  after its runtime alias (or a short id), carrying nothing but its own identity and state — the
-  addressable half of "who exists". Control stays compressed into the parent.
-- **Named notices are the perception face.** One fragment per session showing only the session id
-  and whether it is running: the only two facts a driver needs on every turn. Anything more
-  detailed is a cold read, pulled when it matters.
-- **Cold reads stay cold.** ``state`` and ``events`` are commands, never notice material — a
-  notice that grows with every session is a notice nobody reads.
+- **A child, not a root.** The node is the address; this is an organ of it. A root channel here
+  would compete with the node for the same name, and the ghost would have two things called `dsh`.
+- **One control plane.** Every verb lives here and takes a name. The agent itself is reached
+  through the collection (`get(name)`) — the channel is an adapter, never a second implementation.
+- **Named notices are the perception face.** One fragment per held agent showing its session id and
+  phase — the only two facts a driver needs every turn. A folded notice cannot express "this agent
+  is gone"; a named fragment can, because omission *is* removal.
+- **Cold reads stay cold.** `state` is a command, never notice material: a notice that grows with
+  every agent is a notice nobody reads.
 """
 
 from __future__ import annotations
 
-import time
+import json
 from pathlib import Path
 
 from ghoshell_moss.agents.blueprint.agent import (
-    AgentPhase,
-    AgentSessionEvent,
+    Agents,
+    AgentSession,
     AgentState,
     MessageMode,
 )
-from ghoshell_moss.core.blueprint.channel_builder import (
-    MutableChannel,
-    new_channel,
-)
+from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.message import Message
 from ghoshell_moss.message.prompt import Prompt
 
-from .hive import DshHive
+from .hive import DshAgents
 
-__all__ = ["new_dsh_hive_channel"]
+__all__ = ["new_agents_channel"]
 
-CHANNEL_NAME = "dsh"
+CHANNEL_NAME = "agents"
 
 _MODE_VALUES = {mode.value for mode in MessageMode}
 
 _INSTRUCTION = """\
-A dsh hive: every session it holds, driven from one place.
+The agents this node holds — every one of them addressed by the name it was opened under.
 
-Address a session by the runtime **name** you gave it, or by its session id — both work.
-Sessions are runtime only: nothing here survives the process, so coming back to one is an explicit
-`attach(session_id=...)`.
+- `open(name, workspace=...)` — create one inside a declared workspace. `watch(name, session_id)`
+  — take up a session that already exists. Names live only at runtime.
+- `send(name, text)` — fire and forget; it answers `ok` or `failed`. The reply arrives later as an
+  output signal.
+- `cancel` / `retire` — stop a turn, or end the membership.
+- `state(name="")` — a cold read; never on the notice.
 
-- `send(to, text)` — fire and forget. It returns only `ok` or `failed`; the answer arrives later
-  as a signal (and in `events`).
-- `open(...)` — create a session from scratch. `attach(session_id=...)` — take up one that already
-  exists. Both take a `name`, which lives only at runtime.
-- `state(to="")` / `events(since=0)` — cold reads for debugging and observation. Never on the notice.
+A workspace is a declared place, not a path. `workspaces` are listed in the notice above.
 """
 
 
-def new_dsh_hive_channel(hive: DshHive) -> MutableChannel:
-    """Build the channel for one hive. Every closure below closes over the same hive."""
-    chan = new_channel(name=CHANNEL_NAME, description="dsh hive — sessions, opened and driven here.")
-    started = time.monotonic()
+def new_agents_channel(agents: DshAgents) -> MutableChannel:
+    hive = agents.hive
+    chan = new_channel(name=CHANNEL_NAME, description="the agents this node holds, by name.")
 
     # -- perception ---------------------------------------------------------------- #
 
@@ -68,147 +62,168 @@ def new_dsh_hive_channel(hive: DshHive) -> MutableChannel:
 
     @chan.build.notice
     def _notice() -> str:
-        sessions = hive.sessions()
-        running = sum(1 for item in sessions if item.phase is AgentPhase.running)
+        sessions = agents.list_sessions()
+        running = sum(1 for item in sessions if item.state().phase.value == "running")
+        places = ", ".join(space.name or space.id for space in hive.workspaces()) or "(none)"
         return (
             f"{hive.engine_name}@{hive.version} · hive {hive.name} · "
-            f"{len(sessions)} session(s), {running} running · "
-            f"{len(hive.presets())} preset(s) · {len(hive.workspaces())} workspace(s)"
+            f"{len(sessions)} agent(s), {running} running · workspaces: {places}"
         )
 
     @chan.build.named_notices
     def _named_notices() -> dict[str, str | None]:
-        notices: dict[str, str | None] = {}
-        for item in hive.sessions():
-            notices[_fragment_name(hive, item)] = f"{item.id} · {item.phase.value}"
-        return notices
+        return {
+            item.name: f"{item.id} · {item.state().phase.value}"
+            for item in agents.list_sessions()
+        }
 
     @chan.build.refresh_meta
     async def _refresh_meta() -> None:
-        # The two cached read faces are filled here, and only when they may have moved: a meta
-        # refresh happens often, and two RPCs per turn would be paid for nothing.
+        # The declared places and templates are cached reads; this is where they are filled.
         await hive.refresh_if_stale()
-
-    @chan.build.virtual_children
-    def _virtual_children() -> dict[str, MutableChannel]:
-        children: dict[str, MutableChannel] = {}
-        for item in hive.sessions():
-            children[_fragment_name(hive, item)] = _session_channel(item)
-        return children
 
     # -- lifecycle ------------------------------------------------------------------ #
 
-    @chan.build.command(name="open", blocking=False, always_observe=True)
-    async def _open(name: str = "", preset: str = "", cwd: str = "", title: str = "") -> str:
-        """Create a session from scratch with the engine's own default preset.
+    @chan.build.command(name="create_workspace", blocking=False, always_observe=True)
+    async def _create_workspace(path: str, name: str = "") -> str:
+        """Declare a place inside the hive root — nothing is predefined.
 
-        :param name: a runtime alias to address it by later. Runtime only — it dies with the process.
-        :param preset: which preset composes the agent (see the hive's preset list); empty = the deployment's default.
-        :param cwd: the directory it may act in — absolute; empty = the engine's default.
-        :param title: a human-facing title, set on the engine side.
-        :return: a receipt naming the new session id.
+        A workspace is the industry's constraint mechanism: a directory an agent may act inside.
+        Creating one is a runtime act, not something the environment hands you.
+
+        :param path: resolved against the hive root. Outside it is refused, never clamped.
+        :param name: what callers address it by from then on; empty = the engine names it.
+        :return: `ok: <name>`, or `failed: <reason>`.
         """
         try:
-            agent = await hive.open(name=name, preset=preset, cwd=cwd, title=title)
-        except Exception as exc:  # noqa: BLE001 — a failed open is a fact, not a crash
-            return f"failed: {exc}"
-        return f"opened {agent.id}" + (f" as {name}" if name else "")
-
-    @chan.build.command(name="attach", blocking=False, always_observe=True)
-    async def _attach(session_id: str, name: str = "") -> str:
-        """Take up a session that already exists — the only way back into one.
-
-        :param session_id: the engine session id, as reported elsewhere.
-        :param name: a runtime alias to address it by later.
-        :return: a receipt confirming the session is now held.
-        """
-        try:
-            agent = await hive.resume(session_id, name=name)
+            place = await hive.create_workspace(path, name)
         except Exception as exc:  # noqa: BLE001
             return f"failed: {exc}"
-        return f"attached {agent.id}" + (f" as {name}" if name else "")
+        return f"ok: {place.name or place.id}"
+
+    @chan.build.command(name="open", blocking=False, always_observe=True)
+    async def _open(name: str, workspace: str, preset: str = "", readonly: bool = False) -> str:
+        """Create an agent inside a declared workspace, under this name.
+
+        :param name: the runtime name to address it by later. Unknown after a restart.
+        :param workspace: a declared place from the notice — its name, id or title. Never a path.
+        :param preset: which preset composes it; empty = the deployment's default.
+        :param readonly: created read-only, before its first message. Not a later patch.
+        :return: `ok: <session id>`, or `failed: <reason>`.
+        """
+        try:
+            agent = await agents.open(name, workspace=workspace, preset=preset, readonly=readonly)
+        except Exception as exc:  # noqa: BLE001 — a failed open is a fact, not a crash
+            return f"failed: {exc}"
+        return f"ok: {agent.id}"
+
+    @chan.build.command(name="watch", blocking=False, always_observe=True)
+    async def _watch(name: str, session_id: str) -> str:
+        """Take up a session that already exists, under this name.
+
+        :param name: the runtime name to address it by from now on.
+        :param session_id: the engine session id to take up.
+        :return: `ok: <session id>`, or `failed: <reason>`.
+        """
+        try:
+            agent = await agents.watch(name, session_id)
+        except Exception as exc:  # noqa: BLE001
+            return f"failed: {exc}"
+        return f"ok: {agent.id}"
 
     # -- driving ---------------------------------------------------------------------- #
 
     @chan.build.command(name="send", blocking=False)
-    async def _send(to: str, text__: str, path: str = "", mode: str = "enqueue") -> str:
-        """Send one message to a session. Returns only `ok` or `failed` — the answer is a signal.
+    async def _send(name: str, text__: str, path: str = "", mode: str = "enqueue") -> str:
+        """Send one message to an agent. Answers `ok` or `failed` — the reply is a signal.
 
-        :param to: the session's runtime name or its session id.
+        :param name: the agent's runtime name.
         :param text__: the message body.
-        :param path: a file under the project home to carry along, written as an `@` reference.
-        :param mode: `enqueue` (run after the current turn) · `inject` (held, does not wake) ·
+        :param path: a file under the project home carried along as an `@` reference.
+        :param mode: `enqueue` (after the current turn) · `inject` (held, does not wake) ·
             `steer` (stop what is running and answer now).
+        :return: `ok`, or `failed: <reason>`.
         """
         if mode not in _MODE_VALUES:
             return f"failed: unknown mode {mode!r}; use one of {sorted(_MODE_VALUES)}"
         try:
-            messages = _prompt_messages(text__, path, hive.project_root)
-            await hive.send(to, *messages, mode=MessageMode(mode))
+            agent = _agent(agents, name)
+            await agent.send(*_prompt_messages(text__, path, hive.project_root), mode=MessageMode(mode))
         except Exception as exc:  # noqa: BLE001 — the two-valued contract
             return f"failed: {exc}"
         return "ok"
 
     @chan.build.command(name="cancel", blocking=False)
-    async def _cancel(to: str, reason: str = "") -> str:
-        """Stop the turn in flight on one session; the queue is kept.
+    async def _cancel(name: str, reason: str = "") -> str:
+        """Stop the turn in flight on one agent; the queue is kept.
 
-        :param to: the session's runtime name or its session id.
+        :param name: the agent's runtime name.
         :param reason: why — travels with the cancellation so a later reader can tell it from a failure.
         """
         try:
-            await hive.cancel(to, reason)
+            await _agent(agents, name).cancel(reason)
         except Exception as exc:  # noqa: BLE001
             return f"failed: {exc}"
         return "ok"
 
     @chan.build.command(name="retire", blocking=False, always_observe=True)
-    async def _retire(to: str) -> str:
-        """Close one session and drop it: the end of its membership.
+    async def _retire(name: str, reason: str = "") -> str:
+        """Close one agent and drop it from the roster — the end of its membership.
 
-        :param to: the session's runtime name or its session id.
+        :param name: the agent's runtime name.
+        :param reason: why it is ending.
         """
         try:
-            await hive.retire(to)
+            await agents.retire(name, reason)
         except Exception as exc:  # noqa: BLE001
             return f"failed: {exc}"
         return "ok"
 
+    @chan.build.command(name="configure", blocking=False, always_observe=True)
+    async def _configure(name: str, text__: str) -> str:
+        """Patch one agent's runtime settings. The body is a JSON object.
+
+        :param name: the agent's runtime name.
+        :param text__: a JSON object; an omitted field keeps its current value.
+            {
+              "llm": {
+                "provider": "deepseek-official",
+                "model": "deepseek-flash",
+                "reasoningEffort": "off" | "low" | "high" | "max"
+              },
+              "sandbox": "read-only" | "workspace-write",
+              "approval": "ask" | "never"
+            }
+        :return: what is now in force, or `failed: <reason>`.
+        """
+        try:
+            patch = json.loads(text__ or "{}")
+        except Exception as exc:  # noqa: BLE001
+            return f"failed: the body is not JSON: {exc}"
+        if not isinstance(patch, dict):
+            return "failed: the body must be a JSON object"
+        try:
+            return await _agent(agents, name).configure(patch)
+        except Exception as exc:  # noqa: BLE001
+            return f"failed: {exc}"
+
     # -- cold reads --------------------------------------------------------------------- #
 
     @chan.build.command(name="state", blocking=False, always_observe=True)
-    async def _state(to: str = "") -> str:
-        """Cold read: one session's state, or every held session. Never on the notice.
+    async def _state(name: str = "") -> str:
+        """Cold read: one agent's state, or every held agent. Never on the notice.
 
-        :param to: a name or session id; empty = list every session this hive holds.
+        :param name: the agent's runtime name; empty = list everything held.
         """
-        if not to:
-            items = hive.sessions()
-            if not items:
-                return "(no sessions)"
-            return "\n".join(_row(item) for item in items)
-        item = hive.session(to)
-        if item is None:
-            return f"failed: no session {to!r}"
-        return _row(item.state())
-
-    @chan.build.command(name="events", blocking=False, always_observe=True)
-    async def _events(since: int = 0) -> str:
-        """Cold read: the event tail across every session, newest last.
-
-        :param since: the cursor returned by the previous call; 0 starts from the oldest event kept.
-        :return: one line per event, then the cursor to pass next time.
-        """
-        items, cursor = hive.events(since)
-        if not items:
-            return f"(no events) cursor={cursor}"
-        lines = [
-            f"{item.session_id[:8]} · {item.phase.value} · {item.event_name} · "
-            f"{(item.description or '').strip()[:120]}"
-            for item in items
-        ]
-        lines.append(f"cursor={cursor}")
-        return "\n".join(lines)
+        try:
+            if not name:
+                sessions = agents.list_sessions()
+                if not sessions:
+                    return "(no agents)"
+                return "\n".join(_row(item.state()) for item in sessions)
+            return _row(_agent(agents, name).state())
+        except Exception as exc:  # noqa: BLE001
+            return f"failed: {exc}"
 
     return chan
 
@@ -218,32 +233,18 @@ def new_dsh_hive_channel(hive: DshHive) -> MutableChannel:
 # --------------------------------------------------------------------------- #
 
 
-def _fragment_name(hive: DshHive, item: AgentState) -> str:
-    """A stable, tag-safe key for one session — the alias when it has one, else a short id."""
-    alias = hive.alias_of(item.id)
-    return _tag_safe(alias) if alias else _tag_safe(item.id[:12])
-
-
-def _tag_safe(value: str) -> str:
-    return "".join(char if char.isalnum() or char in "-_." else "_" for char in value) or "session"
+def _agent(agents: Agents, name: str) -> AgentSession:
+    return agents.get(name)
 
 
 def _row(item: AgentState) -> str:
-    return f"{item.id} · {item.phase.value} · preset={item.preset or '-'} · {item.title or '-'}"
+    return (
+        f"{item.name} · {item.id} · {item.phase.value} · "
+        f"preset={item.preset or '-'} · {item.cwd or '-'}"
+    )
 
 
-def _session_channel(item: AgentState) -> MutableChannel:
-    """The addressable half: one child channel per session, carrying identity and state only."""
-    child = new_channel(name=_tag_safe(item.id[:12]), description=f"dsh session {item.id}")
-
-    @child.build.notice
-    def _notice() -> str:
-        return f"{item.id} · {item.phase.value}"
-
-    return child
-
-
-def _prompt_messages(text: str, path: str, project_root: str):
+def _prompt_messages(text: str, path: str, project_root: str) -> list[Message]:
     """Turn `text` (+ an optional project-home file) into messages the agent can read.
 
     The `@path` form is the message protocol's own file reference: it resolves to a message whose
@@ -266,8 +267,6 @@ def _prompt_messages(text: str, path: str, project_root: str):
     try:
         return Prompt(text, base_dir=base).messages()
     except PermissionError:
-        # The prompt protocol confines itself to cwd; when the project home is outside it, send
-        # the text as-is rather than losing the message.
-        from ghoshell_moss.message import Message
-
+        # The prompt protocol confines itself to cwd; when the project home is outside it, send the
+        # text as-is rather than losing the message.
         return [Message.new().with_content(text)]
