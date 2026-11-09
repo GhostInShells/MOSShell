@@ -4,3 +4,8 @@ The engine lives in ``ghoshell_dsh.v0_2_0``; this package is the MOSS-facing sid
 that generation. The parent ``deepseek_harness`` keeps the older implementation, so a
 new generation never has to edit the one before it.
 """
+
+from .agent import DshAgentSession
+from .hive import DshHive
+
+__all__ = ["DshAgentSession", "DshHive"]

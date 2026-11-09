@@ -161,44 +161,6 @@ class AgentPreset(BaseModel):
     )
 
 
-# --------------------------------------------------------------------------- #
-# State — read from the engine, never our own vocabulary
-# --------------------------------------------------------------------------- #
-
-
-class AgentState(BaseModel):
-    """The cheap read: everything a driver needs to decide, without touching the engine.
-
-    Two kinds of data live here: the structural facts fixed when the carrier opened (who it is,
-    where it acts, which preset composed it), and ``config`` — the values ``configure`` has put in
-    force, shaped by the preset's ``config_json_schema``.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    title: str = ""
-    preset: str = Field(default="", description="the preset's **id**, not the preset.")
-    cwd: str = Field(
-        default="",
-        description="an **absolute** path: the sandbox's writable root, i.e. the permission boundary.",
-    )
-    workspace_id: str = Field(
-        default="",
-        description="the grouping the session belongs to — an **id, never a path**. Not a permission "
-        "boundary; resolve it through the hive's workspace list.",
-    )
-    config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="the runtime configuration match the agent preset config json schema.",
-    )
-
-
-# --------------------------------------------------------------------------- #
-# The event protocol — lifecycle observation, not a chunk stream
-# --------------------------------------------------------------------------- #
-
-
 class AgentPhase(str, Enum):
     """Where in the carrier's life this event happened.
 
@@ -234,6 +196,49 @@ class AgentPhase(str, Enum):
     closed = "closed"
     """The carrier is finished. **The last event of a session**: nothing follows it, and a
     subscriber that misses it has no other way to tell "ended" from "went quiet"."""
+
+
+# --------------------------------------------------------------------------- #
+# State — read from the engine, never our own vocabulary
+# --------------------------------------------------------------------------- #
+
+
+class AgentState(BaseModel):
+    """The cheap read: everything a driver needs to decide, without touching the engine.
+
+    Two kinds of data live here: the structural facts fixed when the carrier opened (who it is,
+    where it acts, which preset composed it), and ``config`` — the values ``configure`` has put in
+    force, shaped by the preset's ``config_json_schema``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    title: str = ""
+    preset: str = Field(default="", description="the preset's **id**, not the preset.")
+    cwd: str = Field(
+        default="",
+        description="an **absolute** path: the sandbox's writable root, i.e. the permission boundary.",
+    )
+    workspace_id: str = Field(
+        default="",
+        description="the grouping the session belongs to — an **id, never a path**. Not a permission "
+        "boundary; resolve it through the hive's workspace list.",
+    )
+    phase: AgentPhase = Field(
+        default=AgentPhase.created,
+        description="the last lifecycle position seen for this carrier. The event stream is the "
+        "truth; this is its latest reading, so a listing never has to replay it.",
+    )
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="the runtime configuration match the agent preset config json schema.",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The event protocol — lifecycle observation, not a chunk stream
+# --------------------------------------------------------------------------- #
 
 
 class AgentSessionEvent(BaseModel):
@@ -489,6 +494,7 @@ class Hive(ABC):
         preset: str = "",
         cwd: str = "",
         title: str = "",
+        name: str = "",
     ) -> AgentSession:
         """Open one carrier and hand it back as a session.
 
@@ -499,16 +505,22 @@ class Hive(ABC):
 
         ``cwd`` is the permission boundary — **absolute**; empty means the engine's default. An
         empty ``preset`` means the deployment's default, which the engine decides.
+
+        ``name`` is a **runtime alias only**. It lives in this hive's memory and dies with the
+        process: the engine never sees it, and nothing about it is restored. It exists because a
+        ghost addresses a session by something it can say out loud, while the engine addresses it
+        by id.
         """
 
     @abstractmethod
-    async def resume(self, session_id: str) -> AgentSession:
+    async def resume(self, session_id: str, *, name: str = "") -> AgentSession:
         """Take up a session this hive no longer holds, addressed by its id.
 
         The only way back in, and deliberately an explicit act: the baseline hive promises nothing
         about its sessions outliving the process, so anything "restored" automatically would be a
         guess dressed as a fact. What an id can still reach is the engine's answer; an id it
-        cannot reach raises.
+        cannot reach raises. ``name`` is the same runtime alias ``open`` takes, and equally
+        short-lived.
         """
 
     @abstractmethod
