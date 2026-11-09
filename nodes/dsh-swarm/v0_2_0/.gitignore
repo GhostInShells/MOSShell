@@ -1,0 +1,11 @@
+# Runtime state of the dsh node — never committed.
+.dsh/
+.memento/
+.installed
+.env
+__pycache__/
+*.pyc
+
+# Cell runtime logs (stdout/stderr of each launch).
+runtime/*
+!runtime/.gitignore
