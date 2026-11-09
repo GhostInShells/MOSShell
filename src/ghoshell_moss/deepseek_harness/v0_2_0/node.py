@@ -15,8 +15,9 @@ Two responsibilities, deliberately separated:
   channel. The runtime assumes the home was installed; a missing environment is the
   probe's job (``check.py``) before spawn, not a second informal check here.
 
-The Hive surface is not part of this generation. The channel exposes environment reads
-only.
+The agents surface is a **gated child** of this channel: the node declares it and the ghost opens
+it with one action (`mount_child`). Progressive disclosure done by the channel — the node stays
+small until something is actually being driven.
 """
 
 from __future__ import annotations
@@ -207,7 +208,7 @@ class DshNodeRuntime:
     def notice(self) -> str:
         running = self._launcher is not None and self._launcher.is_running()
         state = "running" if running else "stopped"
-        return f"dsh {DSH_VERSION} · {state} · :{self.port} · {self._root.name}"
+        return f"dsh {DSH_VERSION} · {state} · :{self.port} · home {self._root.name}"
 
 
 def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None) -> PrimeChannel:
@@ -217,23 +218,29 @@ def new_dsh_node_channel(runtime: DshNodeRuntime, hive: "DshHive | None" = None)
     verbs that govern this (``mount_child`` / ``unmount_child``), so nothing here reimplements
     them: the child is listed in the notice as closed, and the ghost opens it with one action.
     """
-    chan = new_prime_channel(gate=True, 
+    chan = new_prime_channel(
+        gate=True,
         name=CHANNEL_NAME,
-        description="dsh node — one dsh web process, its page announced as a window.",
+        description="dsh node — one dsh web process, its page as a window, and the agents it holds.",
     )
 
     @chan.build.notice
     def _notice() -> str:
-        return runtime.notice()
+        line = runtime.notice()
+        if hive is not None:
+            # One number, and only one: whether opening the child is worth an action.
+            line += f" · agents: {len(hive.agents().list_sessions())}"
+        return line
 
     @chan.build.instruction
     def _instruction() -> str:
         return (
-            "A dsh 0.2.0 node. The cell owns a dsh web process and announces its page as a "
-            "window. Use `status` for home / profile / port / web, and `web_url` for the full "
-            "URL (it carries the per-launch token).\n\n"
-            "This generation exposes environment reads only — the delegation surface (hive) "
-            "is not wired yet."
+            "A dsh node: it owns one dsh web process — its page is a window on the screen — and "
+            "holds the agent sessions you drive through it.\n\n"
+            "- `status` — home, profile, port, running state, page URL.\n"
+            "- `web_url` — the page URL, token included.\n"
+            "- `agents` — the agents, as a child channel. It stays closed until `mount_child` "
+            "opens it; open it when you actually need to drive one."
         )
 
     if hive is not None:

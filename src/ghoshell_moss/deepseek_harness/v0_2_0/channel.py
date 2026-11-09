@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 from ghoshell_moss.agents.blueprint.agent import (
+    AgentPreset,
     Agents,
     AgentSession,
     AgentState,
@@ -37,16 +38,14 @@ CHANNEL_NAME = "agents"
 _MODE_VALUES = {mode.value for mode in MessageMode}
 
 _INSTRUCTION = """\
-The agents this node holds — every one of them addressed by the name it was opened under.
+The agents this node holds, addressed by the name each was opened under.
 
-- `open(name, workspace=...)` — create one inside a declared workspace. `watch(name, session_id)`
-  — take up a session that already exists. Names live only at runtime.
-- `send(name, text)` — fire and forget; it answers `ok` or `failed`. The reply arrives later as an
-  output signal.
-- `cancel` / `retire` — stop a turn, or end the membership.
-- `state(name="")` — a cold read; never on the notice.
+`create_workspace(path, name)` declares a place; `open(name, workspace, preset, readonly)` creates
+an agent in one; `watch(name, session_id)` takes up one that already exists. `send(name, text)` is
+fire-and-forget — it answers `ok` or `failed`, and the reply arrives later as a `dsh` message
+signal. `cancel` stops a turn, `retire` ends a membership, `state` and `presets` are cold reads.
 
-A workspace is a declared place, not a path. `workspaces` are listed in the notice above.
+A workspace is a declared place, not a path; the notice lists the ones declared here.
 """
 
 
@@ -66,8 +65,8 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
         running = sum(1 for item in sessions if item.state().phase.value == "running")
         places = ", ".join(space.name or space.id for space in hive.workspaces()) or "(none)"
         return (
-            f"{hive.engine_name}@{hive.version} · hive {hive.name} · "
-            f"{len(sessions)} agent(s), {running} running · workspaces: {places}"
+            f"dsh {hive.version} · {len(sessions)} agent(s), {running} running · "
+            f"workspaces: {places}"
         )
 
     @chan.build.named_notices
@@ -225,6 +224,17 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
         except Exception as exc:  # noqa: BLE001
             return f"failed: {exc}"
 
+    @chan.build.command(name="presets", blocking=False, always_observe=True)
+    async def _presets() -> str:
+        """Cold read: the presets an agent may be composed from.
+
+        The composition is the engine's; this only lists what the deployment declared.
+        """
+        items = hive.presets()
+        if not items:
+            return "(no presets)"
+        return "\n".join(_preset_row(item) for item in items)
+
     return chan
 
 
@@ -235,6 +245,11 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
 
 def _agent(agents: Agents, name: str) -> AgentSession:
     return agents.get(name)
+
+
+def _preset_row(item: "AgentPreset") -> str:
+    head = f"{item.id} · {item.name}" if item.name else item.id
+    return f"{head} — {item.description}" if item.description else head
 
 
 def _row(item: AgentState) -> str:
