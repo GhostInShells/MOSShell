@@ -44,3 +44,33 @@ dsh 打印的 readiness 行是它自己的 origin；launcher 之前只抓 `token
 - 把 StatefulChannel 的 `cleared` 日志读成启动失败，拿 lsof / 日志盲查。实际刷新挂在 thinking 上，不挂在 interpreter / observe 上；挂上 channel 后应等下一个 moment，而不是用 shell 猜。
 - 把 Launcher / Connection 的实现形态（`DshLauncher(DshConnection)`）当成抽象结论（"两个 node"）。两者是抽象分家，实现可合可分；node 只选择 Connection 从哪来。
 - `subprocesses: object | None` —— 绕路类型。遇到 ABC 没建模完的地方要当面提，不许绕。
+
+## 7. 凌晨续：表面、身份、运行时（D10 02:30）
+
+**六条表面原则**（他）：NODE.md 面向使用者；instruction 只写运行时策略（channel 本身就是渐进披
+露）；不用 sustain 子通道、用 gated virtual children；信号要用 XML 容器带 hive/name/时间戳；主
+channel 自解释；冷读要全、温数据最小。
+
+**对齐出来的四条**（都经过他纠正）：
+- **一个名字**：node name 来自 NODE.md，经 `build_node_cell` 成 `matrix.this.name`，再就是 hive
+  name、channel 名、notice 首段、信号 tag。不用 alias；名称带引擎版本（`dsh_0_2_0_rc_2`），于是
+  版本只出现一次。
+- **`on_output` → `on_turn_end`**：dsh 每个 step 一条 assistant 消息，preamble 与工具步骤都不是
+  答案。turn 内缓存最后一条，`TurnEnd` 才交付，全文，不截断。
+- **task 就是运行时**：一个 agent 一个 task；停它 = `cancel(reason)`（以 `<system_reminder>` 注
+  入）+ discord 订阅 + 关 + 出名册。**先断后关**——先关的话，队列里残余的帧会送到没有主人的 hook
+  上，那就是"死人的话还在说"。
+- **两笔引擎修复**：`workspace/follow` 的增量帧以前被丢掉（镜像冻结在开机），现在 baseline 重建、
+  upsert/remove 维护，`wait_workspace` 是 per-call 的等待；`create_workspace` 用 mutation 自己的
+  回执，不再回头查一份可能过期的列表。
+
+**页面桥**：同一个插件包两半（host 路由 + `client.js`），在页面的 cordis ctx 里跑代码，`describe`
+读活的 API 形状——`layout` 的方法当场读出来是 `selectPanel / beginNavigation / dispose /
+toggleSidebar / openRightbar / closeRightbar`。`layout.toggleSidebar()` 在屏幕上真的动了。
+
+**踩到的两个坑**：① 在 `apply()` 里 `ctx.get('webServer')` 探测会静默落空（服务还没注册），改
+成子插件 + `inject: ['webServer']`；② 后台窗口的定时器被浏览器掐停，页面只在**前台**轮询——
+`attached` 是唯一可靠的读数。
+
+**还没做**：memento agent 实装（主线）、session 归档与数量策略、`configure` 未验、turn 无答案时
+没有出口、页面桥应为可选。

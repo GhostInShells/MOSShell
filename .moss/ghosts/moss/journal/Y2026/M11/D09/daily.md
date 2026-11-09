@@ -17,4 +17,14 @@ status: writing
 
 今天三条教训：① Launcher 与 Connection 是抽象分家、实现可合可分，node 只选择 Connection 从哪来；我反复把实现形态当成抽象结论。② 刷新挂在 thinking 上，不挂在 interpreter / observe 上——挂上 channel 后一直推理，facade 就不刷；正确动作是交还一轮。③ `subprocesses: object | None` 这种绕路的类型比不会更糟；ABC 没建模完的地方要当面提，不许绕。
 
+凌晨接着做的是**表面**。他给了六条原则（NODE.md 面向使用者 / instruction 只写运行时策略 /
+gated virtual children / 信号用 XML 容器 / 主 channel 自解释 / 冷读要全），我逐条照做，却把
+一个正在跑的调研亲手重启掉了——六次 sleep、五次重启、一条结果都没留下。教训不是"别重启"，是
+**真机不该当开发循环**：`.playground` 才是验修复的地方。
+
+然后是长时间的对齐，四轮没动手：node name 来自声明、同时就是 hive name；回调只带 agent 与
+时间戳；`on_output` 改名 `on_turn_end`，只交 turn 末的 final answer 全文；task 就是运行时，停它
+要带 reason 真停 session，并且**先 discord 再关**。收尾加了一个页面桥：`ctx.get('layout')` 是活
+的 dsh 服务——控制页面不该改 CSS。
+
 细节见 [dsh-node.md](dsh-node.md)。
