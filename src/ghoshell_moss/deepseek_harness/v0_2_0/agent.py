@@ -133,7 +133,15 @@ class DshAgentSession(AgentSession):
         session = self._session
 
         async def _on_user(event: UserMessageEvent) -> None:
-            text = event.text() if hasattr(event, "text") else ""
+            # A user-**role** message is not necessarily the human. dsh writes injected context
+            # (instruction files, the runtime policy snapshot, agent presets) as user messages, so
+            # one prompt arrives as three: the prompt plus two injections. Reading ``source.kind``
+            # is the only thing that separates them, and without it every input count is wrong.
+            source = getattr(event, "source", None)
+            kind = getattr(source, "kind", "") or "user"
+            if kind != "user":
+                return
+            text = _user_text(event)
             self._emit(
                 AgentPhase.input,
                 event_type(event),
@@ -302,6 +310,33 @@ def event_type(event: Any) -> str:
     return type(event).__name__
 
 
+def _user_text(event: UserMessageEvent) -> str:
+    getter = getattr(event, "text", None)
+    if callable(getter):
+        try:
+            text = str(getter() or "")
+        except Exception:  # noqa: BLE001 — a shape we do not know is not worth a crash
+            text = ""
+        if text:
+            return text
+    return blocks_text(getattr(event, "content", None))
+
+
+def blocks_text(blocks: Any) -> str:
+    """Plain text of a block list — text blocks only, whatever the engine calls the field."""
+    if not isinstance(blocks, list):
+        return ""
+    parts: list[str] = []
+    for block in blocks:
+        kind = getattr(block, "type", "") or (block.get("type") if isinstance(block, dict) else "")
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+        if kind == "text" and text:
+            parts.append(str(text))
+    return "\n".join(parts).strip()
+
+
 def assistant_text(event: AssistantMessageEvent) -> str:
     """The assistant's prose for this turn — text blocks only.
 
@@ -314,16 +349,7 @@ def assistant_text(event: AssistantMessageEvent) -> str:
     message = getattr(event, "message", None)
     if message is None:
         return ""
-    blocks = getattr(message, "content", None)
-    if not isinstance(blocks, list):
-        return ""
-    parts: list[str] = []
-    for block in blocks:
-        kind = getattr(block, "type", "") or (block.get("type") if isinstance(block, dict) else "")
-        text = getattr(block, "text", None) or (block.get("text") if isinstance(block, dict) else None)
-        if kind == "text" and text:
-            parts.append(str(text))
-    return "\n".join(parts).strip()
+    return blocks_text(getattr(message, "content", None))
 
 
 def _preview(text: str) -> str:
