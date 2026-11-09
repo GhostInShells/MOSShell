@@ -12,9 +12,11 @@ args 键 = Remote 方法的参数名: 多数方法叫 ``request``, ``session/lis
 依赖最小: 只组合 base_url + logger + timeout, 自建 http client. 不持有 launcher,
 不感知 ws / subprocess / 进程生命周期.
 
-只挂会话动词 (session.*); workspace / host / agent-preset / settings / credentials / llm /
-skill / goal 的管理面动词在 0.1.5 迁移后已无消费者, 不在此暴露 (workspace 列表走
-launcher 的 ``workspace/follow`` 流, 见 launcher.py).
+只挂会话动词 (session.*) 与 agentPreset 的两个**只读**动词 (``list`` / ``read``): 前者是
+0.1.5 迁移后唯一有消费者的会话面, 后者是「新建 agent 先选一个组合」的前提 —— 界面会问,
+驱动方也要问. 其余 (host / settings / credentials / llm / skill / goal / workspace 管理面)
+依旧无消费者, 不在此暴露 (workspace 列表走 launcher 的 ``workspace/follow`` 流,
+见 launcher.py).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import logging
 from typing import Any, TypeVar
 
 import httpx
-from ghoshell_dsh.v0_2_0.types import sessions
+from ghoshell_dsh.v0_2_0.types import presets, sessions
 from ghoshell_dsh.v0_2_0.types.rpc import RpcError
 from pydantic import BaseModel
 
@@ -168,3 +170,21 @@ class DshClient:
 
     async def session_create(self, params: sessions.SessionCreateParams) -> sessions.SessionCreateValue:
         return await self.call("session/create", params, sessions.SessionCreateValue)
+
+    # ---- agentPreset 动词 (只读) ---- #
+
+    async def agent_presets(self) -> presets.AgentPresetRoster:
+        """``agentPresets/list`` — 本部署提供的全部 preset 声明 (无参动词)."""
+        return await self.call(
+            "agentPresets/list", None, presets.AgentPresetRoster, args_key=None
+        )
+
+    async def agent_preset(self, name: str) -> presets.AgentPresetDocument:
+        """``agentPresets/read`` — 一个 preset 的组合内容.
+
+        这个动词**唯一的参数就是 preset id 本身**, 所以走不了 ``call()`` (它把一个 params
+        模型包在同一个键下). 这里直接发原样的 args: ``{"agentPreset": name}``.
+        """
+        return presets.AgentPresetDocument.model_validate(
+            await self._invoke("agentPresets/read", {"agentPreset": name})
+        )

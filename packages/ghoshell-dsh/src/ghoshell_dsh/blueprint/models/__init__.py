@@ -6,13 +6,15 @@ apiproxy 接口面 + SDK 协议的强类型数据模型.
 str | Literal 支持扩展.
 
 模块按依赖序拆分, 避免循环 import:
-  rpc (信封+错误) → nouns (WorkspaceView/JobView) → events (帧) → sessions → sdk.
+  rpc (信封+错误) → nouns (WorkspaceView/JobView) → events (帧) → sessions → sdk;
+  presets 只依赖 pydantic, 与谁都不成环 (agentPreset 的组合声明读面).
 """
 
-from . import attachments, events, nouns, refs, rpc, sdk, session_state, sessions
+from . import attachments, events, nouns, presets, refs, rpc, sdk, session_state, sessions
 from .attachments import *
 from .events import *
 from .nouns import *
+from .presets import *
 from .refs import *
 from .rpc import *
 from .sdk import *
@@ -24,6 +26,7 @@ __all__ = (
     + session_state.__all__
     + rpc.__all__
     + nouns.__all__
+    + presets.__all__
     + events.__all__
     + sessions.__all__
     + sdk.__all__

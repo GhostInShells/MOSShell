@@ -17,6 +17,10 @@ from typing import TYPE_CHECKING
 
 from ghoshell_dsh.v0_2_0.session import DshRunResult
 from ghoshell_dsh.v0_2_0.types.nouns import WorkspaceView
+from ghoshell_dsh.v0_2_0.types.presets import (
+    AgentPresetDocument,
+    AgentPresetRoster,
+)
 from ghoshell_dsh.v0_2_0.types.session_events import (
     Message,
     SessionEvent,
@@ -53,7 +57,7 @@ def _content(content: str | list[PromptContentPart]) -> list[PromptContentPart]:
 
 
 class DshConnectionSurface:
-    """connection 级管理面 — 列 workspace/session、建 session、读 model catalog.
+    """connection 级管理面 — 列 workspace/session、建 session、读 model catalog 与 preset 声明.
 
     只暴露管理动词, 不透传 raw client / http / token / config.
     """
@@ -91,6 +95,14 @@ class DshConnectionSurface:
         return await self._connection.client.call(
             "session/modelCatalog", None, ModelCatalog, args_key=None
         )
+
+    async def presets(self) -> AgentPresetRoster:
+        """The agent presets this deployment supplies (agentPresets/list)."""
+        return await self._connection.client.agent_presets()
+
+    async def preset(self, agent_preset: str) -> AgentPresetDocument:
+        """One preset's composition, rendered for reading (agentPresets/read)."""
+        return await self._connection.client.agent_preset(agent_preset)
 
 
 class DshSessionSurface:
