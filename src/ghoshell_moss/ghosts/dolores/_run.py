@@ -611,7 +611,7 @@ class DoloresRun:
         # next interpreter dispatch — so without this the moment carries the world as it was *before*
         # the action and the model perceives its own effect one frame late. Same step moss_observe
         # already takes.
-        await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+        await self._observe_metas()
         moment = self._thinking.observe()
         moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
         return ToolCallResult(
@@ -671,6 +671,18 @@ class DoloresRun:
             result="reacted",
             cancel=True,
         )
+
+    async def _observe_metas(self) -> None:
+        """Refresh the warm layer for a moment the ghost is about to read — unconditionally.
+
+        ``stale_time`` is a freshness *optimisation* for background refreshes: inside the window the
+        call returns True without doing anything. On this path that is the bug — the ghost asks to
+        see the world *after* an action landed, and a skipped refresh hands it the world from before
+        the action, silently. The window is gone; a moment that produces no moment costs nothing to
+        skip, but a moment that carries a stale facade is worse than a slow one.
+        """
+        await self._facade.shell.refresh_metas(timeout=5.0)
+
     async def _handle_observe(self, call: ObserveToolCall) -> ToolCallResult:
         """moss_observe handler — (optionally) interrupt, wait for all actions to finish, refresh
         metas, then observe the freshest moment.
@@ -684,7 +696,7 @@ class DoloresRun:
             async with self._thinking.articulator(replan=True) as articulator:
                 await articulator.wait_action_done()
         await self._thinking.wait_actions_done()
-        await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+        await self._observe_metas()
         moment = self._thinking.observe()
         moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
         return ToolCallResult(
