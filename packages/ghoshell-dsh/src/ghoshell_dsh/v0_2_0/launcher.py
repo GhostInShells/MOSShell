@@ -84,6 +84,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import websockets
@@ -835,14 +836,21 @@ class DshLauncher(DshConnection):
     def is_running(self) -> bool:
         return super().is_running() and self._dsh_subprocess_is_running
 
+    def _stderr_tail(self, limit: int = 8) -> str:
+        """The last lines dsh said — the difference between a timeout and a diagnosis."""
+        return "\n".join(self._stderr_lines[-limit:]).strip()
+
     async def _wait_started(self) -> None:
         """等待 dsh web token + mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
         await self._wait_token()
         try:
             await _wait_event(self._dsh_started, self.config.readiness_timeout)
         except asyncio.TimeoutError:
+            tail = self._stderr_tail()
+            detail = f"\n--- dsh stderr tail ---\n{tail}" if tail else ""
             raise TimeoutError(
-                f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (mux WS 未连接)"
+                f"dsh 未在 {self.config.readiness_timeout}s 内就绪 "
+                f"(mux WS 未连接 @ {self.config.base_url}){detail}"
             ) from None
 
     async def _wait_token(self) -> None:
@@ -855,8 +863,10 @@ class DshLauncher(DshConnection):
         try:
             await _wait_event(self._token_ready, self.config.readiness_timeout)
         except asyncio.TimeoutError:
+            tail = self._stderr_tail()
+            detail = f"\n--- dsh stderr tail ---\n{tail}" if tail else ""
             raise TimeoutError(
-                f"dsh 未在 {self.config.readiness_timeout}s 内输出 web token (无法鉴权)"
+                f"dsh 未在 {self.config.readiness_timeout}s 内输出 web token (无法鉴权){detail}"
             ) from None
 
     async def _on_start_failed(self) -> None:
@@ -984,17 +994,55 @@ class DshLauncher(DshConnection):
     _WEB_URL_RE = re.compile(r"https?://\S+")
 
     def _maybe_capture_token(self, text: str) -> None:
+        """Learn where dsh actually listens from its own readiness line.
+
+        The URL dsh prints is the transport's statement of its origin, so host, port and
+        token are parsed from it rather than assumed from the config: with `--port 0` the
+        configured port is 0 and the real one exists only here.
+        """
+        if self._discovered_token is not None and self._web_url is not None:
+            return
+        m_url = self._WEB_URL_RE.search(text)
+        if m_url is not None and self._adopt_web_url(m_url.group(0)):
+            return
         if self._discovered_token is not None:
             return
         m = self._TOKEN_RE.search(text)
         if m is None:
             return
         self._discovered_token = m.group(1)
-        m_url = self._WEB_URL_RE.search(text)
-        if m_url is not None:
-            self._web_url = m_url.group(0)
         self._token_ready.set()
         self._logger.info("%sdsh web token discovered (value not logged)", self._log_prefix)
+
+    def _adopt_web_url(self, url: str) -> bool:
+        """Parse the printed URL into host/port/token and write the local origin back.
+
+        Only a local origin is adopted. A configured `publicUrl` makes dsh print an
+        advertised address rather than the bind address; rebasing the mux to it would
+        point this process at a proxy it cannot assume reachable. The advertised URL is
+        still kept for `web_url()` — that is what a window should show.
+        """
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or parsed.hostname is None:
+            return False
+        token = (parse_qs(parsed.query).get("token") or [""])[0]
+        if token == "":
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        local = parsed.hostname in ("127.0.0.1", "localhost", "::1") or parsed.hostname == self.config.host
+        if local:
+            if parsed.hostname != self.config.host or port != self.config.port:
+                self._logger.info(
+                    "%sweb origin adopted from dsh: %s:%s", self._log_prefix, parsed.hostname, port
+                )
+            self._config.host = parsed.hostname
+            self._config.port = port
+            self.client.rebase(f"{parsed.scheme}://{parsed.netloc}")
+        self._discovered_token = token
+        self._web_url = url
+        self._token_ready.set()
+        self._logger.info("%sdsh web token discovered (value not logged)", self._log_prefix)
+        return True
 
     def _redact_token(self, text: str) -> str:
         return self._TOKEN_RE.sub("token=***", text)

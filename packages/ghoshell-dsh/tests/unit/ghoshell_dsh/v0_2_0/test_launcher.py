@@ -355,3 +355,37 @@ def test_launcher_construction_does_not_touch_path(monkeypatch):
     monkeypatch.delenv(DSH_BINARY_ENV, raising=False)
     monkeypatch.setenv("PATH", "")
     DshLauncher(DshLauncherConfig())
+
+
+def test_printed_web_url_writes_host_port_and_token_back():
+    """dsh 打印的 URL 是它自己的 origin — host/port/token 都从它解析, 写回本地 config.
+
+    `--port 0` 时配置端口是 0, 真实端口只存在于这一行; 不读回来, mux 永远连不上.
+    """
+    launcher = DshLauncher(DshLauncherConfig(port=0))
+    launcher._maybe_capture_token("dsh web: http://127.0.0.1:54321/?token=abc_DEF-123")
+    assert launcher.token() == "abc_DEF-123"
+    assert launcher.web_url() == "http://127.0.0.1:54321/?token=abc_DEF-123"
+    assert launcher.config.host == "127.0.0.1"
+    assert launcher.config.port == 54321
+    assert launcher.config.mux_url == "ws://127.0.0.1:54321/api/remote.mux"
+    assert launcher.client.base_url == "http://127.0.0.1:54321"
+
+
+def test_public_web_url_is_not_adopted_as_the_bind_origin():
+    """非 loopback 的 URL 是 publicUrl 的广告, 不是 bind 地址 — 不能拿它 rebase mux."""
+    launcher = DshLauncher(DshLauncherConfig(host="127.0.0.1", port=0))
+    launcher._maybe_capture_token("dsh web: https://app.example.com/ui/?token=abc")
+    assert launcher.token() == "abc"
+    assert launcher.web_url() == "https://app.example.com/ui/?token=abc"
+    assert launcher.config.host == "127.0.0.1"
+    assert launcher.config.port == 0
+    assert launcher.client.base_url == "http://127.0.0.1:0"
+
+
+def test_explicit_port_is_kept_when_the_printed_url_agrees():
+    """固定端口是常规路径: URL 与配置一致时不做任何改写."""
+    launcher = DshLauncher(DshLauncherConfig(host="127.0.0.1", port=23080))
+    launcher._maybe_capture_token("dsh web: http://127.0.0.1:23080/?token=tok")
+    assert launcher.config.port == 23080
+    assert launcher.client.base_url == "http://127.0.0.1:23080"

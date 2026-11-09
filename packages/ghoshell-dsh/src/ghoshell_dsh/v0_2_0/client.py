@@ -53,6 +53,19 @@ class DshClient:
         self._http_client = httpx.AsyncClient(timeout=timeout)
         self._rpc_counter = 0
 
+    @property
+    def base_url(self) -> str:
+        """The origin every call is posted to."""
+        return self._base_url
+
+    def rebase(self, base_url: str) -> None:
+        """Point this client at another origin.
+
+        Used when the transport learns the real address only after the server is up:
+        an OS-assigned port is the motivating case, since the configured port is 0 until
+        the server prints where it actually listens.
+        """
+        self._base_url = base_url
 
     async def _invoke(self, method: str, args: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         """信封 + POST + ok/失败分支 —— call / remote 共用的那一半."""
