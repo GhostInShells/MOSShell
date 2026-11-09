@@ -660,6 +660,10 @@ class DshConnection:
             await self._aexit_stack.__aenter__()
             await self._enter_async_context(self._aexit_stack)
             await self._wait_started()
+            # 连接自己也得能独立用: 基类的 `_wait_started` 是空实现, 没人替它做鉴权,
+            # 于是裸连接上的每个 /api 调用都会被拒. `_authorize` 自身幂等, 且 token 未就绪
+            # (launcher 还在等 stdout) 时直接返回、由 WS 重连循环补 —— 所以在这里调用是安全的.
+            await self._authorize()
         except BaseException:
             # 启动失败: 手动关掉已 spawn 的 subprocess (句柄在 _wait_started 之前已拿到),
             # 并把这个对象标记为已停止 —— 否则下一次 is_running() 会说它活着.
