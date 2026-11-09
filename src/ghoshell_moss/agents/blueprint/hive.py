@@ -48,6 +48,16 @@ class Hive(ABC):
 
     @property
     @abstractmethod
+    def engine_name(self) -> str:
+        ...
+
+    @property
+    @abstractmethod
+    def version(self) -> str:
+        ...
+
+    @property
+    @abstractmethod
     def memento(self) -> Memento:
         """The store. One hive, one store; nothing is shared across hives."""
 
@@ -65,12 +75,12 @@ class Hive(ABC):
 
     @abstractmethod
     async def spawn(
-        self,
-        *,
-        mandate: Mandate,
-        preset: str = "",
-        workspace: str,
-        title: str = "",
+            self,
+            *,
+            mandate: Mandate,
+            preset: str = "",
+            workspace: str,
+            title: str = "",
     ) -> MementoAgent:
         """Create one delegation: branch, declaration commit, first carrier.
 
@@ -93,20 +103,20 @@ class Hive(ABC):
 
     @abstractmethod
     async def prompt(
-        self,
-        to: str,
-        message: Message,
-        *,
-        mode: Literal["queue", "steer"] = "queue",
+            self,
+            to: str,
+            message: Message,
+            *,
+            mode: Literal["queue", "steer"] = "queue",
     ) -> str:
         """Send one message to a delegation by name; unknown names raise, never silently drop."""
 
     @abstractmethod
     async def broadcast(
-        self,
-        message: Message,
-        *,
-        to: list[str] | None = None,
+            self,
+            message: Message,
+            *,
+            to: list[str] | None = None,
     ) -> dict[str, str]:
         """Send the same message to many delegations; returns one receipt per name.
 
@@ -153,7 +163,6 @@ class Hive(ABC):
         Modeled and displayed here because a workspace is a *place*, and places are the hive's
         business: an agent is created *inside* one and never owns one.
         """
-
 
 # --------------------------------------------------------------------------- #
 # Not in scope for this iteration, and not to be lost

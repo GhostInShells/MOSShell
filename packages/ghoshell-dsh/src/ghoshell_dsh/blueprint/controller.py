@@ -43,7 +43,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .agent import AgentSession
+from .agent import AdvancedDshAgentSession
 from .models.attachments import Attachment  # noqa: F401  (re-exported for convenience)
 from .models.nouns import WorkspaceView
 from .models.sessions import SessionSummary
@@ -129,15 +129,15 @@ class DshController(ABC):
     # ---- creating ------------------------------------------------------- #
 
     @abstractmethod
-    async def create(self, spec: SessionSpec) -> AgentSession:
+    async def create(self, spec: SessionSpec) -> AdvancedDshAgentSession:
         """Open a new conversation, as fully specified as the caller asked."""
 
     @abstractmethod
-    async def fork(self, spec: ForkSpec) -> AgentSession:
+    async def fork(self, spec: ForkSpec) -> AdvancedDshAgentSession:
         """Branch a conversation at a point, with the branch's own settings."""
 
     @abstractmethod
-    async def connect(self, session_id: str) -> AgentSession:
+    async def connect(self, session_id: str) -> AdvancedDshAgentSession:
         """Take up an existing conversation."""
 
     # ---- lifecycle of a conversation ------------------------------------ #

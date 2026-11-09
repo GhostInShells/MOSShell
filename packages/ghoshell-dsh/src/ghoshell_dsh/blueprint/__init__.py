@@ -26,13 +26,13 @@ Launcher              owns a lifetime; start() brings dsh up, and then it expose
   │    Client         the protocol layer underneath: typed calls, plugin routes, rpc errors
   └─ DshController    the reinforced surface: governed listing, create/fork with a spec,
                       rename/archive, workspace governance
-       AgentSession            our verbs: run, anchor, chat_off_record
-         DshAgentSession       dsh's verbs: prompt, cancel, history, events, state
+       AdvancedDshAgentSession  our verbs: run, anchor, chat_off_record
+         DshAgentSession        dsh's verbs: prompt, cancel, history, events, state
 ```
 
 `SessionSource` is the smallest thing a conversation can come from: list, create, attach. It
 hands back `DshAgentSession` — dsh's own session — and governed creation lives one level up on
-`DshController.create(spec)`, which returns an `AgentSession`. A source of conversations should
+`DshController.create(spec)`, which returns an `AdvancedDshAgentSession`. A source of conversations should
 not quietly decide that every one of them is our reinforced kind.
 
 Three relationships are worth stating because they are easy to get wrong:
@@ -57,7 +57,7 @@ still speaks to its own modules. That is deliberate — the shape is settled fir
 implementation is pointed at it in the next step.
 """
 
-from .agent import AgentSession, ChatReply, RunResult, SessionSource
+from .agent import AdvancedDshAgentSession, ChatReply, RunResult, SessionSource
 from .anchor import DshSessionAnchor
 from .client import Client, DshRpcError
 from .connection import Connection
@@ -68,7 +68,7 @@ from .transcript import TranscriptView
 
 __all__ = [
     "WILDCARD_EVENT",
-    "AgentSession",
+    "AdvancedDshAgentSession",
     "ChatReply",
     "Client",
     "Connection",

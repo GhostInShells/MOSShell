@@ -38,7 +38,7 @@ from .models.sessions import SessionSummary
 from .session import DshAgentSession
 
 __all__ = [
-    "AgentSession",
+    "AdvancedDshAgentSession",
     "ChatReply",
     "ChatToolCall",
     "ForkResult",
@@ -124,7 +124,7 @@ class ForkResult(BaseModel):
     seededEvents: int = Field(default=0, description="how many events the seed carried.")
 
 
-class AgentSession(DshAgentSession, ABC):
+class AdvancedDshAgentSession(DshAgentSession, ABC):
     """A dsh session with the driver layer on top of it."""
 
     # ---- the high-level verb -------------------------------------------- #
@@ -273,7 +273,7 @@ class SessionSource(ABC):
 
         Returns the low-level session on purpose: this is the source of *conversations*, not of
         our reinforcement. A caller that wants the governed one asks `DshController.create()`,
-        which takes a spec and hands back an `AgentSession`.
+        which takes a spec and hands back an `AdvancedDshAgentSession`.
         """
 
     @abstractmethod

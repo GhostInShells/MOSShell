@@ -8,8 +8,8 @@ faithfully reachable.
 High-level semantics — `run()` ("send and wait for the turn"), taking a bare `str`, folding the
 event stream into a message view — deliberately do **not** live here. Those are our words, not
 dsh's, and mixing the two layers in one contract is how a protocol contract turns into a
-framework. When that layer is written, the blueprint splits: `DshAgentSession` here, an
-`AgentSession` above it built on this one.
+framework. When that layer is written, the blueprint splits: `DshAgentSession` here, and
+`AdvancedDshAgentSession` above it built on this one.
 
 ### The multimodal protocol
 
