@@ -174,6 +174,8 @@ class DshSession:
         self._agent_preset: str | None = None
         # follow 快照 cursor (session/page 的 throughSeq 来源); 由 accept_follow_snapshot 喂入.
         self._cursor: int | None = None
+        # 快照落地的信号: create_session() 只是接线, 快照是随后到的帧; 读会话常量前要等它.
+        self._snapshot_event = asyncio.Event()
         # 线性消费: deque 存帧, Event 唤醒消费 task (空等待阻塞, 不忙旋).
         self._queue: deque = deque()
         self._wakeup = asyncio.Event()
@@ -265,6 +267,7 @@ class DshSession:
         权威源 (session/list 的 SessionSummary 在 0.1.5 已不携带 agentPreset).
         """
         self._cursor = cursor
+        self._snapshot_event.set()
         if header is None:
             return
         if header.get("cwd") is not None:
@@ -707,6 +710,20 @@ class DshSession:
             return self._model_catalog
         self._model_catalog = await self.models()
         return self._model_catalog
+
+    async def wait_follow_snapshot(self, timeout: float = 5.0) -> bool:
+        """等 follow 快照落地 — 会话常量的另一半.
+
+        ``create_session()`` 只是接线; cursor / cwd / agentPreset 是随后到的快照帧. 想读这些
+        常量就得等它, 否则读到的要么是"还没有", 要么是一次多余的 ``session/list`` 往返.
+        """
+        if self._snapshot_event.is_set():
+            return True
+        try:
+            await asyncio.wait_for(self._snapshot_event.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     async def cwd(self, *, force: bool = False) -> str | None:
         """会话工作目录 — follow 快照 header.cwd 或 host/session-added (创建后不变)."""

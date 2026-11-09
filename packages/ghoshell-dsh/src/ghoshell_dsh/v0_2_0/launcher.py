@@ -256,6 +256,9 @@ class DshConnection:
         # workspace/follow 流: baseline 载 workspace 列表 (0.1.5 起无 workspace.list 动词).
         self._workspace_stream_id = "moss-workspaces"
         self._workspace_baseline_event = asyncio.Event()
+        # 每次变更的 pending 等票: 变更的 HTTP 回执只说明"被接受", 状态是 follow 帧落地的.
+        # 调用方若紧接着要用这份状态 (创建后立刻 open), 就必须等帧, 而不是睡一会儿再赌.
+        self._workspace_waiters: list[tuple[Callable[[str], bool], asyncio.Future[None]]] = []
         # session/follow 流状态: 每个 session 一条逻辑流, 收 durable 事件 + live assistant-stream.
         self._ws: Any | None = None  # 当前 mux WS (重连循环持有); 新 session 直接在已连 WS 上开流.
         self._follow_sessions: dict[str, DshSession] = {}
@@ -510,19 +513,53 @@ class DshConnection:
             self._logger.exception("$events/result failed: %s", event_id)
 
     def _dispatch_workspace_frame(self, value: Any) -> None:
-        """分派 `workspace/follow` 下行帧: baseline 载 workspace 列表 (增量帧暂不消费)."""
-        if not isinstance(value, dict) or value.get("type") != "baseline":
+        """分派 `workspace/follow` 帧: baseline 重建镜像, upsert / remove 增量维护.
+
+        增量帧以前被丢掉, 于是这份镜像永远停在开机那一刻 —— 一次 `workspace/create` 之后,
+        调用方看见的还是旧列表, 而且是静默的. 现在镜像跟着流走, 每个变更都唤醒等它的调用.
+        """
+        if not isinstance(value, dict):
             return
-        payload = value.get("value")
-        if not isinstance(payload, dict):
+        kind = value.get("type")
+        if kind == "baseline":
+            payload = value.get("value")
+            items = (payload or {}).get("items") if isinstance(payload, dict) else None
+            self._workspaces = {}
+            for item in items or []:
+                if isinstance(item, dict):
+                    view = WorkspaceView.model_validate(item)
+                    self._workspaces[view.workspaceId] = view
+            self._workspace_baseline_event.set()
+            self._resolve_workspace_waiters(None)
             return
-        items = payload.get("items") or []
-        self._workspaces = {}
-        for item in items:
+        if kind == "upsert":
+            item = value.get("workspace")
             if isinstance(item, dict):
                 view = WorkspaceView.model_validate(item)
                 self._workspaces[view.workspaceId] = view
-        self._workspace_baseline_event.set()
+                self._resolve_workspace_waiters(view.workspaceId)
+            return
+        if kind == "remove":
+            workspace_id = str(value.get("workspaceId") or "")
+            if workspace_id:
+                self._workspaces.pop(workspace_id, None)
+                self._resolve_workspace_waiters(workspace_id)
+            return
+        # `order` / `archived` / `pinned` 是排序与会话记账; 这份镜像目前不持有它们.
+
+    def _resolve_workspace_waiters(self, workspace_id: str | None) -> None:
+        """唤醒等这张等票的调用; ``None`` 表示整份镜像变了."""
+        if not self._workspace_waiters:
+            return
+        remaining: list[tuple[Callable[[str], bool], asyncio.Future[None]]] = []
+        for predicate, future in self._workspace_waiters:
+            if future.done():
+                continue
+            if workspace_id is None or predicate(workspace_id):
+                future.set_result(None)
+            else:
+                remaining.append((predicate, future))
+        self._workspace_waiters = remaining
 
     async def _dispatch_follow_frame(self, session_id: str, value: Any) -> None:
         """分派 `session/follow` 下行帧: snapshot / event / assistant-stream."""
@@ -734,13 +771,80 @@ class DshConnection:
         return [LlmProvider.model_validate(item) for item in value.get("providers") or []]
 
     async def workspaces(self) -> list[WorkspaceView]:
-        """host 级 workspace 列表 — 0.1.5 走 workspace/follow 流的 baseline (带缓存).
+        """host 级 workspace 列表 — workspace/follow 流维护的实时镜像.
 
-        baseline 随 WS 连接后下发; 首次调用若尚未到达则等待 (不主动重开流).
+        baseline 随 WS 连接后下发; 首次调用若尚未到达则等待 (不主动重开流). 此后 upsert /
+        remove 帧持续更新这份镜像, 所以它不会因为一次变更就停在开机时的样子.
         """
         if not self._workspace_baseline_event.is_set():
             await asyncio.wait_for(self._workspace_baseline_event.wait(), self.config.connect_timeout)
         return list(self._workspaces.values())
+
+    async def wait_workspace(
+        self,
+        workspace_id: str,
+        *,
+        timeout: float = 5.0,
+        predicate: Callable[[WorkspaceView], bool] | None = None,
+    ) -> WorkspaceView | None:
+        """等 follow 流把这个 workspace 送到 — 变更的"另一半", per-call 的 pending 回调.
+
+        一次变更的 HTTP 回执只说明**被接受**, 状态是 follow 帧落地的. 调用方若紧接着要用这份
+        状态 (创建后立刻 open), 就必须等帧, 而不是睡一会儿再赌. 这里登记一张等票, 帧到了唤醒.
+
+        超时返回 ``None`` —— 帧没来不等于变更失败, 由调用方决定用回执兜底还是报错.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            current = self._workspaces.get(workspace_id)
+            if current is not None and (predicate is None or predicate(current)):
+                return current
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            future: asyncio.Future[None] = loop.create_future()
+            entry = (lambda wid: wid == workspace_id, future)
+            self._workspace_waiters.append(entry)
+            try:
+                await asyncio.wait_for(future, remaining)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                return None
+            finally:
+                if entry in self._workspace_waiters:
+                    self._workspace_waiters.remove(entry)
+
+    async def create_workspace(
+        self, path: str, *, wait: float = 5.0
+    ) -> tuple[WorkspaceView, bool]:
+        """注册一个 workspace 目录; 回 (视图, 是否新建).
+
+        回执带着完整的 ``WorkspaceView`` —— 它是"建了什么"的权威答案, 不需要回头查一次可能
+        还没更新的列表. 之后仍等一帧让镜像对齐; 帧没来就用回执兜底, 因为事实已经成立.
+        """
+        value = await self.client.remote("workspace/create", {"path": path})
+        payload = value if isinstance(value, dict) else {}
+        view = _workspace_from(payload.get("workspace"))
+        created = bool(payload.get("created"))
+        if await self.wait_workspace(view.workspaceId, timeout=wait) is None:
+            self._workspaces[view.workspaceId] = view
+        return view, created
+
+    async def rename_workspace(
+        self, workspace_id: str, title: str, *, wait: float = 5.0
+    ) -> WorkspaceView:
+        """给 workspace 换标题; 回新的视图 (同样以流为准, 回执兜底)."""
+        value = await self.client.remote(
+            "workspace/rename", {"workspaceId": workspace_id, "title": title}
+        )
+        payload = value if isinstance(value, dict) else {}
+        view = _workspace_from(payload.get("workspace"))
+        landed = await self.wait_workspace(
+            view.workspaceId, timeout=wait, predicate=lambda item: item.title == title
+        )
+        if landed is None:
+            self._workspaces[view.workspaceId] = view
+        return view
 
     async def workspace_for_path(self, path: str) -> WorkspaceView | None:
         """按 canonical path 解析 workspace (与 session.cwd 匹配)."""
@@ -782,6 +886,13 @@ class DshConnection:
 
             asyncio.create_task(_open_now())
         return session
+
+
+def _workspace_from(item: Any) -> WorkspaceView:
+    """引擎的 workspace 行 → 模型; 形状不对就大声失败, 不合成一个看起来像成功的对象."""
+    if not isinstance(item, dict):
+        raise ValueError(f"workspace verb returned no workspace row: {item!r}")
+    return WorkspaceView.model_validate(item)
 
 
 class DshLauncher(DshConnection):
