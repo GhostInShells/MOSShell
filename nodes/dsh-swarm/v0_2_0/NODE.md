@@ -24,6 +24,13 @@ holds the agent sessions you drive through it.
 - `agents` — a child channel holding the agents. It stays **closed** until you open it with
   the parent channel's `mount_child`; then its own commands become available. Opening it is a
   deliberate act, so the node stays small until something is actually being driven.
+- `ui` — the page itself, also a closed child. It runs a piece of code inside the page's own
+  cordis context, so `ctx.get('layout')` is the live dsh service: layout, sidebar, panels and
+  focus are driven through dsh's own API rather than by touching the DOM. `describe(name)` reads a
+  service's methods first, so the surface explains itself from the running page.
+
+  One constraint worth knowing: a page only polls while its window is in the foreground. A
+  backgrounded window cannot be driven, and `attached` is how you find that out.
 
 ## Driving an agent
 

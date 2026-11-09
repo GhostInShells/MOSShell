@@ -69,6 +69,21 @@ class DshClient:
         """
         self._base_url = base_url
 
+    async def post(self, path: str, body: dict[str, Any], *, timeout: float | None = None) -> Any:
+        """POST a raw JSON body to a plain route and return its JSON answer.
+
+        Not every route is a Remote: the page bridge is four ordinary routes, because it carries a
+        job to a browser tab rather than an RPC to the engine. So this sits deliberately outside the
+        envelope path — same client, same origin, no `{type, rpcId, payload}` wrapper.
+        """
+        resp = await self._http_client.post(
+            f"{self._base_url}{path}",
+            json=body,
+            timeout=timeout if timeout is not None else self._http_client.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def _invoke(self, method: str, args: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         """信封 + POST + ok/失败分支 —— call / remote 共用的那一半."""
         self._rpc_counter += 1

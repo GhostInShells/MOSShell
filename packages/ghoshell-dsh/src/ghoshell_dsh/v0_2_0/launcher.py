@@ -846,6 +846,35 @@ class DshConnection:
             self._workspaces[view.workspaceId] = view
         return view
 
+    async def page_exec(self, code: str, *, timeout: float = 5.0) -> Any:
+        """Run one piece of code in the dsh page's own client context and return its JSON answer.
+
+        This is *not* a screenshot and not a DOM scrape: the page is a cordis context, so
+        ``ctx.get('layout')`` is the live service and the call drives dsh's own layout / focus API.
+        ``code`` is the body of one async function receiving ``ctx``; it must return something JSON
+        can carry, because that is the only thing that comes back.
+
+        The bridge is a transport, so this method adds no policy: whoever exposes it decides who may
+        send code. A page that is not attached fails the call rather than queueing into a void.
+        """
+        try:
+            outcome = await self.client.post(
+                "/ghoshell/bridge/exec",
+                {"code": code, "timeoutMs": int(timeout * 1000)},
+                timeout=timeout + 10.0,
+            )
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"dsh page bridge refused the call: {exc.response.text[:300]}") from None
+        if not isinstance(outcome, dict) or not outcome.get("ok"):
+            error = outcome.get("error") if isinstance(outcome, dict) else None
+            raise RuntimeError(f"dsh page could not run the code: {error or outcome!r}")
+        return outcome.get("value")
+
+    async def page_attached(self, *, timeout: float = 5.0) -> bool:
+        """Whether a page is polling right now — the bridge has no other liveness signal."""
+        outcome = await self.client.post("/ghoshell/bridge/status", {}, timeout=timeout)
+        return bool(isinstance(outcome, dict) and outcome.get("attached"))
+
     async def workspace_for_path(self, path: str) -> WorkspaceView | None:
         """按 canonical path 解析 workspace (与 session.cwd 匹配)."""
         for workspace in await self.workspaces():

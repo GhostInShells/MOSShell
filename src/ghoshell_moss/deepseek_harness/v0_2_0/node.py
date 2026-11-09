@@ -34,6 +34,7 @@ from ghoshell_dsh.v0_2_0.launcher import DshLauncher, DshLauncherConfig, resolve
 
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.deepseek_harness.v0_2_0.channel import workspace_row
+from ghoshell_moss.deepseek_harness.v0_2_0.page import new_page_channel
 from ghoshell_moss.deepseek_harness.v0_2_0.hive import DshHive
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel, new_prime_channel
@@ -255,16 +256,25 @@ def new_dsh_node_channel(
             "- `workspaces` — the declared places an agent may be created in, each with the "
             "directory it bounds. `create_workspace(path, name)` declares a new one.\n"
             "- `agents` — the agents, as a child channel. It stays closed until `mount_child` "
-            "opens it; open it when you actually need to drive one."
+            "opens it; open it when you actually need to drive one.\n"
+            "- `ui` — the page itself, also a child channel: dsh's own client API (`layout`, "
+            "`sidebarRight`, `slots`, …), driven by code run inside the page."
         )
 
-    if hive is not None:
-        agents_channel = hive.agents().as_channel()
+    agents_channel = hive.agents().as_channel() if hive is not None else None
+    # The page bridge needs the connection, not the hive: it is a transport to the browser, and it
+    # exists whether or not anything is being driven.
+    page_channel = new_page_channel(runtime.launcher) if runtime.launcher is not None else None
 
-        @chan.build.virtual_children
-        def _children() -> dict[str, MutableChannel]:
-            # Declared, not mounted: the catalog. Mounting is the command below.
-            return {"agents": agents_channel} if agents_channel is not None else {}
+    @chan.build.virtual_children
+    def _children() -> dict[str, MutableChannel]:
+        # Declared, not mounted: the catalog the notice exposes. Mounting is the ghost's action.
+        children: dict[str, MutableChannel] = {}
+        if agents_channel is not None:
+            children["agents"] = agents_channel
+        if page_channel is not None:
+            children["ui"] = page_channel
+        return children
 
     @chan.build.command(name="workspaces", blocking=False, always_observe=True)
     async def _workspaces() -> str:
