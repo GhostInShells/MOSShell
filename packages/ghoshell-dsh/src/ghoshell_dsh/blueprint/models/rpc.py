@@ -43,6 +43,12 @@ RpcErrorCode = Literal[
     "agent-preset-conflict",
     "agent-preset-not-found",
     "agent-preset-invalid",
+    # 0.2.0 起新增的 Remote 域用 ``{域}/{原因}`` 写法, 与上面 apiproxy 时代的连字符码同存:
+    # 三者都来自 0.2.0 的 RemoteErrorDetailsMap, 其中 ``not-found`` 已对着 0.2.0-rc.2 实测
+    # (读一个不存在的 preset, details 带 agentPreset + available).
+    "agent-preset/not-found",
+    "agent-preset/invalid",
+    "agent-preset/locked",
     "agent-busy",
     "attachment-error",
     "queue-item-not-found",
