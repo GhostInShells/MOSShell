@@ -20,7 +20,7 @@ holds the agent sessions you drive through it.
 - `web_url` — the page URL, including the per-launch token.
 - `workspaces` — the places an agent may be created in: name, id, and the directory each one
   bounds. `create_workspace(path, name)` declares a new one; nothing is predefined, and a path
-  outside the node's home is refused.
+  outside the project the node belongs to is refused.
 - `agents` — a child channel holding the agents. It stays **closed** until you open it with
   the parent channel's `mount_child`; then its own commands become available. Opening it is a
   deliberate act, so the node stays small until something is actually being driven.
@@ -36,7 +36,7 @@ holds the agent sessions you drive through it.
 
 Every agent is addressed by a name you choose.
 
-1. **Declare a place first.** A workspace is a directory inside the node's home, and the only
+1. **Declare a place first.** A workspace is a directory inside the project the node serves — the
    place an agent may act in. It is declared on the node's own channel, not on this one — ask
    `workspaces` for what exists, `create_workspace` for a new one.
 2. **Open.** `open(name, workspace, preset, readonly)` creates one. `preset` selects the
@@ -46,13 +46,15 @@ Every agent is addressed by a name you choose.
    arrives later as one message tagged with the hive's name, carrying the agent's name and a
    timestamp — the turn's final answer, and nothing in between.
 4. **End.** `cancel` stops the turn in flight; `retire` ends the membership. `state` and
-   `presets` are the cold reads; the notice carries only the roster.
+   `presets` are the cold reads; the per-agent roster rides on named notices, and the notice line
+   carries the count.
 
 Sessions are runtime-only. After the node restarts, `watch(name, session_id)` is the only way
 back to one.
 
 ## Running it
 
-Started through the matrix node channel, on port 23080 — append `-- --port N` to move it.
+Started through the matrix node channel, on port 23080; pass `extra_args="--port N"` there to move
+it.
 Launch arguments: `--home DIR`, `--profile NAME`, `--title NAME`. Install first — see
 `INSTALL.md`.

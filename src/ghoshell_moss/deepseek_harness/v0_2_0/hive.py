@@ -234,16 +234,19 @@ class DshHive(Hive):
         """Fill the two cached read faces. Idempotent; safe to call on every meta refresh."""
         if not force and (time.monotonic() - self._refreshed_at) < ttl:
             return
-        self._refreshed_at = time.monotonic()
         # A place is this hive's only if it lives inside the hive's root. The engine's list is
         # global — a node's dsh may carry a default workspace somewhere else on the machine — and
         # handing that out would give an agent a boundary this hive never granted.
-        self._workspaces = [
+        workspaces = [
             workspace
             for workspace in (_to_workspace(view) for view in await self._connection.workspaces())
             if self._owns(workspace)
         ]
         roster = await self._surface.presets()
+        # Both reads succeeded — only now is the cache fresh. Stamping the time before the awaits
+        # would turn one failure into thirty seconds of an empty list that looks authoritative.
+        self._refreshed_at = time.monotonic()
+        self._workspaces = workspaces
         self._presets = [
             AgentPreset(
                 id=row.id,
@@ -485,12 +488,14 @@ class DshAgents(Agents):
             return AgentPreset(id=preset_id)
 
     async def _session_exists(self, session_id: SessionId) -> bool:
-        try:
-            value = await self._hive.connection.client.call(
-                "session/list", SessionListParams(), SessionListValue, args_key="_request"
-            )
-        except Exception:  # noqa: BLE001 — cannot verify is not the same as does not exist
-            return True
+        """Whether the engine still knows this session. **Fails closed**: unverifiable is refused.
+
+        Taking up a session that is gone leaves a task waiting on a close that never comes, which
+        looks exactly like a healthy idle agent. Refusing is the cheaper mistake.
+        """
+        value = await self._hive.connection.client.call(
+            "session/list", SessionListParams(), SessionListValue, args_key="_request"
+        )
         return any(item.sessionId == session_id for item in value.items)
 
     def _fanout(self, event: AgentSessionEvent) -> None:

@@ -1,54 +1,29 @@
-"""The agent layer — three layers, two identities, one direction.
+"""The agent layer — what an agent is, who holds it, and what it can be asked to do.
 
-## The three layers
+Three types, one question each:
 
-- **``AgentSession``** — one carrier: the thing that actually gets driven. It has verbs
-  (``send`` / ``cancel`` / ``configure``) and two observation faces, and it dies with its session.
-- **``Agents``** — the collection: who exists right now, how one joins, how one leaves. It owns the
-  roster and the channel, and it never drives anything itself — you ask it for a session and then
-  talk to that.
-- **``Hive``** (``hive.py``) — the place: which workspaces may be handed out, which presets may
-  compose an agent. Policy, stable, and not this file.
+- ``AgentSession`` — one carrier: the thing that gets driven. ``send`` / ``cancel`` /
+  ``configure``, a cheap state read, and two observation faces. It ends with its session.
+- ``Agents`` — the collection: who exists now, how one joins (``open`` / ``watch``), how one leaves
+  (``retire``), and the channel that shows it. It holds no driving verbs: ask it for a session and
+  drive that.
+- ``Hive`` (``hive.py``) — the place: which workspaces may be handed out, which presets may compose
+  an agent.
 
-The cut is by **ownership and lifetime**, not by feature. Anything with a lifetime lives in
-``Agents``; anything that changes the world lives on ``AgentSession``; anything that is a rule
-lives in ``Hive``. A verb that appears in two of them is a verb whose owner has not been decided.
+Two identity types, never interchangeable:
 
-## The two identities
+- ``SessionName`` — the address inside a collection. The caller gives it; every collection-level
+  verb addresses by it.
+- ``SessionId`` — the engine's handle for one carrier. It appears when taking up an existing session
+  (``watch``) and in events; it is not an address.
 
-``SessionName`` and ``SessionId`` are different things with different owners, and confusing them is
-how this layer rots:
+Contracts on this surface:
 
-- **the name** belongs to the runtime: the caller gives it at ``open``/``watch``, the collection
-  keys its roster by it, and every collection-level verb addresses by it.
-- **the session id** belongs to the engine: it identifies one carrier, appears only when a session
-  that already exists is being taken up (``watch``), and is carried in every event.
-
-Neither converts into the other by convention. A name that outlives its carrier is a trajectory
-concept; this layer has no such word.
-
-## Decisions this file has already taken
-
-**Async control, unconditionally.** A synchronous prompt that returns a final answer is a blocking
-command in CTML, and a driver holding many agents could only drive one at a time. So ``send``
-accepts and returns; what came out arrives as events. The synchronous convenience — send, then wait
-— is a caller-side loop over the same stream, never a primitive here.
-
-**Two observation faces, and they are not the same thing.** *Lifecycle events* feed the
-observability surface: one event per position, never a chunk delta, with the engine's own
-``event_name`` passed through untouched and the layer's own ``phase`` as the only vocabulary it
-owns. *The turn-end face* (``on_turn_end``) is the precise field a ghost needs: the turn's answer
-as plain text. Conflating them is how a lifecycle stream gets mistaken for a return value.
-
-**What is deliberately absent.** No ops, no commits (nothing parses a reply's first line); no
-anchors or coordinates (ways of pointing at a trajectory); no fan-out (an agent cannot spawn an
-agent — the collection opens, and that cut keeps a team an explicit act); no live relation objects
-(an agent carries its preset as a **snapshot taken at creation**, plus the id in its state for a
-caller that wants to join to the current declaration — a live lookup would quietly re-bind a
-running agent to a template it never ran).
-
-The rule that keeps this file honest: **it must not import the trajectory.** If a capability needs
-a branch to exist, it does not live here.
+- ``send`` returns nothing and never waits; an answer arrives through ``on_turn_end``.
+- A preset is held as a **snapshot taken at creation**; ``state().preset`` keeps the id for a caller
+  that wants the current declaration.
+- ``open`` never reuses a held name; ``retire`` stops the runtime before dropping the name.
+- This module does not import the trajectory layer.
 """
 
 from __future__ import annotations
@@ -101,13 +76,13 @@ WorkspaceName = str
 class Workspace(BaseModel):
     """A place an agent can be created inside.
 
-    Two different facts wear this name and must not be conflated: a workspace is the engine's
-    **grouping** of sessions by directory, while the **permission boundary** is the session's
-    ``cwd`` — the sandbox's writable root. A session can move between workspaces; its ``cwd`` is
-    what decides what it may touch.
+    A workspace is the engine's grouping of sessions by directory; the **permission boundary** is
+    the session's ``cwd``. A session may move between workspaces — its ``cwd`` is what decides what
+    it may touch.
 
-    ``path`` is data about the place, never a way to name it: callers address a place by
-    ``WorkspaceName``, so a workspace without one cannot be handed out.
+    ``id`` is what the engine addresses it by, ``name`` is what callers address it by, and ``path``
+    is data about the place, never a way to name it. An engine that gives no title leaves ``name``
+    empty; the hive then derives one from the path.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -124,21 +99,15 @@ class Workspace(BaseModel):
 
 
 class AgentPreset(BaseModel):
-    """A template — what an agent is *composed of*, not who it is.
+    """A template — what an agent is composed of, not who it is.
 
-    ``id`` is the whole relationship: an agent stores the id it was created with. ``name`` is a
-    display label and is often absent (measured on dsh 0.2.0-rc.2: four of the five shipped presets
-    carry no name at all), so it can never be the identity.
+    ``id`` is the identity an agent stores. ``name`` is a display label and is often absent, so it
+    can never be the identity.
 
-    There is no capability tag list here on purpose. What a preset can do is its **composition** —
-    the plugins and tools it mounts — which the engine states as readable content. A parallel tag
-    vocabulary would have to be invented by us, could never be satisfied by an adapter, and would
-    be a second source of truth for a fact the engine already owns.
-
-    The patch surface ``configure`` accepts **is** here, but as an opening rather than as content.
-    ``config_json_schema`` is a field a concrete implementation fills with its engine's schema;
-    this file never states what is in it. Its pair lives on the state: schema on the template,
-    current values on the instance.
+    What the template can do is its composition, which the engine states as readable content; this
+    layer states no capability list of its own. ``config_json_schema`` describes the patch
+    ``configure`` accepts and is filled by the concrete implementation — its pair is
+    ``AgentState.config``, which holds the values currently in force.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -149,17 +118,15 @@ class AgentPreset(BaseModel):
     manual: str = Field(
         default="",
         description=(
-            "how to use it well, in the hive's own words. Unfilled for now: the engine states a "
-            "composition, not a usage — this is the place a hive will teach later, kept from the "
-            "earlier contract so the intent is not lost."
+            "how to use it well, in the hive's own words. The engine states a composition, not a "
+            "usage; this is where a hive teaches one."
         ),
     )
     config_json_schema: dict[str, Any] = Field(
         default_factory=lambda: {"type": "object"},
         description=(
             "the JSON schema of the patch ``configure`` accepts, filled by the concrete "
-            "implementation. The default is the empty schema — 'an object, no constraint stated' — "
-            "which is honest: this layer knows nothing about it."
+            "implementation. The default states no constraint."
         ),
     )
 
@@ -170,14 +137,10 @@ class AgentPreset(BaseModel):
 
 
 class AgentPhase(str, Enum):
-    """Where in the carrier's life this event happened.
+    """A lifecycle position — one event per position, never one per token.
 
-    These are **lifecycle positions**, not stream deltas: one event per position, not one per
-    token. That is what makes them drawable — a surface can place them on a timeline without
-    knowing any engine.
-
-    ``reasoning`` and ``tool_use`` are the two sub-phases engines commonly distinguish while
-    working; an engine that cannot split them emits ``running`` and loses nothing.
+    ``reasoning`` and ``tool_use`` refine ``running``; an engine that cannot split them emits
+    ``running``.
     """
 
     created = "created"
@@ -207,11 +170,10 @@ class AgentPhase(str, Enum):
 
 
 class AgentState(BaseModel):
-    """The cheap read: everything a driver needs to decide, without touching the engine.
+    """The cheap read — what a driver needs to decide, without touching the engine.
 
-    Two kinds of data live here: the structural facts fixed when the carrier opened (who it is,
-    where it acts, which preset composed it), and ``config`` — the values ``configure`` has put in
-    force, shaped by the preset's ``config_json_schema``.
+    Two kinds of data: the structural facts fixed at open (identity, where it acts, which preset
+    composed it), and ``config`` — the values ``configure`` has put in force.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -246,18 +208,14 @@ class AgentState(BaseModel):
 
 
 class AgentSessionEvent(BaseModel):
-    """One lifecycle event from one carrier — the shape an observability surface consumes.
+    """One lifecycle event from one carrier — what an observability surface consumes.
 
-    Deliberately generic, because its first consumer draws pictures: a graph places these on a
-    timeline without knowing any engine's vocabulary.
+    Three fields, three jobs:
 
-    Three fields, three jobs, and they must not be conflated:
-
-    - ``event_name`` — the engine's own word, untouched. This layer invents no event vocabulary.
-    - ``description`` — what a human reads. **The displayable field.**
-    - ``payload`` — the concrete, already-filtered data behind the event. Debug-oriented: a
-      broadcast link may drop it, and a consumer that requires it is reading an engine's shapes.
-      It is not a chunk delta — this is a lifecycle event, one per position, not one per token.
+    - ``event_name`` — the engine's own word, untouched; this layer invents no event vocabulary.
+    - ``description`` — what a human reads.
+    - ``payload`` — the concrete data behind the event, for debugging. Optional by contract: a
+      consumer that requires it is reading an engine's shapes.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -286,10 +244,9 @@ EventHook = Callable[[AgentSessionEvent], Awaitable[None] | None]
 
 
 class MessageMode(str, Enum):
-    """Where an accepted message lands. Three boundaries — two cannot express the set.
+    """Where an accepted message lands.
 
-    The names are ours and the mapping is the implementation's: an engine with two verbs covers
-    these three by composing them, and a caller never has to know which.
+    The names are this layer's; the mapping onto an engine's verbs is the implementation's.
     """
 
     inject = "inject"
@@ -305,8 +262,8 @@ class MessageMode(str, Enum):
 class AgentSession(ABC):
     """One carrier session — the living half of a delegation.
 
-    The other half is an identity that outlives this carrier, and it belongs to the layer that owns
-    a trajectory. This object dies with its session, by design: that is why it has no ``reboot``.
+    It ends with its session. An identity that outlives a carrier belongs to the trajectory layer
+    and is not reachable from here — which is why there is no ``reboot``.
     """
 
     @property
@@ -327,20 +284,18 @@ class AgentSession(ABC):
     @property
     @abstractmethod
     def preset(self) -> AgentPreset:
-        """The preset **as it was when this carrier was created** — a snapshot, never a lookup.
+        """The preset as it was when this carrier was created — a snapshot, never a lookup.
 
-        A deployment may replace a preset declaration at any moment, while this carrier keeps
-        running the composition it was actually created with. So the snapshot is the only honest
-        answer to "what is this agent composed of"; ``state().preset`` carries the id for a caller
-        that wants to join to the current declaration itself.
+        A deployment may replace a preset declaration at any moment while this carrier keeps
+        running what it was created with, so the snapshot is what this agent is composed of.
+        ``state().preset`` carries the id for a caller that wants the current declaration.
         """
 
     @property
     def cwd(self) -> str:
         """An **absolute** path: where this agent acts, and therefore what it may act on.
 
-        Fixed when the carrier was opened. This layer never hands out a relative path and never
-        guesses what one would have meant.
+        Fixed at open. This layer never hands out a relative path and never guesses one.
         """
         return self.state().cwd
 
@@ -348,8 +303,8 @@ class AgentSession(ABC):
     def workspace_id(self) -> str:
         """The workspace this carrier is grouped under — an **id, not a path**.
 
-        Grouping and permission are two facts, and this is the weaker one: ``cwd`` decides what the
-        agent may touch, a workspace only decides which list it shows up in.
+        Grouping is not permission: ``cwd`` decides what the agent may touch, a workspace decides
+        which list it appears in.
         """
         return self.state().workspace_id
 
@@ -365,39 +320,33 @@ class AgentSession(ABC):
     ) -> None:
         """Hand one or more messages to the carrier. **Returns nothing, and never waits.**
 
-        There is no return value, and that is not an oversight: "accepted" is the only fact this
-        call can honestly report, and it is already carried by the absence of an exception. The
-        answer is not returned here — it arrives as an ``output`` event. Returning it would be the
-        synchronous protocol wearing an async signature.
+        Acceptance is the only fact this call reports, carried by the absence of an exception. The
+        answer arrives through ``on_turn_end``, never as a return value.
         """
 
     @abstractmethod
     async def cancel(self, reason: str = "") -> None:
         """Stop the turn in flight. Work already done is untouched.
 
-        ``reason`` travels with the cancellation so the carrier — and whoever reads the trace later
-        — can tell an intended stop from a failure. It is optional because "stop" is a complete
-        instruction on its own.
+        ``reason``, when given, reaches the carrier itself, so an intended stop is distinguishable
+        from a failure at both ends.
         """
 
     @abstractmethod
     async def configure(self, patch: dict[str, Any]) -> str:
-        """Patch the carrier's settings, applied at the next turn boundary.
+        """Patch the carrier's settings; the change applies to subsequent turns.
 
-        The patch must match ``AgentPreset.config_json_schema``. That field is the opening; this
-        docstring states nothing about its content, because the shape is the engine's. Absent
-        fields keep their current value — nothing is reset by omission. Returns a short description
-        of what is now in force.
+        The patch must match ``AgentPreset.config_json_schema``. Absent fields keep their current
+        value — nothing is reset by omission. Returns a short description of what is now in force.
         """
 
     @abstractmethod
     def on_session_event(self, hook: EventHook) -> Callable[[], None]:
         """Observe this carrier's lifecycle events; returns the disposer.
 
-        The thin protocol: a ``phase``, the engine's own ``event_name``, a displayable
-        ``description``, and ``payload`` for whoever wants the raw data. An implementation that
-        wants to hand out its own richer structures adds its own hooks — they are not this
-        contract's business.
+        The thin protocol: a ``phase``, the engine's ``event_name``, a displayable ``description``
+        and ``payload``. An implementation may add richer hooks of its own; they are not part of
+        this contract.
         """
 
     @abstractmethod
@@ -407,10 +356,10 @@ class AgentSession(ABC):
     ) -> Callable[[], None]:
         """Observe the end of a turn: ``(final_answer, event)``, **once per turn**.
 
-        Deliberately not "every message the model emits". A turn that uses tools produces several
-        assistant messages — the preamble, then the calls — and only the last one is the answer.
-        Process data belongs to ``on_session_event``; this face promises exactly one thing per
-        turn, as **plain text**, so a caller never has to guess which message counted.
+        A turn that uses tools produces several assistant messages — the preamble, then the calls —
+        and only the last one is the answer. Process data belongs to ``on_session_event``; this
+        face promises exactly one thing per turn, as **plain text**, so a caller never has to guess
+        which message counted. A turn that ends without an answer emits nothing here.
         """
 
 
@@ -420,24 +369,16 @@ class AgentSession(ABC):
 
 
 class Agents(ABC):
-    """The agents one hive holds — the roster, the join/leave verbs, and the channel.
+    """The agents one hive holds — the roster, the join/leave verbs, and its channel.
 
-    **Why this is not the hive.** A hive answers *where may an agent live* and *what may it be
-    composed of*: policy, stable, owned by whoever governs the place. This answers *who exists
-    right now, and how does one come and go*: a runtime collection with a lifetime.
+    It holds no driving verbs: ``send`` / ``cancel`` / ``configure`` belong to a session, so a
+    caller asks for one (``get``) and talks to that.
 
-    **Why the driving verbs are not here.** ``send`` / ``cancel`` / ``configure`` belong to a
-    carrier, and a collection is not one. Ask for the session (``get``) and talk to it. Duplicating
-    a verb on both layers is how a protocol loses track of who owns the action.
+    ``as_channel()`` renders the collection as a child channel of its owner's, never as a root of
+    its own. The roster reaches the ghost as **named notices** — one fragment per held agent, so an
+    agent that disappears can say so.
 
-    **The channel is a child.** ``as_channel()`` renders this collection as a channel mounted under
-    its owner's main channel, never as a root of its own: the node is the address, this is an organ.
-    The roster reaches the ghost as **named notices** — one fragment per held agent, so an agent
-    that disappears can say so, which a single folded notice cannot.
-
-    A hive with no collection at all is legitimate (a read-only surface, a listing). It raises
-    ``NotImplementedError`` from ``Hive.agents`` rather than returning an empty collection that
-    would look like "nobody is running" when the truth is "this hive cannot run anything".
+    A hive with no collection is legal: ``Hive.agents`` raises ``NotImplementedError``.
     """
 
     # -- discovery: data, not handles -------------------------------------------- #
@@ -457,8 +398,8 @@ class Agents(ABC):
     def on_event(self, callback: EventHook) -> Callable[[], None]:
         """Observe every held session through one subscription; returns the disposer.
 
-        The events already carry ``session_id`` and ``session_name``, which is why one collection
-        subscription is enough for a surface that watches several agents at once.
+        Events carry ``session_id`` and ``session_name``, so one subscription covers a surface that
+        watches several agents at once.
         """
 
     # -- lifecycle ----------------------------------------------------------------- #
@@ -474,22 +415,20 @@ class Agents(ABC):
     ) -> AgentSession:
         """Create one agent inside a declared workspace, under ``name``.
 
-        - ``name`` is the address the caller wants; the collection takes it and holds the agent by
-          it. Asking for a name that is already held raises rather than silently rebinding.
-        - ``workspace`` names a place from ``Hive.workspaces()`` — an id or a title, never a path.
-          An unknown name raises: a permission boundary is a declared place, not something typed.
-        - ``preset`` is the composition; empty means the deployment's default.
-        - ``readonly`` is a **creation-time** property, not a later patch. An implementation that
-          cannot express it at creation must set the policy before the first message is accepted,
-          and say so; the invariant is that no turn runs under a permission nobody asked for.
+        - ``name``: the address the caller wants. A name already held raises rather than rebinding.
+        - ``workspace``: a place from ``Hive.workspaces()`` — an id or a title, never a path. An
+          unknown name raises.
+        - ``preset``: the composition; empty means the deployment's default.
+        - ``readonly``: a **creation-time** property, not a later patch. An implementation that
+          cannot express it at creation must set the policy before the first message is accepted.
+          The invariant: no turn runs under a permission nobody asked for.
         """
 
     @abstractmethod
     async def watch(self, name: SessionName, session_id: SessionId) -> AgentSession:
         """Take up a session that exists but is not held here, under ``name``.
 
-        The only way back in, and deliberately an explicit act: a plain collection promises nothing
-        across a restart, so anything "restored" automatically would be a guess dressed as a fact.
+        The only way back in, and an explicit act: a collection promises nothing across a restart.
         What a session id can still reach is the implementation's answer.
 
         :raise KeyError: no such session exists to watch.
@@ -499,13 +438,12 @@ class Agents(ABC):
     async def retire(self, name: SessionName, reason: str = "") -> None:
         """End an agent's membership: stop its carrier, then drop it from the roster.
 
-        Order is the contract, because each step loses something if moved: stop the producer →
-        emit the terminal event → wait for that dispatch to return → dispose the hooks → close the
-        carrier → drop it from the roster **last**, so a listing taken mid-teardown shows something
-        winding down rather than something that vanished.
+        The order is part of the contract: cancel the turn (with ``reason``) → dispose the
+        subscriptions → close the carrier → drop it from the roster **last**, so a listing taken
+        mid-teardown shows something winding down rather than something that vanished. Nothing the
+        carrier emits after this call may reach a caller.
 
-        The terminal event is promised for an orderly shutdown only. A process that dies emits
-        nothing, and that gap is the reader's watch, not this protocol's promise.
+        An orderly end emits a terminal event; a process that dies emits nothing.
         """
 
     @abstractmethod
@@ -515,15 +453,11 @@ class Agents(ABC):
     # -- presentation ----------------------------------------------------------------- #
 
     def as_channel(self) -> Channel | None:
-        """Render this collection as its own child channel — the ghost's control surface for it.
+        """Render this collection as its own child channel — the control surface for it.
 
-        Here rather than inside a builder, because a channel *is* the wiring: if the collection did
-        not produce it, every consumer would write its own, and the second one would describe the
-        same roster in different words. An implementation may bind whatever extra detail its
-        channel needs onto the same object; this face only promises the entry point.
+        The collection produces its channel so that every consumer describes the same roster in the
+        same words. An implementation may bind extra detail onto the same object.
 
-        ``None`` is a legal answer, and it is not a defect: a collection without a channel is one the
-        ghost cannot drive — a fixture, a probe, a runtime still being assembled. Saying so beats
-        returning a channel that describes nothing.
+        ``None`` is legal: a collection without a channel is one the ghost cannot drive.
         """
         return None

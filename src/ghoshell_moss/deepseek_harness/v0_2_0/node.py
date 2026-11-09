@@ -292,13 +292,14 @@ def new_dsh_node_channel(
 
     @chan.build.command(name="create_workspace", blocking=False, always_observe=True)
     async def _create_workspace(path: str, name: str = "") -> str:
-        """Declare a place inside the node's home — nothing is predefined.
+        """Declare a place inside this hive's root — the project home — nothing is predefined.
 
         A workspace is a directory an agent may act inside; creating one is a runtime act, not
         something the environment hands you. The call returns only after the engine has reported
         the place back, so a following `open` can use it immediately.
 
-        :param path: resolved against the node's home. Outside it is refused, never clamped.
+        :param path: resolved against the hive root (the project home). Outside it is refused,
+            never clamped.
         :param name: what callers address it by from then on; empty = the engine names it.
         :return: `ok: <name> · <id>`, or `failed: <reason>`.
         """

@@ -4,8 +4,10 @@ Shape, and why:
 
 - **A child, not a root.** The node is the address; this is an organ of it. A root channel here
   would compete with the node for the same name, and the ghost would have two things called `dsh`.
-- **One control plane.** Every verb lives here and takes a name. The agent itself is reached
-  through the collection (`get(name)`) — the channel is an adapter, never a second implementation.
+- **One control plane, for the agents.** Every *agent* verb lives here and takes a name. The place
+  itself — workspaces — is declared on the owner's channel, because that is where policy belongs.
+  An agent is reached through the collection (`get(name)`), so this channel is an adapter and never
+  a second implementation.
 - **Named notices are the perception face.** One fragment per held agent showing its session id and
   phase — the only two facts a driver needs every turn. A folded notice cannot express "this agent
   is gone"; a named fragment can, because omission *is* removal.
@@ -91,7 +93,8 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
         """Create an agent inside a declared workspace, under this name.
 
         :param name: the runtime name to address it by later. Unknown after a restart.
-        :param workspace: a declared place from the notice — its name, id or title. Never a path.
+        :param workspace: a place declared on the owner's channel (`workspaces` lists them), by
+            name, id or title. Never a path.
         :param preset: which preset composes it; empty = the deployment's default.
         :param readonly: created read-only, before its first message. Not a later patch.
         :return: `ok: <session id>`, or `failed: <reason>`.
@@ -124,7 +127,8 @@ def new_agents_channel(agents: DshAgents) -> MutableChannel:
 
         :param name: the agent's runtime name.
         :param text__: the message body.
-        :param path: a file under the project home carried along as an `@` reference.
+        :param path: a file under the project home carried along as an `@` reference; a path
+            outside it fails the call rather than being dropped.
         :param mode: `enqueue` (after the current turn) · `inject` (held, does not wake) ·
             `steer` (stop what is running and answer now).
         :return: `ok`, or `failed: <reason>`.
@@ -280,9 +284,6 @@ def _prompt_messages(text: str, path: str, project_root: str) -> list[Message]:
                 raise PermissionError(f"path {target} is outside the project home {project_root}") from None
         text = f"@{target}\n{text}"
     base = Path(project_root) if project_root else Path.cwd()
-    try:
-        return Prompt(text, base_dir=base).messages()
-    except PermissionError:
-        # The prompt protocol confines itself to cwd; when the project home is outside it, send the
-        # text as-is rather than losing the message.
-        return [Message.new().with_content(text)]
+    # A file reference the protocol refuses is a failed send, not a text-only one: silently
+    # downgrading would deliver something the caller believes carried a file.
+    return Prompt(text, base_dir=base).messages()

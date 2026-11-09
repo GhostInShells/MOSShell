@@ -1,16 +1,17 @@
 ---
 title: Dsh Node
-status: draft
+status: in-progress
 priority: P1
 created: 2026-11-07
-updated: 2026-11-09
+updated: 2026-11-10
 depends: []
 milestone: dsh 0.2.0-rc.2
 description: >-
-  Two dsh nodes (process launcher + web control) that dogfood the dsh-layer control
-  surface before dolores lands it: users' sessions are read-only, spawned agents are
-  memento branches, and sessions are rebuildable carriers of a unique trajectory.
-  It also carries the **first implementation** of the memento-agent contract.
+  A dsh node that dogfoods the dsh-layer control surface before dolores lands it: one node is
+  one hive (its name comes from its declaration), it declares workspaces and presets, opens
+  runtime agents addressed by name, delivers one turn-end answer per turn, and drives its own
+  page through dsh's client API. It also carries the **first implementation** of the
+  memento-agent contract, which is still outstanding.
 ---
 
 # Dsh Node
@@ -24,7 +25,11 @@ description: >-
 - 接缝层 `ghoshell_moss.deepseek_harness` 的定位 = **支持多版本 dsh 的 channel**，不直接属于 dolores；它自己也有多版本控制问题。（他）
 - 能开在 dsh connection 上的接口/controller 必须由我们提供，**不许调用方再发明一遍**。（他）
 
-## 形状：两个 node
+## 形状：两个 node —— 已被实现修正
+
+> **D09 晚：这条被推翻了。** launcher 与 connection 是**抽象分家、实现可合可分**；node 只选择
+> Connection 从哪来。今天的落地是 `DshLauncher(DshConnection)` + 一个 node = 一个 hive。
+> 下面这张表保留为当时的判断，不作为现状。
 
 launcher 与 web connection 是两个概念，因此是两个 node。（他）
 
@@ -100,6 +105,46 @@ launcher 与 web connection 是两个概念，因此是两个 node。（他）
 - `seed_from_log`：ref → 冷 seed。`TranscriptView`：约定的呈现协议（工具结果、reasoning、机制帧都不进）。
 - 配置面：`LlmConfigPatch.applied_to(base)`（缺省即保持，`reasoningEffort="off"` 是真指令）；
   权限是 `sandbox`（read-only / workspace-write / full-access）+ `approval`（ask / never）。
+
+## 现状（D10 02:30，已提交）
+
+**抽象（`agents/blueprint/`）**
+- `Hive`：`name` / `engine_name` / `version` / `root`（最大边界）/ `workspaces` / `presets` /
+  `preset` / `create_workspace` / `agents`。policy 全在这里，不持有任何运行时。
+- `Agents`：roster（按 runtime name）+ `open` / `watch` / `retire` / `clear` / `list_sessions` /
+  `get` / `on_event` / `as_channel`。**没有驱动动词**——驱动在 session 上。
+- `AgentSession`：`send` / `cancel(reason)` / `configure` / `state` / `on_session_event` /
+  `on_turn_end`；preset 是创建时的快照。
+- 两个身份：`SessionName`（运行时给的地址）/ `SessionId`（引擎句柄，只在 `watch` 与事件里出现）。
+
+**实现（`deepseek_harness/v0_2_0/`）**
+- `DshHive`：连接 + 声明的 places/presets（live 镜像，follow 增量帧维护）；root = project home，
+  越界拒绝；`create_workspace` 用 mutation 回执 + 等帧落地。
+- `DshAgents`：一个 agent 一个 task，**task 就是运行时**——task 停 = cancel session（reason 以
+  `<system_reminder>` 注入）+ discord 订阅 + 关 + 出名册，先断后关。
+- `DshAgentSession`：turn 内缓存最后一条 assistant 消息，`TurnEnd` 才交 final answer（全文）。
+- 节点 channel：`status` / `web_url` / `workspaces` / `create_workspace`，两个 gated virtual child
+  ——`agents`（roster + 动词）与 `ui`（页面桥）。node name 来自 NODE.md → `matrix.this.name`，
+  同时就是 hive name、channel 名、notice 首段、信号 tag。
+
+**页面桥（`ghoshell-dsh` 插件 + `page.py`）**
+- 同一个包两半：host 路由 `/ghoshell/bridge/{exec,pull,result,status}` + `client.js`；
+  `page_exec` 在页面的 cordis ctx 里跑代码，`describe(name)` 读服务的活形状。
+- 限制：页面只在窗口前台时轮询，后台窗口驱动不了，`attached` 是读数。
+
+## 遗留（按要紧程度）
+
+1. **memento agent 实装**（本 workstream 承载）：`MementoAgentSession` / `MementoAgents` /
+   `MementoAgentHive`——spawn 写声明 commit、reboot 折 branch、channel 面（按 `memento_agent.py`
+   的契约）。这是下一轮的主线。
+2. **session 不归档会膨胀**：`retire` 只关不 archive，workspace 的 `sessionIds` 只增不减。dsh 有
+   `workspace/archiveSession`（可带 stop）/ `unarchiveSession` / `pinSession`；还需要一个数量策略
+   与磁盘 GC（archive 不删日志）。
+3. `configure` 未验生效；`watch` 只走代码路径。
+4. **turn 以 tool-call 结束（或被截断）时没有答案也没有回调**——需要一个"结束但无答案"的出口。
+5. 页面桥应为可选（今天的形态是装了插件就有）。
+6. `.memento` 只建不写；节点 stdout 不 flush（D09 那条 capture bug）。
+7. `readonly` 是创建后补 `set_policy`，与第一条消息之间有一个窗口（不变量：policy 落定前不发消息）。
 
 ## 观测面
 
