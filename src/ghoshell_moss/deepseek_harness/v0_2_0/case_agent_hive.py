@@ -20,15 +20,18 @@ and ``tmp/`` (the durable mirror of the carrier's scratch directory).
 
 ## The verb set
 
-``draft`` writes the documents, ``bind`` gives the case a carrier, ``autopilot`` dispatches
-the loop. ``pause`` stops it from outside; a violation or an exhausted budget stops it from
-inside. Both write a ``run.end`` commit; only ``pause`` leaves the carrier attached.
+``draft`` writes the documents, ``bind`` defines a **new** carrier, ``autopilot`` continues the
+case. The default start is a *reboot*: with no live carrier, ``autopilot`` resumes the session
+the last commit names — the engine loads it back into memory on the follow stream — and only
+``bind`` creates a session that has to be taught the case again. ``pause`` stops a run from
+outside; a violation or an exhausted budget stops it from inside. Both write a ``run.end``
+commit; only ``pause`` leaves the carrier attached.
 
 ## Commits
 
 | commit | metatype | metadata |
 |---|---|---|
-| a finished step | ``""`` | ``operation``, ``session_ref``, ``usage`` |
+| a finished step | ``""`` | ``operation``, ``session_ref``, ``session_seq``, ``usage`` |
 | a carrier was bound | ``init`` | ``session_ref``, ``preset``, ``workspace``, ``tmp_dir`` |
 | a run started | ``run.start`` | ``run`` |
 | a run ended | ``run.end`` | ``run`` |
@@ -99,7 +102,11 @@ _CONTINUE = "continue: take the next step."
 what makes this sentence stable: a continuation carries no new information."""
 
 _SNAPSHOT_WAIT = 5.0
-"""How long ``bind`` waits for the engine's follow snapshot before reading the cwd back."""
+"""How long a new or resumed carrier waits for the engine's follow snapshot.
+
+Both paths need it: after ``session_create`` the cwd is only known from the snapshot, and after
+a reboot the snapshot is also the proof that the named session still exists.
+"""
 
 _LEVEL_PRIORITY = {
     Level.BACKGROUND: Priority.BACKGROUND,
@@ -165,15 +172,18 @@ def _read_meta(path: Path) -> CaseMeta:
 
 
 def _render_priming(brief: CaseBrief, manifest: str, history: str) -> str:
-    """The text a carrier receives before its first prompt — parts 2–6 of the chain.
+    """The text a *new* carrier receives when the case is bound.
 
-    Part 1 (the preset's own prompt) belongs to the engine and is already in the session.
-    ``history`` is the trace folded to one line per step: a rebuilt carrier must continue a case,
-    not start it over, and the trajectory is the only thing that says where it stopped.
+    This is the one place the case is taught: a bind creates a session that knows nothing, so
+    the brief, the protocol, where the case stands and what is in scratch all have to be here.
+    A reboot does not repeat it — it resumes the session that already read this.
     """
     return "\n".join(
         [
             "# Delegation",
+            "",
+            "You are the carrier of an ongoing case, not a new task. The trajectory below is",
+            "what the case has already done; this session is the carrier it continues through.",
             "",
             "## The case",
             "",
@@ -206,6 +216,54 @@ def _render_history(case: Case, limit: int = 20) -> str:
         if body:
             lines.append(f"  {body[:300]}")
     return "\n".join(lines)
+
+
+def _render_reboot(
+    *,
+    name: str,
+    last_step: CommitView | None,
+    last_run: dict[str, Any] | None,
+    scratch: Path,
+    trigger: str,
+) -> str:
+    """The boundary marker a resumed carrier receives before it continues.
+
+    A reboot resumes the session, so the conversation above is the real history; repeating the
+    delegation here would be a second, folded copy of it. The reminder says only what the model
+    cannot see for itself — that the process restarted, and where the trace stopped — then hands
+    the floor back with the ordinary trigger.
+    """
+    step_line = "none yet"
+    if last_step is not None:
+        title = last_step.title
+        step_line = f"{last_step.coord} — {title}" if title else last_step.coord
+    stop = ""
+    if isinstance(last_run, dict):
+        stop = str(last_run.get("stop") or "")
+    if last_step is not None:
+        instruction = (
+            "Continue this case: one step per reply, the first line an op word from your "
+            "protocol. Do not restate or redo the last step."
+        )
+    else:
+        instruction = (
+            "Begin this case: one step per reply, the first line an op word from your protocol."
+        )
+    return "\n".join(
+        [
+            "<system_reminder>",
+            f'The carrier for case "{name}" was rebuilt after a restart. The conversation '
+            "above is your real history; nothing was folded or lost.",
+            "",
+            f"- Last recorded step: {step_line}",
+            f"- Last run: {stop or 'none yet'}",
+            f"- Scratch directory: {scratch}",
+            "",
+            instruction,
+            "</system_reminder>",
+            trigger,
+        ]
+    )
 
 
 def _off_record_prompt(coord: str, question: str) -> str:
@@ -645,11 +703,153 @@ class DshCaseAgentManager(CaseAgentManager[str]):
                 return ref.metadata
         return {}
 
+    def _last_session_ref(self, case: DshCase) -> str | None:
+        """The session the trace names last — the locator a reboot resumes.
+
+        Every step records the session that produced it and every ``init`` the session it bound,
+        so a case that ever had a carrier always has a pointer, even when the carrier is dead.
+        """
+        for ref in reversed(case.branch.commits()):
+            metadata = ref.metadata if isinstance(ref.metadata, dict) else {}
+            session_ref = metadata.get("session_ref")
+            if isinstance(session_ref, str) and session_ref:
+                return session_ref
+        return None
+
+    def _last_step(self, case: DshCase) -> CommitView | None:
+        """The newest commit that carries an operation — where the case actually stopped."""
+        for ref in reversed(case.branch.commits()):
+            if Operation.from_commit_ref(ref) is not None:
+                return case.branch.get_commit(ref.seq)
+        return None
+
+    def _last_run(self, case: DshCase) -> dict[str, Any] | None:
+        for ref in reversed(case.branch.commits()):
+            if ref.metatype == "run.end" and isinstance(ref.metadata, dict):
+                run = ref.metadata.get("run")
+                return run if isinstance(run, dict) else None
+        return None
+
+    def _dangling_run(self, case: DshCase) -> dict[str, Any] | None:
+        """The last ``run.start`` that no ``run.end`` closed — a process that died mid-run.
+
+        The engine repairs its own session on resume (it appends interrupted-turn closers).
+        This is the other half, which only the case layer can see: without it the trace keeps
+        claiming a run is open forever, and "what is left of the budget" derives from a run that
+        will never end.
+        """
+        pending: dict[str, Any] | None = None
+        for ref in case.branch.commits():
+            if ref.metatype == "run.start":
+                run = ref.metadata.get("run") if isinstance(ref.metadata, dict) else None
+                pending = run if isinstance(run, dict) else None
+            elif ref.metatype == "run.end":
+                pending = None
+        return pending
+
+    def _close_dangling_run(self, case: DshCase) -> None:
+        """Record the end a hard kill could not write. Idempotent: a closed run stays closed."""
+        run = self._dangling_run(case)
+        if run is None:
+            return
+        try:
+            closed = Run.model_validate(run).model_copy(
+                update={"ended": _now(), "stop": "interrupted"}
+            )
+        except Exception:  # noqa: BLE001 — a malformed record is not worth inventing a second one
+            self._hive.logger.warning(
+                "case %s: leaving a malformed open run untouched", case.name, exc_info=True
+            )
+            return
+        case.branch.commit(
+            message="run end: interrupted",
+            metatype="run.end",
+            metadata={"run": closed.model_dump(mode="json")},
+        )
+        self._hive.logger.info("case %s: closed a run interrupted by a restart", case.name)
+
+    async def _reboot(self, case: DshCase) -> DshCaseAgent:
+        """Reattach a case to the session its trace names — the default way it continues.
+
+        This is not a bind. A bind defines a *new* carrier; a reboot resumes the one the last
+        commit points at, and the engine loads it back into memory on the follow stream (the
+        same path a prompt takes, so no new interface is needed). The one thing that cannot be
+        restored is a session somebody archived: its log is still readable, but the engine's
+        pre-step gate rejects every turn. That is a fast failure, not a reason to guess.
+        """
+        session_ref = self._last_session_ref(case)
+        if session_ref is None:
+            raise RuntimeError(
+                f"case {case.name!r} was never bound — call `bind` to define a carrier"
+            )
+        connection = self._hive.connection
+        if await connection.session_archived(session_ref):
+            raise RuntimeError(
+                f"case {case.name!r}: session {session_ref} is archived — "
+                "call `bind` to define a new carrier"
+            )
+        session = connection.create_session(session_ref, self._hive.logger)
+        await session.__aenter__()
+        if not await session.wait_follow_snapshot(timeout=_SNAPSHOT_WAIT):
+            await session.close()
+            raise RuntimeError(
+                f"case {case.name!r}: session {session_ref} could not be restored — "
+                "call `bind` to define a new carrier"
+            )
+        init = self._last_init(case)
+        workspace = str(init.get("workspace") or "")
+        place = None
+        if workspace:
+            with contextlib.suppress(KeyError):
+                place = self._hive.workspace(workspace)
+        cwd = await session.cwd() or (place.path if place is not None else "")
+        preset = await session.agent_preset() or str(init.get("preset") or "")
+        carrier = DshAgentSession(
+            session,
+            hive=self._hive.name,
+            engine=f"{self._hive.engine_name}@{self._hive.version}",
+            name=case.name,
+            preset=self._preset_snapshot(preset),
+            cwd=cwd,
+            workspace_id=place.id if place is not None else "",
+        )
+        scratch_text = str(init.get("tmp_dir") or "")
+        scratch = Path(scratch_text) if scratch_text else Path(cwd) / ".case-tmp" / case.name
+        if not scratch.exists():
+            # The scratch directory survived the restart in the common case; only an empty one
+            # is rebuilt from the durable mirror. Copying over a live scratch would delete work
+            # the last step did not get to mirror.
+            scratch.mkdir(parents=True, exist_ok=True)
+            _mirror(case.tmp, scratch)
+        agent = DshCaseAgent(case.name, case, carrier, scratch)
+        self._agents[case.name] = agent
+        self._close_dangling_run(case)
+        return agent
+
+    async def _archive_last_session(self, case: DshCase) -> None:
+        """Give an idle case's session back to the workspace — the other half of ``_retire``.
+
+        A case whose carrier is gone still owns the session its last step names. Resolving it
+        used to leave that session in the active set forever, because only a live carrier was
+        retired. Archiving never takes the log away: ``chat`` keeps working on every step, and
+        ``bind`` is what a caller does when they want a new session instead.
+        """
+        session_ref = self._last_session_ref(case)
+        if session_ref is None:
+            return
+        try:
+            await self._hive.connection.archive_session(session_ref, stop=True)
+        except Exception:  # noqa: BLE001 — the case still resolves; the miss is logged, not hidden
+            self._hive.logger.warning(
+                "case %s: could not archive session %s", case.name, session_ref, exc_info=True
+            )
+
     async def bind(self, request: BindRequest) -> CaseAgent[str]:
         case = self._load(request.case_name)
         previous = self._agents.pop(request.case_name, None)
         if previous is not None:
             await self._retire(previous, reason="rebind")
+        self._close_dangling_run(case)
 
         init = self._last_init(case)
         workspace = request.workspace or str(init.get("workspace") or "")
@@ -763,7 +963,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
             tag=self._hive.name,
             attributes={"case": agent.name, "coord": commit.coord, "op": operation.op},
             timestamp=True,
-        ).with_content(f"{commit.coord} {commit.headline}")
+        ).with_content(commit.headline)
         signal = new_notify_signal(
             container,
             priority=_LEVEL_PRIORITY[operator.level],
@@ -798,7 +998,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
             raise RuntimeError(f"case {case.name!r}: commit {ref.seq} is not readable")
         return DshCaseCommit(view)
 
-    async def _loop(self, agent: DshCaseAgent, run: Run, kickoff: str) -> None:
+    async def _loop(self, agent: DshCaseAgent, run: Run, first_message: str) -> None:
         case = agent.case
         deadline = (
             time.monotonic() + run.budget.seconds if run.budget.seconds is not None else None
@@ -806,7 +1006,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         used = 0
         try:
             await agent.carrier.send(
-                Message.new(tag="kickoff").with_content(kickoff), mode=MessageMode.enqueue
+                Message.new(tag="kickoff").with_content(first_message), mode=MessageMode.enqueue
             )
             while True:
                 timeout: float | None = None
@@ -865,27 +1065,49 @@ class DshCaseAgentManager(CaseAgentManager[str]):
             agent._task = None
 
     async def autopilot(self, request: AutopilotRequest) -> CaseAgent[str]:
+        case = self._load(request.case_name)
         agent = self._agents.get(request.case_name)
-        if agent is None:
-            raise RuntimeError(
-                f"case {request.case_name!r} has no carrier — call `bind` first"
-            )
-        if agent.is_running():
+        if agent is not None and agent.is_running():
             raise RuntimeError(f"case {request.case_name!r} is already running")
-        first_run = not any(ref.metatype == "run.start" for ref in agent.case.branch.commits())
-        kickoff = (
-            f"kickoff: {agent.case.brief.name} — begin; one step per reply."
-            if first_run
-            else f"continue: {agent.case.brief.name} — pick up where you stopped; one step per reply."
-        )
-        run = Run(started=_now(), budget=request.budget)
-        agent.case.branch.commit(
-            message=kickoff, metatype="run.start", metadata={"run": run.model_dump(mode="json")}
-        )
+        reborn = agent is None
+        if agent is None:
+            agent = await self._reboot(case)
+        try:
+            first_run = not any(ref.metatype == "run.start" for ref in case.branch.commits())
+            trigger = (
+                f"begin: {case.name} — take the first step; one step per reply."
+                if first_run
+                else f"continue: {case.name} — pick up where you stopped; one step per reply."
+            )
+            first_message = trigger
+            if reborn:
+                # A resumed session keeps the real conversation; the reminder only marks the
+                # boundary the model cannot see (the process restarted) and says where the trace
+                # stopped.
+                first_message = _render_reboot(
+                    name=case.name,
+                    last_step=self._last_step(case),
+                    last_run=self._last_run(case),
+                    scratch=agent._scratch,
+                    trigger=trigger,
+                )
+            run = Run(started=_now(), budget=request.budget)
+            case.branch.commit(
+                message=f"{trigger} (rebuilt carrier)" if reborn else trigger,
+                metatype="run.start",
+                metadata={"run": run.model_dump(mode="json")},
+            )
+        except Exception:
+            # A half-built autopilot must not leave a resumed session attached to nothing.
+            if reborn:
+                with contextlib.suppress(Exception):
+                    await agent._close()
+                self._agents.pop(case.name, None)
+            raise
         agent._drain()
         agent._run = run
         agent._running = True
-        agent._task = asyncio.create_task(self._loop(agent, run, kickoff))
+        agent._task = asyncio.create_task(self._loop(agent, run, first_message))
         return agent
 
     # -- stops ------------------------------------------------------------------------------- #
@@ -895,14 +1117,22 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         if agent is None:
             raise NameError(f"case {case_name!r} has no carrier to pause")
         await self._stop_loop(agent, "paused")
+        detail = reason.strip()
+        reminder = "The issuer paused this case."
+        if detail:
+            reminder += f" Reason: {detail}"
+        reminder += " The run has ended; do not start a turn until the next run begins."
         with contextlib.suppress(Exception):
-            await agent.carrier.cancel(reason)
+            await agent.carrier.cancel(reminder)
 
     async def resolve(self, case_name: str, reason: str = "") -> None:
         case = self._load(case_name)
         agent = self._agents.get(case_name)
         if agent is not None:
             await self._retire(agent, reason=reason or "resolved")
+        else:
+            self._close_dangling_run(case)
+            await self._archive_last_session(case)
         self._set_state(case, CaseState.resolved, reason)
 
     async def close(self, case_name: str, reason: str = "") -> None:
@@ -910,6 +1140,9 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         agent = self._agents.get(case_name)
         if agent is not None:
             await self._retire(agent, reason=reason or "closed")
+        else:
+            self._close_dangling_run(case)
+            await self._archive_last_session(case)
         self._set_state(case, CaseState.cancelled, reason)
         with contextlib.suppress(Exception):
             self._memento.archive_branch(case_name)

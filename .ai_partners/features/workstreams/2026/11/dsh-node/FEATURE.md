@@ -10,8 +10,8 @@ description: >-
   A dsh node that dogfoods the dsh-layer control surface before dolores lands it: one node is
   one hive (its name comes from its declaration), it declares workspaces and presets, opens
   runtime agents addressed by name, delivers one turn-end answer per turn, and drives its own
-  page through dsh's client API. It also carries the **first implementation** of the
-  memento-agent contract, which is still outstanding.
+  page through dsh's client API. It also carries the **case agent** — stateful tasks on a
+  memento branch, driven by dsh sessions that may be resumed, redefined, or archived.
 ---
 
 # Dsh Node
@@ -128,6 +128,34 @@ launcher 与 web connection 是两个概念，因此是两个 node。（他）
   而频道把异常渲染成 `failed: `（空串），看起来像"没有原因"。要补两处：`chat_off_record` 加 per-call
   timeout，频道统一 `failed: <Type>: <msg>`。
 
+## D10 深夜：bind 与 reboot 分开，重启不是重建
+
+> 他纠正的设计语义：**autopilot 默认继续；重新 bind 才是特殊操作**。bind 是"重新定义
+> session"，默认启动是从 last commit ref 里把 session 读回来。原实现把重启也走了 bind，
+> 每次重启新开 session + 折 300 字历史喂进去——这是偏差。
+
+- **reboot = 恢复同一个 session**：取最新一条带 `session_ref` 的 commit，`create_session(ref)`
+  + follow 快照；引擎在 follow/prompt 时自己 resume（`resolveAgent` → `resumeObserved` →
+  `ctx.agents.resume({resumeSessionId})`），**不需要新接口**。上下文是真实历史，不折 briefing。
+- **bind = 特殊操作**：新建 session，delegation priming 教会它这个 case，写 init commit。
+- **归档是快失败**：workspace follow 流本来就有 `archived` 帧（原镜像丢掉了），launcher 现在
+  真持有；reboot 前查集合，命中就 `failed: ... call bind to define a new carrier`。归档不破坏
+  `chat`——`chatOffRecord` 不走 agent loop，按 seq 切存储日志、直接 `llm.stream`。
+- **resolve/close 对 idle case 也归档**：原实现只在有活载体时 `_retire`；现在无载体也按 last ref
+  归档。归档后仍然可 `chat`（已真机验）。
+- **悬案 run.end**：硬杀进程会留下没有 `run.end` 的 `run.start`。reboot / resolve / close 先补一条
+  `run.end: interrupted`（dsh 只管修自己的 session，memento 的账只有 case 层能记）。
+- **提示词结构**（他要求"不要将就"）：delegation 只在 bind（重教）；reboot 只标边界
+  （`<system_reminder>`：载体重建、上文是真历史、最后一步、上一轮怎么停、scratch；再接 trigger）；
+  kickoff/continue 只开轮次；pause 的原因由 case 层拼完整句子。
+- **notice 加决策输入**：case 行现在带 `op→next` 与最后 run 的 stop，例如
+  `open · idle · 2-10 · report→continue · exhausted`——一眼区分"等 resolve"和"等新授权"。
+- 真机验（D10 23:42）：smoke-1 resolve 后归档 → autopilot 立刻 fast-fail archived；
+  dsh-node-status 的 autopilot 走 reboot，trace 2-8 写 `(rebuilt carrier)`，恢复会话后正常出 step 2-9，
+  120s 预算截断为 run.end exhausted；resolve 后 session 归档，`chat` 仍能回答。
+- **部署缝（未修，先记）**：插件改动必须重跑 `node --install`，节点启动不会自动刷新
+  `.hive/.dsh` 里的 bundle；这次 `archiveSession` 就是因旧 bundle 静默失败了一轮。
+
 ## 现状（D10 02:30，已提交）
 
 **抽象（`agents/blueprint/`）**
@@ -156,40 +184,43 @@ launcher 与 web connection 是两个概念，因此是两个 node。（他）
 
 ## 遗留（按要紧程度）
 
-1. **memento agent 实装**（本 workstream 承载）：`MementoAgentSession` / `MementoAgents` /
-   `MementoAgentHive`——spawn 写声明 commit、reboot 折 branch、channel 面（按 `memento_agent.py`
-   的契约）。这是下一轮的主线。
-2. **session 不归档会膨胀**：`retire` 只关不 archive，workspace 的 `sessionIds` 只增不减。dsh 有
-   `workspace/archiveSession`（可带 stop）/ `unarchiveSession` / `pinSession`；还需要一个数量策略
-   与磁盘 GC（archive 不删日志）。
+1. **插件 bundle 会在 node 里变旧**：改 `plugin/index.js` 后必须重跑 `node --install`，
+   节点启动不刷新 `.hive/.dsh` 里的 bundle；旧 bundle 会让新动词（这次的 `archiveSession`）
+   静默失败。要么启动时自动 refresh，要么 `check.py` 比对版本/内容后拒绝启动。
+2. **协议模板还是空的**：`cases/protocols` 目录尚未落一个默认模板；两个 case 都是内联协议，
+   模板路径一次没走过。下一轮存 2–3 个 stub 模板（research / implement / review），再让 draft 引用。
 3. `configure` 未验生效；`watch` 只走代码路径。
 4. **turn 以 tool-call 结束（或被截断）时没有答案也没有回调**——需要一个"结束但无答案"的出口。
 5. 页面桥应为可选（今天的形态是装了插件就有）。
 6. `.memento` 只建不写；节点 stdout 不 flush（D09 那条 capture bug）。
-7. `readonly` 是创建后补 `set_policy`，与第一条消息之间有一个窗口（不变量：policy 落定前不发消息）。
+7. `readonly` 的窗口已经收窄：bind 里 `prime` → `set_policy` → 发 delegation，第一条消息前落定；
+   但 reboot 恢复的 session 依赖自身日志里的 policy，不重新声明——若人类在 UI 上改过权限，
+   恢复后以引擎里的为准（已够用，记录口径）。
 
 ## 观测面
 
 - 节点自己要有 terminal / file-editor 式的面：发给 agent 的高级命令在界面上可见，必要时加 trust 闸口。（他）
 - dsh 运行时可视化**不另做**——dsh 自带观测插件足够；独立做价值不大。（他）
 
-## 落地顺序（明天从这里开始）
+## 落地顺序（下一轮从这里开始）
 
-1. **Hive 实现**：一个 `Memento` + presets + 委派名册；`spawn` 写声明 commit 并起第一个载体。
-2. **Session 适配**：把 dsh session 包成 `MementoAgentSession`；`prompt` 映射到 `session/prompt(mode=...)`，
-   turn 结束回调接 `on_turn`，`configure` 映射到 `LlmConfigPatch` + 权限面。
-3. **reboot**：折 branch → 造 briefing/seed → 起新 session → 写 session-start commit（engine / session id / 生效配置）。
-4. **channel 面**（按 `channel_builder` 三层）：
-   `instruction` 讲协议；`notice` 给蜂群摘要；**`named_notices` 每个 agent 一片**（只有分片能表达"消失"）；
-   commands：`spawn / prompt / cancel / reboot / configure / archive / read / chat`；一步完成发 mindflow signal。
+1. **协议模板**：在 `cases/protocols` 存 2–3 个 stub（research / implement / review），
+   `draft` 引用模板；模板要带 introduction + 每个 op 的 instruction / next / level。
+2. **插件 bundle 刷新**：节点启动时比对/刷新 `.hive/.dsh` 的 bundle，或 `check.py` 拒绝旧 bundle。
+   这条不修，下一次插件改动还会静默失败。
+3. **reboot 的预算/重试**：这次 smoke 用 120s 跑一个大历史会话，第一轮就吃满；真实续跑要按
+   session 体积和上一次 step 的 usage 给 grant，而不是随手一个数。
+4. **resolve 后的名字**：resolved 的 case 仍可 read/chat，但 `autopilot` 现在会 fast-fail archived；
+   如果将来要"重开"一个 resolved case，需要显式 reopen（bind 新载体 + 改状态），现在没有这个动词。
+5. 其余见"遗留"。
 
 ## 待定
 
 1. 重建触发：上下文水位强制 + op 可选？（我推）
-2. branch 存放：节点自己的 memento store（我推），还是 ghost ego store 里的兄弟 branch。
-3. 冷读归谁：engine 补 `read_session`（我推），还是节点直接开 persistence 文件。
+2. branch 存放：节点自己的 memento store（已定：`.hive/cases`）。
+3. 冷读归谁：已定：`chatOffRecord` 走存储日志 + fork seed，不需要 engine 补 `read_session`。
 4. 节点退出时 live dsh session：留（branch 可恢复）还是 dispose；重进时如何接管。
-5. op 词集合与 level 映射表：先定最小集（continue / stop / need_human / error）还是一步到位。
+5. op 词集合与 level 映射表：已由 case 的 CASE.md 自声明；模板化后是模板的事。
 6. **config 的落点**（他 D09）：运行时直接 set，不建配置文件；只有当"重建时配置要对齐"真的需要时，
    才把 config 显式放进 branch 目录、按目录读。
 

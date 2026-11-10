@@ -11,8 +11,9 @@ Three things decide the shape:
   That is the same text the ghost reads, so there is one description, not a hand-written copy
   that drifts from the code.
 - **Named notices are the perception face.** One fragment per case: state, whether a loop is
-  running, and the last coordinate. A fragment can announce its own disappearance. The
-  per-case detail is a cold read (``read``), never notice material.
+  running, the last coordinate, and — the part that decides the next action — what the last
+  step said (`op→next`) and how the last run ended. A fragment can announce its own
+  disappearance. The per-case detail is a cold read (``read``), never notice material.
 - **The reading faces are commands.** ``read`` and ``chat`` are explicit acts — the trace is
   the interface, but only when someone looks.
 """
@@ -25,6 +26,7 @@ from ghoshell_moss.agents.blueprint.case import (
     AutopilotRequest,
     BindRequest,
     CaseDefinition,
+    Operation,
     ProtocolTemplate,
 )
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
@@ -41,10 +43,14 @@ every carrier that runs it.
 
 - `draft(definition)` creates one: it writes the case documents and returns the case's path.
   Authoring a case means editing `CASE.md` there — the body is the brief.
-- `bind(request)` gives a case a carrier. With no fields filled in it rebuilds the carrier the
-  last init commit recorded, which is the way back after a restart.
-- `autopilot(request)` dispatches the loop and returns at once. Every finished step arrives as
-  a commit — read them with `read`, or ask one a question with `chat`.
+- `bind(request)` defines a **new** carrier for a case: it opens a fresh session and teaches it
+  the case. It is the explicit redefinition — use it when the session is gone or a different
+  composition is wanted, not as the way back after a restart.
+- `autopilot(request)` continues the case and returns at once. With no live carrier it reattaches
+  to the session the last commit names (a reboot: the engine resumes it), then dispatches the
+  loop. It fails only when that session is archived or gone — then `bind` defines a new one.
+  Every finished step arrives as a commit — read them with `read`, or ask one a question with
+  `chat`.
 - `pause` stops a running case from the outside; `resolve` declares it finished; `close`
   abandons it and archives its branch.
 
@@ -91,6 +97,12 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
             if len(description) > 80:
                 description = description[:80] + "…"
             line = f"{state} · {running} · {last}"
+            step = _last_step_fragment(refs)
+            if step:
+                line += f" · {step}"
+            stop = _last_run_fragment(refs)
+            if stop:
+                line += f" · {stop}"
             if description:
                 line += f" · {description}"
             fragments[name] = line
@@ -243,6 +255,32 @@ def _running(manager: DshCaseAgentManager, name: str) -> bool:
     return agent is not None and agent.is_running()
 
 
+def _last_step_fragment(refs: list) -> str:
+    """``op→next`` of the newest step — the verdict a roster scan needs.
+
+    A case whose last word was `done→break` is waiting for ``resolve``; one whose word was
+    `research→continue` is waiting for another run. Leaving this out forced one ``read`` per
+    idle case just to decide what to do with it.
+    """
+    for ref in reversed(refs):
+        operation = Operation.from_commit_ref(ref)
+        if operation is not None:
+            return f"{operation.op or 'violation'}→{operation.next.value}"
+    return ""
+
+
+def _last_run_fragment(refs: list) -> str:
+    """How the last run ended — `exhausted` wants a new grant, `done` wants resolve."""
+    for ref in reversed(refs):
+        if ref.metatype != "run.end" or not isinstance(ref.metadata, dict):
+            continue
+        run = ref.metadata.get("run")
+        if isinstance(run, dict):
+            return str(run.get("stop") or "")
+        return ""
+    return ""
+
+
 def _draft_doc() -> str:
     return (
         "Create a case: the branch, CASE.md and its control document; returns the document path.\n"
@@ -253,16 +291,19 @@ def _draft_doc() -> str:
 
 def _bind_doc() -> str:
     return (
-        "Give a case a carrier: read the documents, prime the carrier, record an init commit.\n"
-        "Every field but `case_name` is optional; an empty bind rebuilds the carrier the last\n"
-        "init commit recorded — the way back after a restart.\n\n"
+        "Define a new carrier for a case: read the documents, prime the new session, record an\n"
+        "init commit. Every field but `case_name` is optional; an empty bind reuses the recorded\n"
+        "form but still opens a new session — this is the explicit redefinition, not the way back\n"
+        "after a restart (use `autopilot` for that).\n\n"
         ":param text__: one BindRequest as JSON:\n" + _schema(BindRequest)
     )
 
 
 def _autopilot_doc() -> str:
     return (
-        "Dispatch the case loop and return at once. Results arrive as commits.\n"
+        "Continue the case: reattach a carrier if needed, then dispatch the loop; returns at\n"
+        "once. With no live carrier it resumes the session the last commit names; it fails only\n"
+        "when that session is archived or gone (then `bind` defines a new carrier).\n"
         "The loop stops on a violation, an exhausted budget, a break word, or `pause`.\n\n"
         ":param text__: one AutopilotRequest as JSON:\n" + _schema(AutopilotRequest)
     )

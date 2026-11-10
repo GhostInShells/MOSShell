@@ -17,20 +17,36 @@ Two conditions make a plugin loadable, and both are placement problems, not pack
 
 Copy, not symlink: a symlink goes stale the moment the package is reinstalled somewhere else,
 and its failure mode is "the plugin silently stops loading".
+
+## The bundle carries its own fingerprint
+
+An installed bundle is only as fresh as the last copy, and nothing about the old one looks
+wrong — a missing verb surfaces as a silent failure much later. So every copy writes
+``ghoshell-bundle.json`` beside the plugin: the content hash of the files that were copied
+plus the package version. ``refresh_plugin`` compares that stamp with the source and copies
+only when the bytes differ; the check names no verb, so a new plugin capability can never
+require a matching new check.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 __all__ = [
     "BUNDLE_NAME",
+    "BUNDLE_STAMP",
     "bundle_dir",
+    "bundle_fingerprint",
     "install_plugin",
+    "installed_fingerprint",
     "installed_patch",
     "installed_root",
+    "plugin_changed",
+    "refresh_plugin",
 ]
 
 #: The bundle's package name — also its path under `node_modules`.
@@ -38,6 +54,9 @@ BUNDLE_NAME = "@local/ghoshell-dsh"
 
 #: The marker that must appear in `dsh --dump-config` once the patch layer is applied.
 BUNDLE_ENTRY_ID = "ghoshell"
+
+#: The stamp written into every installed copy — its content hash and version.
+BUNDLE_STAMP = "ghoshell-bundle.json"
 
 
 def bundle_dir() -> Path:
@@ -55,12 +74,61 @@ def installed_patch(home: str | Path) -> Path:
     return installed_root(home) / "cordis.patch.yml"
 
 
+def _digest(root: Path) -> str:
+    """A stable content fingerprint: relative names plus bytes, in sorted order.
+
+    The stamp itself is excluded, so writing it into an installed copy does not change what
+    the copy is a copy *of*.
+    """
+    sha = hashlib.sha256()
+    for item in sorted(path for path in root.rglob("*") if path.is_file()):
+        relative = item.relative_to(root).as_posix()
+        if relative == BUNDLE_STAMP:
+            continue
+        sha.update(relative.encode("utf-8"))
+        sha.update(b"\0")
+        sha.update(item.read_bytes())
+        sha.update(b"\0")
+    return sha.hexdigest()
+
+
+def bundle_fingerprint() -> str:
+    """The fingerprint of the plugin as it ships in this package."""
+    return _digest(bundle_dir())
+
+
+def installed_fingerprint(home: str | Path) -> str:
+    """The fingerprint an installed copy was created from; empty when no stamp exists."""
+    stamp = installed_root(home) / BUNDLE_STAMP
+    try:
+        data = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    value = data.get("fingerprint") if isinstance(data, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def plugin_changed(home: str | Path) -> bool:
+    """Whether the source bundle differs from the one installed in ``home``."""
+    return installed_fingerprint(home) != bundle_fingerprint()
+
+
+def _source_version() -> str:
+    try:
+        data = json.loads((bundle_dir() / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    value = data.get("version") if isinstance(data, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
 def install_plugin(
     *,
     home: str | Path,
     profile: str = "web",
     binary: str | Path | None = None,
     init: bool = False,
+    if_changed: bool = False,
 ) -> Path:
     """Copy the bundle into `home`, and (when a binary is given) prove dsh can see it.
 
@@ -73,6 +141,10 @@ def install_plugin(
       which is how dsh provisions a home and a profile without booting anything; only then is
       the bundle copied in. Use it when the directory may be empty, e.g. from a ghost's own
       initialisation.
+
+    `if_changed=True` makes the copy conditional on the content fingerprint: a bundle whose
+    bytes already match is left alone, and nothing is re-verified. That is the mode a node uses
+    at every start — an upgrade is picked up, a no-op start costs one hash.
 
     Booting is never used for either: `--dump-config` composes the same tree a boot would, costs
     a second, and cannot leave a process behind.
@@ -88,6 +160,9 @@ def install_plugin(
     if not source.is_dir():
         raise RuntimeError(f"plugin bundle missing from the package: {source}")
 
+    if if_changed and not plugin_changed(home):
+        return installed_patch(home)
+
     if init:
         if binary is None:
             raise RuntimeError("init=True needs a dsh binary: provisioning a home is dsh's job")
@@ -98,11 +173,36 @@ def install_plugin(
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(source, target)
+    _write_stamp(target)
 
     patch = installed_patch(home)
     if binary is not None:
         _verify(binary=Path(binary), home=Path(home), profile=profile, patch=patch)
     return patch
+
+
+def refresh_plugin(
+    *, home: str | Path, profile: str = "web", binary: str | Path | None = None
+) -> bool:
+    """Install only if the source changed; returns whether a copy happened."""
+    changed = plugin_changed(home)
+    if changed:
+        install_plugin(home=home, profile=profile, binary=binary, if_changed=False)
+    return changed
+
+
+def _write_stamp(target: Path) -> None:
+    """Record what this copy is a copy of — content hash, not a hand-maintained number."""
+    stamp = target / BUNDLE_STAMP
+    stamp.write_text(
+        json.dumps(
+            {"fingerprint": _digest(target), "version": _source_version()},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _provision(*, binary: Path, home: Path, profile: str) -> None:

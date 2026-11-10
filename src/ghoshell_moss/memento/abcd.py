@@ -427,8 +427,8 @@ class CommitView(BaseModel):
         """
         utc = self.created.astimezone(timezone.utc)
         return (
-            root / "commits" / f"{utc.year:04d}" / f"{utc.month:02d}"
-            / f"cmt_{self.branch_index}-{self.ref.seq}" / COMMIT_MEMENTO_FILE
+                root / "commits" / f"{utc.year:04d}" / f"{utc.month:02d}"
+                / f"cmt_{self.branch_index}-{self.ref.seq}" / COMMIT_MEMENTO_FILE
         )
 
 
@@ -537,12 +537,12 @@ class Branch(ABC):
 
     @abstractmethod
     def commit(
-        self,
-        *,
-        message: str = "",
-        metatype: str = "",
-        metadata: dict[str, Any] | None = None,
-        recipients: list[BranchAddr] | None = None,
+            self,
+            *,
+            message: str = "",
+            metatype: str = "",
+            metadata: dict[str, Any] | None = None,
+            recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
         """Write one commit anchor to ``commits.jsonl`` (append-only). An anchor, no message.
 
@@ -560,12 +560,12 @@ class Branch(ABC):
 
     @abstractmethod
     async def acommit(
-        self,
-        *,
-        message: str = "",
-        metatype: str = "",
-        metadata: dict[str, Any] | None = None,
-        recipients: list[BranchAddr] | None = None,
+            self,
+            *,
+            message: str = "",
+            metatype: str = "",
+            metadata: dict[str, Any] | None = None,
+            recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
         """The same commit, taken under the branch's write permission.
 
@@ -576,12 +576,12 @@ class Branch(ABC):
 
     @abstractmethod
     def note(
-        self,
-        commit_id: str,
-        message: str,
-        error: str = "",
-        *,
-        recipients: list[BranchAddr] | None = None,
+            self,
+            commit_id: str,
+            message: str,
+            error: str = "",
+            *,
+            recipients: list[BranchAddr] | None = None,
     ) -> Note:
         """Step 2 (side channel, may be late): write the one and only summary message for an existing
         commit_id, last-wins.
@@ -604,12 +604,12 @@ class Branch(ABC):
 
     @abstractmethod
     async def anote(
-        self,
-        commit_id: str,
-        message: str,
-        error: str = "",
-        *,
-        recipients: list[BranchAddr] | None = None,
+            self,
+            commit_id: str,
+            message: str,
+            error: str = "",
+            *,
+            recipients: list[BranchAddr] | None = None,
     ) -> Note:
         """Async variant of ``note``.
 
@@ -694,19 +694,19 @@ class Branch(ABC):
 
     @abstractmethod
     def query_commits(
-        self,
-        *,
-        from_date: datetime | None = None,
-        until_date: datetime | None = None,
+            self,
+            *,
+            from_date: datetime | None = None,
+            until_date: datetime | None = None,
     ) -> list[CommitRef]:
         """Filter this branch's own ``commits.jsonl`` by created-time range. No full-text search."""
 
     @abstractmethod
     async def aquery_commits(
-        self,
-        *,
-        from_date: datetime | None = None,
-        until_date: datetime | None = None,
+            self,
+            *,
+            from_date: datetime | None = None,
+            until_date: datetime | None = None,
     ) -> list[CommitRef]:
         """IO-costly: as above, but re-read from disk."""
 
@@ -759,12 +759,12 @@ class Memento(ABC):
 
     @abstractmethod
     def create_branch(
-        self,
-        name: str,
-        description: str = "",
-        *,
-        metatype: str = "",
-        metadata: dict[str, Any] | None = None,
+            self,
+            name: str,
+            description: str = "",
+            *,
+            metatype: str = "",
+            metadata: dict[str, Any] | None = None,
     ) -> Branch:
         """Create a new branch. The name must not exist, otherwise NameError."""
 

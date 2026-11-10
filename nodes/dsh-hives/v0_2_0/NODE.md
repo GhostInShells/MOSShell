@@ -39,11 +39,14 @@ paths, so none of it is portable.
    path of `CASE.md`. Authoring the case means editing that file — the body is the brief.
    The definition carries a name, a description, a protocol (a template name or a full op
    table) and an owner (`ghost/<name>`).
-2. **Bind.** `bind({case_name})` gives the case a carrier: it reads the documents, primes the
-   session (protocol, brief, op table, the scratch directory's file list) and records an
-   `init` commit. With no fields filled in it rebuilds what the last `init` recorded — the
-   way back after a restart.
-3. **Autopilot.** `autopilot({case_name, budget})` dispatches the loop and returns at once.
+2. **Bind.** `bind({case_name})` defines a **new** carrier: it opens a fresh session, primes it
+   (protocol, brief, op table, the scratch directory's file list) and records an `init` commit.
+   With no fields filled in it reuses the recorded form but still opens a new session. This is
+   the explicit redefinition — not the way back after a restart.
+3. **Autopilot.** `autopilot({case_name, budget})` continues the case and returns at once. With
+   no live carrier it reattaches to the session the last commit names — the engine resumes it,
+   so the real history is kept — and marks the restart boundary before the first turn. It fails
+   only when that session is archived or gone; then `bind` defines a new one.
    Every finished turn is one step: its first line is an op word from the case's protocol,
    and it lands as one commit. A `continue` word drives the next turn; a `break` word stops
    the loop; a budget that runs out stops it too; a reply with no readable op line is a

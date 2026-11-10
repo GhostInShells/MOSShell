@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ghoshell_dsh.v0_2_0 import DSH_VERSION
-from ghoshell_dsh.v0_2_0.install import install_plugin, installed_patch
+from ghoshell_dsh.v0_2_0.install import install_plugin, installed_patch, refresh_plugin
 from ghoshell_dsh.v0_2_0.launcher import DshLauncher, DshLauncherConfig, resolve_dsh_binary
 
 from ghoshell_moss.contracts.subprocesses import Subprocesses
@@ -200,6 +200,14 @@ class DshNodeRuntime:
         if self._launcher is not None:
             return self._url
         dsh_home = self.dsh_home
+        # The bundled plugin is versioned by its own content. Refresh it only when the bytes
+        # changed: an upgraded package must not need a human to remember `--install`, and a
+        # no-op start must not pay a copy (or a `--dump-config`) for nothing.
+        refresh_plugin(
+            home=dsh_home,
+            profile=self._profile,
+            binary=resolve_dsh_binary(),
+        )
         config = DshLauncherConfig(
             home=dsh_home,
             profile=self._profile,

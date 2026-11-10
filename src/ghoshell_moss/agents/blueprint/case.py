@@ -24,12 +24,18 @@ answers "who is working on it right now". A case without an agent is idle, not b
 - **``draft``** creates the branch and writes the two documents, then returns the path of the
   prompt document. Authoring the case is editing that markdown file — with the shared file editor,
   by a model or a human — not passing a large payload through a command.
-- **``bind``** gives the case a carrier: it reads the prompt document, composes the priming
+- **``bind``** defines a **new** carrier: it reads the prompt document, composes the priming
   context, opens the carrier, and commits one **init** commit recording which session was bound
-  and with which configuration. A later bind with no configuration reuses that commit, which is
-  how a case comes back after a restart.
-- **``autopilot``** dispatches the loop and returns immediately. Nothing is returned as an answer:
-  every finished step arrives through ``on_commit``. The loop runs until it breaks.
+  and with which configuration. It is the explicit redefinition — the special path, used when the
+  session is gone or a different composition is wanted.
+- **``autopilot``** continues the case: with no live carrier it reattaches to the session the last
+  commit names (a *reboot*), then dispatches the loop. Nothing is returned as an answer: every
+  finished step arrives through ``on_commit``. The loop runs until it breaks.
+
+The default start is therefore a resume, not a rebuild: the session keeps its real history, and
+the carrier layer only marks the restart boundary before handing the floor back. A session whose
+last commit is archived cannot be continued — its log stays readable, but no turn can run — and
+that is where ``bind`` defines a new one.
 
 ## Two stops, and they are not the same thing
 
@@ -325,8 +331,9 @@ class Run(BaseModel):
     stop: str = Field(
         default="",
         description=(
-            "Why the loop stopped: `paused`, `exhausted`, `violation`, `ended`, or a `break` word "
-            "from the protocol. Empty while the run is open."
+            "Why the loop stopped: `paused`, `exhausted`, `violation`, `ended`, a `break` word "
+            "from the protocol, or `interrupted` when the process died before the loop could "
+            "close the run. Empty while the run is open."
         ),
     )
 
@@ -651,10 +658,12 @@ class CaseAgent(Generic[SESSION_REF], ABC):
 
 
 class BindRequest(BaseModel):
-    """What it takes to give a case a carrier — the input schema of the bind command.
+    """What it takes to define a case's carrier — the input schema of the bind command.
 
-    Every field except the case name is optional: a bind with nothing filled in rebuilds the
-    carrier exactly as the last init commit recorded it, which is the path used after a restart.
+    Every field except the case name is optional: a bind with nothing filled in reuses the form
+    the last init commit recorded (workspace, preset, config, scratch) but still creates a **new**
+    session. That is the point of the verb: it is the explicit redefinition. Continuing a case
+    after a restart does not call it — ``autopilot`` reattaches to the session the trace names.
     """
 
     case_name: str = Field(description="The case to bind. It must already exist.")
@@ -694,7 +703,13 @@ class BindRequest(BaseModel):
 class AutopilotRequest(BaseModel):
     """What it takes to dispatch a run — the input schema of the autopilot command."""
 
-    case_name: str = Field(description="The case to drive. It must already be bound.")
+    case_name: str = Field(
+        description=(
+            "The case to drive. It must already exist; a bound carrier is not required — the loop "
+            "reattaches to the session the last commit names, and fails only when that session is "
+            "archived or gone."
+        )
+    )
     budget: Budget = Field(
         default_factory=Budget,
         description=(
@@ -708,9 +723,9 @@ class CaseAgentManager(Generic[SESSION_REF], ABC):
     """The cases one hive holds, and the verbs that move them.
 
     **The roster is the store**: every branch under the hive's memento is a case, so a restart
-    reattaches nothing — the cases are already there, and ``bind`` is what gives one a carrier
-    again. No in-memory ledger is kept, because a ledger and a trajectory are two homes for one
-    fact.
+    reattaches nothing — the cases are already there, and ``autopilot`` reattaches a carrier to
+    the session the trace names. ``bind`` defines a *new* carrier and is the special act. No
+    in-memory ledger is kept, because a ledger and a trajectory are two homes for one fact.
     """
 
     @property
@@ -751,13 +766,15 @@ class CaseAgentManager(Generic[SESSION_REF], ABC):
 
     @abstractmethod
     async def bind(self, request: BindRequest) -> CaseAgent[SESSION_REF]:
-        """Give a case a carrier: read the documents, prime the carrier, record an init commit.
+        """Define a case's carrier: read the documents, prime it, record an init commit.
 
-        The priming chain is: the preset's own prompt, the protocol introduction, the case brief,
-        the op table, and the file manifest of the scratch directory.
+        This is the **redefinition** path. The priming chain is: the preset's own prompt, the
+        protocol introduction, the case brief, the op table, and the file manifest of the scratch
+        directory — everything a session that knows nothing needs to become the case's carrier.
 
-        The init commit carries the carrier's identity and configuration, so a later bind with no
-        configuration can rebuild it — that is the restart path.
+        The init commit carries the carrier's identity and configuration. A later bind with no
+        configuration reuses that form but still opens a new session; continuing after a restart
+        is ``autopilot``'s reattach, not a bind.
 
         Binding a case that already has a carrier attaches a second one only if the implementation
         says so; the contract requires the previous carrier to be stopped first, never left to
@@ -766,13 +783,18 @@ class CaseAgentManager(Generic[SESSION_REF], ABC):
 
     @abstractmethod
     async def autopilot(self, request: AutopilotRequest) -> CaseAgent[SESSION_REF]:
-        """Dispatch the loop and return at once. Results arrive through ``on_commit``.
+        """Continue the case: reattach a carrier if needed, then dispatch the loop.
+
+        With no live carrier, the implementation reattaches to the session the last step (or the
+        init) names — a reboot, not a bind: the session is resumed with its real history and the
+        carrier marks the restart boundary before the next turn. It fails only when that session
+        is archived or gone; then a new carrier is the caller's explicit act (``bind``).
 
         A run grant is written as a ``run.start`` commit before the first turn, and closed with a
         ``run.end`` commit when the loop stops. The loop stops when it is paused, when the budget
         is exhausted, when a step violates the protocol, or when a step's ``next`` says break.
 
-        :raise RuntimeError: the case has no carrier — ``bind`` comes first.
+        :raise RuntimeError: the case was never bound, or its session can no longer be resumed.
         """
 
     @abstractmethod

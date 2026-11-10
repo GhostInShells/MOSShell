@@ -6,6 +6,8 @@ case reads back, how a reply is read as a step, and what an unknown word means.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from ghoshell_moss.agents.blueprint.case import (
@@ -178,3 +180,117 @@ def test_failed_says_which_failure_it_was():
 
     assert _failed(Boom("nope")) == "failed: Boom: nope"
     assert _failed(Boom("")) == "failed: Boom"
+
+
+# -- the default start: reattach, do not rebuild ------------------------------------------- #
+
+
+class _FakeConnection:
+    """Only the two archive facts the case layer asks of a connection."""
+
+    def __init__(self) -> None:
+        self.archived: set[str] = set()
+        self.archived_calls: list[str] = []
+
+    async def session_archived(self, session_id: str) -> bool:
+        return session_id in self.archived
+
+    async def archive_session(self, session_id: str, *, stop: bool = True) -> None:
+        self.archived_calls.append(session_id)
+        self.archived.add(session_id)
+
+
+class _FakeHive:
+    name = "dsh"
+    engine_name = "dsh"
+    version = "0.2.0"
+    logger = logging.getLogger("test.case")
+
+    def __init__(self) -> None:
+        self.connection = _FakeConnection()
+
+
+def _commit_init(case, session_ref: str = "session-1") -> None:
+    case.branch.commit(
+        message="init: default · repo",
+        metatype="init",
+        metadata={"session_ref": session_ref, "preset": "", "workspace": "repo"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_autopilot_refuses_a_case_that_was_never_bound(tmp_path):
+    from ghoshell_moss.agents.blueprint.case import AutopilotRequest
+
+    manager = DshCaseAgentManager(_FakeHive(), tmp_path / "cases")  # type: ignore[arg-type]
+    await manager.draft(_definition())
+    with pytest.raises(RuntimeError, match="never bound"):
+        await manager.autopilot(AutopilotRequest(case_name="case-one"))
+
+
+@pytest.mark.asyncio
+async def test_autopilot_fails_fast_when_the_recorded_session_is_archived(tmp_path):
+    from ghoshell_moss.agents.blueprint.case import AutopilotRequest
+
+    hive = _FakeHive()
+    manager = DshCaseAgentManager(hive, tmp_path / "cases")  # type: ignore[arg-type]
+    case = await manager.draft(_definition())
+    _commit_init(case)
+    hive.connection.archived.add("session-1")
+    with pytest.raises(RuntimeError, match="archived"):
+        await manager.autopilot(AutopilotRequest(case_name="case-one"))
+
+
+@pytest.mark.asyncio
+async def test_resolve_archives_an_idle_cases_session_and_closes_its_run(tmp_path):
+    from datetime import datetime, timezone
+
+    from ghoshell_moss.agents.blueprint.case import Budget, Run
+
+    hive = _FakeHive()
+    manager = DshCaseAgentManager(hive, tmp_path / "cases")  # type: ignore[arg-type]
+    case = await manager.draft(_definition())
+    _commit_init(case)
+    run = Run(started=datetime.now(timezone.utc), budget=Budget(seconds=10))
+    case.branch.commit(
+        message="run start", metatype="run.start", metadata={"run": run.model_dump(mode="json")}
+    )
+
+    await manager.resolve("case-one")
+
+    assert hive.connection.archived_calls == ["session-1"]
+    refs = case.branch.commits()
+    ends = [ref for ref in refs if ref.metatype == "run.end"]
+    assert len(ends) == 1, "a hard-killed run must be closed, not left open forever"
+    assert ends[0].metadata["run"]["stop"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_reboot_reminder_marks_the_boundary_and_keeps_the_real_history(tmp_path):
+    from ghoshell_moss.deepseek_harness.v0_2_0.case_agent_hive import _render_reboot
+
+    manager = DshCaseAgentManager(None, tmp_path / "cases")  # type: ignore[arg-type]
+    case = await manager.draft(_definition())
+    operation = parse_operation("done(dsh-node): 报告写完了", case.brief.protocol)
+    case.branch.commit(
+        message="done(dsh-node): 报告写完了\n正文",
+        metadata={"operation": operation.model_dump(mode="json")},
+    )
+    step = manager._last_step(case)  # noqa: SLF001 — the reminder's read face is what is tested
+    assert step is not None
+
+    text = _render_reboot(
+        name="case-one",
+        last_step=step,
+        last_run={"stop": "interrupted"},
+        scratch=tmp_path / "scratch",
+        trigger="continue: case-one — pick up where you stopped; one step per reply.",
+    )
+
+    assert text.startswith("<system_reminder>")
+    assert "rebuilt after a restart" in text
+    assert "The conversation above is your real history" in text
+    assert f"{step.coord} — done(dsh-node): 报告写完了" in text
+    assert "Last run: interrupted" in text
+    assert str(tmp_path / "scratch") in text
+    assert text.rstrip().endswith("one step per reply.")

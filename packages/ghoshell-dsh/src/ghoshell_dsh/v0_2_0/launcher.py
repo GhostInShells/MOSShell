@@ -248,6 +248,11 @@ class DshConnection:
         self._emit_handlers: list[RemoteEmitHandler] = []
         self._waterfall_handlers: list[RemoteWaterfallHandler] = []
         self._workspaces: dict[str, WorkspaceView] = {}
+        # Registry-global archive set, mirrored from the same follow stream. A caller reads it to
+        # tell "the session is idle" from "the session can never come back": following or
+        # prompting an archived session still loads it, but the pre-step gate then rejects every
+        # turn. Guessing from absence would make the first failure arrive as a rejected turn.
+        self._archived_sessions: set[str] = set()
         # $events 逻辑流状态: clientId (waterfall 回话凭据) + 鉴权 cookie.
         self._remote_client_id: str | None = None
         self._cookies: dict[str, str] = {}
@@ -513,10 +518,13 @@ class DshConnection:
             self._logger.exception("$events/result failed: %s", event_id)
 
     def _dispatch_workspace_frame(self, value: Any) -> None:
-        """分派 `workspace/follow` 帧: baseline 重建镜像, upsert / remove 增量维护.
+        """分派 `workspace/follow` 帧: baseline 重建镜像, upsert / remove / archived 增量维护.
 
         增量帧以前被丢掉, 于是这份镜像永远停在开机那一刻 —— 一次 `workspace/create` 之后,
         调用方看见的还是旧列表, 而且是静默的. 现在镜像跟着流走, 每个变更都唤醒等它的调用.
+
+        archived 帧是同一份状态的另一半: 哪些 session 已经被人从活跃集合里收走. 它不是
+        排序信息 —— 一个 case 判断"载体还能不能回来"要靠它, 所以必须真正持有.
         """
         if not isinstance(value, dict):
             return
@@ -529,6 +537,11 @@ class DshConnection:
                 if isinstance(item, dict):
                     view = WorkspaceView.model_validate(item)
                     self._workspaces[view.workspaceId] = view
+            self._archived_sessions = {
+                str(item)
+                for item in (payload or {}).get("archivedSessionIds") or []
+                if isinstance(item, str)
+            }
             self._workspace_baseline_event.set()
             self._resolve_workspace_waiters(None)
             return
@@ -545,7 +558,12 @@ class DshConnection:
                 self._workspaces.pop(workspace_id, None)
                 self._resolve_workspace_waiters(workspace_id)
             return
-        # `order` / `archived` / `pinned` 是排序与会话记账; 这份镜像目前不持有它们.
+        if kind == "archived":
+            ids = value.get("archivedSessionIds")
+            if isinstance(ids, list):
+                self._archived_sessions = {str(item) for item in ids}
+            return
+        # `order` / `pinned` 是排序信息; 这份镜像目前不持有它们.
 
     def _resolve_workspace_waiters(self, workspace_id: str | None) -> None:
         """唤醒等这张等票的调用; ``None`` 表示整份镜像变了."""
@@ -779,6 +797,36 @@ class DshConnection:
         if not self._workspace_baseline_event.is_set():
             await asyncio.wait_for(self._workspace_baseline_event.wait(), self.config.connect_timeout)
         return list(self._workspaces.values())
+
+    async def archived_session_ids(self) -> set[str]:
+        """registry 的归档集合 — 与 workspace 列表同一条流, 同一份等待语义.
+
+        归档不是"日志没了": 日志仍在, ``chat_off_record`` 照样读得到. 它说的是"这个 session
+        已经从活跃集合里被收走, 不能再跑 turn". 所以调用方要在**启动载体之前**读它, 不要等
+        第一轮被 pre-step gate 拒绝.
+        """
+        if not self._workspace_baseline_event.is_set():
+            await asyncio.wait_for(self._workspace_baseline_event.wait(), self.config.connect_timeout)
+        return set(self._archived_sessions)
+
+    async def session_archived(self, session_id: str) -> bool:
+        """One session's archive bit — the question a carrier restart actually asks."""
+        return session_id in await self.archived_session_ids()
+
+    async def archive_session(self, session_id: str, *, stop: bool = True) -> None:
+        """Archive one session by id — no handle, no follow stream: collection is not driving.
+
+        A finished case may be idle when it is resolved; there is no carrier to retire, but the
+        session its last step names still holds a seat in the workspace. This is the verb that
+        gives the seat back without waking anything.
+
+        The accepted receipt updates the mirror immediately: the follow frame is the confirmation,
+        but a caller that resolves and then asks "is it archived?" must not read a stale "no".
+        """
+        await self.client.remote(
+            "ghoshell/archiveSession", {"sessionId": session_id, "stop": stop}
+        )
+        self._archived_sessions.add(session_id)
 
     async def wait_workspace(
         self,
