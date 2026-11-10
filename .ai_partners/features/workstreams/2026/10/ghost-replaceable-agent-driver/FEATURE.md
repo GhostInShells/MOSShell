@@ -1,11 +1,12 @@
 ---
 title: Ghost Replaceable Agent Driver
-status: draft
+status: in-progress
 status_note: >-
-  讨论已留档，当前偏好路径一（dsh-first，补齐 moment bytes 迁移）；最终架构结论搁置，等 RSI 里程碑或第二实现出现再定。
+  2026-11-11 起执行 0.2.0 接缝搬家：dolores 换到 ghoshell_dsh.v0_2_0；插件改 local bundle + 多 patch；
+  旁路改 chatOffRecord；清三类 session；删旧 seam / 旧 node / 旧测试。验证 = ghost 能重启。
 priority: P1
 created: 2026-10-28
-updated: 2026-10-28
+updated: 2026-11-11
 depends:
 - dsh-version-tracking
 milestone:
@@ -151,3 +152,78 @@ driver 放进独立 venv 的 Matrix node，通过 channel 通信。
 - `dsh-fusion`：分工裁决（dsh 推理中枢 / moss 记忆执行感知）。
 - `ghost-ground-governance`：ghost 产物契约的一部分，无论 dsh 去留都需要。
 - 本记录即当前讨论摘要；如需逐字辩论记录，另补 `discuss/`。
+
+---
+
+# 2026-11-11 执行计划：0.2.0 接缝搬家（明天从这里继续）
+
+> 这一节是行动面，不是新一轮讨论。上面的候选方案/判据仍然有效；本节只记录已核实的破坏面、他的裁决、和按顺序的施工计划。
+
+## 目标
+
+dolores ghost prototype 改用 **`ghoshell_dsh.v0_2_0` + `src/ghoshell_moss/deepseek_harness/v0_2_0`**；ghost home 的 `.dsh` 由 0.2.0 使用；之后删掉无版本的旧 seam 与旧 node。**本期不做 concurrent mind，也不做未来版本的 home 机制。** 验收 = ghost 能重启。
+
+## 已核实的事实（D11 00:05–00:20）
+
+**引擎不是升级，是接缝搬家**：ghost 今天已在跑 `dsh 0.2.0-rc.2`（当前 ego session 是 v4）；旧 seam 已被补到 0.2.0（Remote、workspace follow、v3→v4 注释），所以破坏主要在 import，不在行为。
+
+- 旧 seam 消费者：`ghosts/dolores/{_ego,_ego_memento,_run,_runtime,_tools}.py` + `test_dolores.py`（12 处 import）；旧 node `nodes/deepseek-harness/main.py`；旧测试 6 份（`test_session/runtime/channel/message_mapper/launcher/trajectory`）。
+- v0_2_0 是旧面的**超集**：旧面用到的 session 动词全在；类型名 44 个同名（旧只多 `Self`）；`DshSessionRef` 字段一致（turn 主、seq 辅）；`render_transcript` 签名一致。
+- 差异：`render_transcript` 现在走 `blueprint.transcript.TranscriptView`，渲染文本可能与旧实现有细微漂移（迁移后拿一段真实历史对比 memory 视图/note）。
+- 插件：ghost 的 `.dsh` **没有** `@local/ghoshell-dsh`；ego 插件是 `profiles/web/` 下的裸 `.ts`；`DshLauncherConfig` 只有单数 `plugin_patch`，而 dsh 的 `--patch` 本身可重复。**ego 插件已经 0.2.0 形状**（`agentPresets.register`、v4 surface），不需要移植。
+- 数据账（`.moss/ghosts/moss/.dsh`）：645 个 session 目录 / 535 registry / **198 个被 memento commit 引用** / 337 登记未引用 / 110 未分组；sessions 375MB，projcache 45MB，attachments 107MB。清理可回收约 211MB。
+- 旁路：`_ego_memento` 走 `/moss-api/ghost/dolores/bypass/run`，每次 note/chat 用 ego preset **冷 seed 一条新 session**；`moss @ home` 326 条里约 319 条 note 旁路 + 7 条 chat 旁路。
+- compact：现有机制是 run 边界阈值（`compact_tokens`）→ 原地 surface 前缀替换 + 新 epoch 的 memory recap；没有“fast compact”实现。模型切换已由 `thinking/enter` 在 turn 边界生效。
+
+## 他的裁决（D11 00:22）
+
+1. **compact 就用现有 run 边界阈值机制**。但提示词有压力泄漏：濒临边界时 ghost 会不敢回复。这时要**提示它主动 compact、切上下文**（不是换掉机制，是补一条主动提示/入口）。
+2. **ego session 全部保留**——针对化历史的 ego session 是协作最大资产。**旁路 commit session 本质是 bug**，要清。
+3. **未来版本 home**：`engines/dsh-022/.dsh` 这类统一治理；**本期不做未来机制**，0.2.0 直接用 ghost home 的 `.dsh`。
+4. **清账只三块**：未分组 / `@ home`（旁路 commit 遗留）/ `works` 下的实验脚本。**不动 ego workspace**。
+
+## 施工顺序
+
+1. **插件与 patch（不改行为）**
+   - 把 `@local/ghoshell-dsh` 装进 ghost `.dsh`（复用 `install.py` 的 fingerprint + `refresh_plugin`）。
+   - ego 插件打包成 `@local/moss-dolores-ghost`：`package.json`（`dsh.bundle.patch`）+ `index.ts` + `cordis.patch.yml`，装进 `profiles/node_modules/@local/...`。
+   - `DshLauncherConfig.plugin_patch` → `plugin_patches: list[Path]`；spawn 时在 `--port` 之前输出多个 `--patch`。profile patch 只留 UI 压制 + provider seed。
+   - 重启 ghost，确认两个插件都加载。
+
+2. **Dolores 换接缝**
+   - import 切到 `ghoshell_dsh.v0_2_0.launcher/session/trajectory` + `ghoshell_dsh.blueprint.models.*`。
+   - 跑 `test_dolores.py`；重启；对比 `render_transcript` 输出。
+
+3. **旁路改 chatOffRecord**
+   - note/chat 改为：源 ego session + anchor（end turn → seq）+ prompt，`readonly=True`、`effort=off`、`max_tokens`，走 `DshSession.chat_off_record`；**不建 session**。
+   - 锚点 commit 记录 `end_seq`（或在 Python 侧从源 log 反查 turn→seq）。
+   - 验证：产一条 note、问一次 chat，确认 session 数不增。
+
+4. **清账（停机、先备份）**
+   - 只删三类：未分组 110、`moss @ home` 的旁路（≈326）、`works` 实验 4 条。
+   - 同步清 `workspace.json` 的 `sessionIds/archivedSessionIds/pinnedSessionIds`、`session_projcache` 对应条目。
+   - 保留 198 个 memento 引用的 ego session + 当前活 session。
+
+5. **删旧线**
+   - 删 `deepseek_harness/*.py` 旧模块与 `types/`（保留 `v0_2_0/`，重写父 `__init__.py`）。
+   - 删 `nodes/deepseek-harness/`。
+   - 删 6 份旧测试；保留 `test_case_agent_hive.py` / `test_v0_2_0_hive_agent.py`。
+
+6. **收尾**
+   - ghost 重启验证；harness 101 + ghoshell-dsh 77 重跑。
+   - 更新本 FEATURE 的“当前偏好”与 `dsh-version-tracking` 关联；未来版本的 home 机制记入 deferred。
+
+## 验证清单
+
+- ghost 能重启；ego 跑起来；ground/memento 正常。
+- note 生产**零新 session**；chat 能从冷/归档 session 回答。
+- 当前会话能续（memento 引用的 session 未被清）。
+- 旧 seam 删除后 `deepseek_harness/__init__.py` 不再 re-export 旧 launcher。
+
+## 风险与注意
+
+- `--patch` 是 launcher flag：必须排在 `--port`/`--no-open` 之前；`args` 里塞 `--patch` 会变成 app 参数。
+- `render_transcript` 的输出漂移会影响 memory 视图与 note；先对比再清账。
+- registry 三处集合都要清（`sessionIds` / `archivedSessionIds` / `pinnedSessionIds`）。
+- 清账前必须备份；dsh 必须停。
+- 本期**不做**：版本 marker、未来 home 命名、concurrent mind、attachments/cache 的完整 GC（只清 session 相关）。
