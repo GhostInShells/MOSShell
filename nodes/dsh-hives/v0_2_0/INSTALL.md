@@ -1,7 +1,7 @@
 # Install
 
-This node owns a dsh process. The environment below is the requirement; `check.py` is the
-probe that refuses to launch when it is not met.
+This node owns a dsh process and a case store. The environment below is the requirement;
+`check.py` is the probe that refuses to launch when it is not met.
 
 ## 1. The engine in the moss environment
 
@@ -26,17 +26,21 @@ Verify:
 `PATH` is enough. To pin a specific install, set `DSH_BINARY` to its absolute path.
 `check.py` resolves it the same way, so a broken pin fails before spawn.
 
-## 3. Initialize the node home
+## 3. Initialize the hive
 
 Run from this directory (or pass `--home`):
 
     .venv/bin/python -m ghoshell_moss.deepseek_harness.v0_2_0.node --install
 
-It creates:
+It creates one directory, the hive:
 
-    .dsh/         DSH_HOME — dsh profiles, sessions, storages (gitignored)
-    .memento/     the memento envelope; the hive owner will live under it (gitignored)
-    .gitignore    runtime ignores (written only when absent)
+    .hive/.dsh/    DSH_HOME — dsh profiles, sessions, storages
+    .hive/cases/   the memento store; every case is one branch under it
+    .gitignore     runtime ignores (written only when absent)
+
+The whole `.hive/` is gitignored on purpose: a case embeds absolute paths (its workspace,
+its scratch directory, the session that produced each step), so a case is machine-local by
+construction and must never be committed.
 
 A missing `.dsh` is provisioned by dsh itself (`--dump-config`, no boot). An existing one
 is left alone except for the plugin bundle: settings / storages / workspace.json are never
@@ -44,10 +48,10 @@ rewritten. The command is idempotent.
 
 ## 4. Mark it installed
 
-    moss nodes install nodes/dsh-swarm/v0_2_0
+    moss nodes install nodes/dsh-hives/v0_2_0
 
 The marker is `.installed` in this directory (gitignored). The node will not spawn until
-it exists; `check.py` then verifies the environment and the home before every launch.
+it exists; `check.py` then verifies the environment and the hive before every launch.
 
 ## Starting
 

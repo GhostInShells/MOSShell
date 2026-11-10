@@ -6,18 +6,25 @@ itself), and keeps the cell alive with a small channel.
 
 Two responsibilities, deliberately separated:
 
-- **install** — :func:`prepare_home` initializes a node home once: the dsh home
-  (``.dsh``), the memento envelope (``.memento``) and the node's ``.gitignore``. It is
-  idempotent and never reprovisions an existing ``.dsh``: only the plugin bundle is
-  replaced, and settings / storages / workspace.json are left alone. Invoked by the
-  install step in ``INSTALL.md`` (``--install``), not by the runtime.
+- **install** — :func:`prepare_home` initializes a node home once: the hive directory
+  (``.hive/``) holding the dsh home (``.hive/.dsh``) and the case store (``.hive/cases``),
+  plus the node's ``.gitignore``. It is idempotent and never reprovisions an existing
+  ``.dsh``: only the plugin bundle is replaced, and settings / storages / workspace.json
+  are left alone. Invoked by the install step in ``INSTALL.md`` (``--install``), not by
+  the runtime.
 - **serve** — :class:`DshNodeRuntime` starts the launcher and :func:`main` provides the
   channel. The runtime assumes the home was installed; a missing environment is the
   probe's job (``check.py``) before spawn, not a second informal check here.
 
-The agents surface is a **gated child** of this channel: the node declares it and the ghost opens
-it with one action (`mount_child`). Progressive disclosure done by the channel — the node stays
-small until something is actually being driven.
+Two kinds of child, two different reasons:
+
+- ``agents`` and ``ui`` are **gated** children: declared, closed, opened by one action
+  (``mount_child``) when the ghost actually needs them.
+- ``cases`` is a **sustain** child: cases are what the hive exists for, so its channel is
+  imported at construction and always mounted.
+
+``DshHive`` is the carrier collection's hive. This node runs :class:`DshCaseAgentHive`, whose
+store lives in ``<home>/.hive/cases``; both hives share one engine connection.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from ghoshell_dsh.v0_2_0.launcher import DshLauncher, DshLauncherConfig, resolve
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.deepseek_harness.v0_2_0.channel import workspace_row
 from ghoshell_moss.deepseek_harness.v0_2_0.page import new_page_channel
+from ghoshell_moss.deepseek_harness.v0_2_0.case_agent_hive import DshCaseAgentHive
 from ghoshell_moss.deepseek_harness.v0_2_0.hive import DshHive
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel, new_prime_channel
@@ -61,13 +69,17 @@ DEFAULT_PORT = 23080
 DEFAULT_PROFILE = "web"
 DEFAULT_TITLE = f"dsh {DSH_VERSION}"
 
+HIVE_DIR = ".hive"
+"""One directory = one hive: the engine home and the case store live under it."""
+
 DSH_HOME_DIR = ".dsh"
-MEMENTO_DIR = ".memento"
+CASES_DIR = "cases"
+"""The memento store's directory inside the hive; it *is* the case collection."""
 
 GITIGNORE = """\
 # Runtime state of the dsh node — never committed.
-.dsh/
-.memento/
+# A case embeds absolute paths (workspace, scratch, session refs), so none of it is portable.
+.hive/
 .installed
 .env
 __pycache__/
@@ -84,8 +96,9 @@ class DshNodeHome:
     """What an initialized node home is made of."""
 
     root: Path
+    hive: Path
     dsh_home: Path
-    memento: Path
+    cases: Path
     gitignore: Path
     plugin_patch: Path
     binary: str
@@ -101,9 +114,11 @@ def prepare_home(root: str | Path, *, profile: str = DEFAULT_PROFILE) -> DshNode
     """
     root = Path(root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    dsh_home = root / DSH_HOME_DIR
-    memento = root / MEMENTO_DIR
-    memento.mkdir(exist_ok=True)
+    hive_dir = root / HIVE_DIR
+    hive_dir.mkdir(exist_ok=True)
+    dsh_home = hive_dir / DSH_HOME_DIR
+    cases = hive_dir / CASES_DIR
+    cases.mkdir(exist_ok=True)
     gitignore = root / ".gitignore"
     if not gitignore.exists():
         gitignore.write_text(GITIGNORE, encoding="utf-8")
@@ -116,8 +131,9 @@ def prepare_home(root: str | Path, *, profile: str = DEFAULT_PROFILE) -> DshNode
     )
     return DshNodeHome(
         root=root,
+        hive=hive_dir,
         dsh_home=dsh_home,
-        memento=memento,
+        cases=cases,
         gitignore=gitignore,
         plugin_patch=patch,
         binary=binary,
@@ -151,6 +167,19 @@ class DshNodeRuntime:
         return self._root
 
     @property
+    def hive_dir(self) -> Path:
+        """The hive the cell owns — the engine home and the case store under one directory."""
+        return self._root / HIVE_DIR
+
+    @property
+    def dsh_home(self) -> Path:
+        return self.hive_dir / DSH_HOME_DIR
+
+    @property
+    def cases_root(self) -> Path:
+        return self.hive_dir / CASES_DIR
+
+    @property
     def launcher(self) -> "DshLauncher | None":
         """The live launcher once started — the connection the hive is built on."""
         return self._launcher
@@ -170,7 +199,7 @@ class DshNodeRuntime:
         """Bring the dsh up; returns its web URL (with the launch token)."""
         if self._launcher is not None:
             return self._url
-        dsh_home = self._root / DSH_HOME_DIR
+        dsh_home = self.dsh_home
         config = DshLauncherConfig(
             home=dsh_home,
             profile=self._profile,
@@ -198,8 +227,9 @@ class DshNodeRuntime:
         lines = [
             f"dsh {DSH_VERSION}",
             f"home: {self._root}",
-            f"dsh home: {self._root / DSH_HOME_DIR}",
-            f"memento: {self._root / MEMENTO_DIR}",
+            f"hive: {self.hive_dir}",
+            f"dsh home: {self.dsh_home}",
+            f"cases: {self.cases_root}",
             f"profile: {self._profile}",
             f"port: {self.port}",
             f"running: {running}",
@@ -223,6 +253,7 @@ class DshNodeRuntime:
 def new_dsh_node_channel(
     runtime: DshNodeRuntime,
     hive: "DshHive | None" = None,
+    cases: MutableChannel | None = None,
     *,
     name: str = CHANNEL_NAME,
 ) -> PrimeChannel:
@@ -244,6 +275,9 @@ def new_dsh_node_channel(
         if hive is not None:
             # One number, and only one: whether opening the child is worth an action.
             line += f" · agents: {len(hive.agents().list_sessions())}"
+            cases = getattr(hive, "cases", None)
+            if cases is not None:
+                line += f" · cases: {len(cases.list_cases())}"
         return line
 
     @chan.build.instruction
@@ -255,12 +289,18 @@ def new_dsh_node_channel(
             "- `web_url` — the page URL, token included.\n"
             "- `workspaces` — the declared places an agent may be created in, each with the "
             "directory it bounds. `create_workspace(path, name)` declares a new one.\n"
-            "- `agents` — the agents, as a child channel. It stays closed until `mount_child` "
-            "opens it; open it when you actually need to drive one.\n"
+            "- `cases` — this hive's cases, always on: `draft` → `bind` → `autopilot` drives one "
+            "and every finished step lands as a commit.\n"
+            "- `agents` — the plain carrier collection, as a child channel. It stays closed until "
+            "`mount_child` opens it; open it when you need one without a case.\n"
             "- `ui` — the page itself, also a child channel: dsh's own client API (`layout`, "
             "`sidebarRight`, `slots`, …), driven by code run inside the page."
         )
 
+    if cases is not None:
+        # A sustain child: imported at construction, mounted from the first frame. Cases are the
+        # hive's purpose, so nothing is gained by hiding them behind a gate.
+        chan.import_channels(cases)
     agents_channel = hive.agents().as_channel() if hive is not None else None
     # The page bridge needs the connection, not the hive: it is a transport to the browser, and it
     # exists whether or not anything is being driven.
@@ -366,15 +406,17 @@ async def main(matrix: Matrix) -> None:
     # alias a launcher happened to pick: one name for the declaration, the channel and every
     # callback, so a result can always be walked back to the thing that produced it.
     hive_name = getattr(matrix.this, "name", "") or CHANNEL_NAME
-    hive = DshHive(
+    hive = DshCaseAgentHive(
         runtime.launcher,
         name=hive_name,
         root=matrix.project_home,
         # The signal channel belongs to the Matrix session; the hive only holds it.
         send_signal=matrix.session.add_signal,
         logger=matrix.logger,
+        # The case store is the hive's own: `<home>/.hive/cases`.
+        cases_root=runtime.cases_root,
     )
-    channel = new_dsh_node_channel(runtime, hive, name=hive_name)
+    channel = new_dsh_node_channel(runtime, hive, hive.cases.as_channel(), name=hive_name)
     try:
         async with hive:
             await hive.refresh_if_stale()
@@ -400,8 +442,9 @@ def run_node() -> None:
         root = Path(args.home).expanduser() if args.home else Path.cwd()
         home = prepare_home(root, profile=args.profile)
         print(f"[dsh-node] home initialized: {home.root}")
+        print(f"  hive:      {home.hive}")
         print(f"  dsh home:  {home.dsh_home}")
-        print(f"  memento:   {home.memento}")
+        print(f"  cases:     {home.cases}")
         print(f"  gitignore: {home.gitignore}")
         print(f"  plugin:    {home.plugin_patch}")
         print(f"  binary:    {home.binary}")

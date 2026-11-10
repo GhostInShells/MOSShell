@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto'
 
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { Session, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
@@ -515,17 +515,21 @@ export class GhostShellService extends TypertRemoteService {
   }
 
   /**
-   * One model turn against this session's live context, with nothing written back.
+   * One model turn against a session's context at a chosen point, with nothing written back.
    *
-   * The prefix is `deriveMessages()` — the same call the main path uses to assemble its own
-   * request, so an off-record call inherits exactly what the conversation sees, including the
-   * system prompt (which is a `system/message` in the history). That is also why no `system`
+   * The prefix is the session's own derived history — the same projection the main path uses to
+   * assemble its request, so an off-record call inherits exactly what the conversation saw,
+   * including the system prompt (a `system/message` in the history). That is why no `system`
    * option is passed: the adapter would concatenate it *before* the history's system prompt and
    * invalidate the prefix cache.
    *
-   * `anchor.seq` is accepted only at the current end for now: assembling an earlier prefix means
-   * building an unpublished session from a log slice, which is the next step and not this one.
-   * Say so loudly instead of quietly answering from the wrong place.
+   * Two requirements, both about not lying:
+   *
+   * - **A cold session is replayed from its log.** A case outlives its carrier, so asking a step
+   *   a question must work when nothing is live: the stored events are sliced at the anchored seq
+   *   and replayed into a detached session — the same seed the fork path builds, never published.
+   * - **Any seq can be anchored.** Asking about an old step means the prefix stops there, not at
+   *   the session's end. An unknown seq throws instead of answering from the wrong place.
    */
   async chatOffRecord(request) {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
@@ -533,17 +537,51 @@ export class GhostShellService extends TypertRemoteService {
     const message = typeof request?.message === 'string' ? request.message : ''
     if (message === '') throw new Error('chatOffRecord: message must be a non-empty string')
 
-    const session = this.ctx.sessions.get(sessionId)
-    if (session === undefined) throw new Error(`chatOffRecord: no live session ${sessionId}`)
+    const resolved = await this.resolveSession(sessionId, request?.anchor?.seq)
+    try {
+      return await this.answerOffRecord(resolved.session, request, message)
+    } finally {
+      if (resolved.dispose !== undefined) await resolved.dispose()
+    }
+  }
 
+  /**
+   * The session to ask: the live one when it is at the right point, otherwise a detached replay.
+   *
+   * A detached replay is built from the *stored* log, so it works after a restart, after the
+   * carrier was retired, and at any seq — which is exactly what "ask an old step" means.
+   */
+  async resolveSession(sessionId, askedSeq) {
+    const live = this.ctx.sessions.get(sessionId)
+    if (live !== undefined) {
+      const events = live.snapshotEvents()
+      const end = lastSeq(events)
+      if (askedSeq === undefined || askedSeq === null || askedSeq === end) {
+        return { session: live, dispose: undefined }
+      }
+      return { session: sliceSession(sessionId, events, live.header, askedSeq), dispose: undefined }
+    }
+
+    // `sessionQuery` is not in this service's inject list (the property guard would throw); the
+    // optional-service read returns undefined when a deployment does not compose it.
+    const query = optionalService(this.ctx, 'sessionQuery')
+    if (query === undefined) {
+      throw new Error('chatOffRecord: sessionQuery is not composed; cannot replay a cold session')
+    }
+    const observed = await query.observeSession(sessionId)
+    const events = observed.events
+    const boundary = askedSeq === undefined || askedSeq === null ? lastSeq(events) : askedSeq
+    const session = sliceSession(sessionId, events, observed.header, boundary)
+    const dispose =
+      observed[Symbol.asyncDispose]?.bind(observed) ?? observed[Symbol.dispose]?.bind(observed)
+    return { session, dispose }
+  }
+
+  /** One model call, assembled from the resolved session's own header and history. */
+  async answerOffRecord(session, request, message) {
     const header = session.requestHeader()
-    if (header === undefined) throw new Error('chatOffRecord: session has no request header yet, nothing to inherit')
-
-    const events = session.snapshotEvents()
-    const end = lastSeq(events)
-    const asked = request?.anchor?.seq
-    if (asked !== undefined && asked !== null && asked !== end) {
-      throw new Error(`chatOffRecord: only the current end can be anchored yet (asked ${asked}, end ${end})`)
+    if (header === undefined) {
+      throw new Error('chatOffRecord: session has no request header yet, nothing to inherit')
     }
 
     const inherited = session.deriveMessages()
@@ -571,8 +609,35 @@ export class GhostShellService extends TypertRemoteService {
       sessionId: session.id,
       ...(typeof request?.maxTokens === 'number' ? { maxTokens: request.maxTokens } : {}),
     })
-    return { ...outcome, inherited_messages: inherited.length }
+    const { usage, ...rest } = outcome
+    return {
+      ...rest,
+      ...(usage === null || usage === undefined ? {} : { usage }),
+      inherited_messages: inherited.length,
+    }
   }
+}
+
+/**
+ * Replay one event prefix into a detached session — the fork seed, without publishing a child.
+ *
+ * The seed is what the fork path builds for a child session; here it is handed to a session that
+ * is never stored, read, or announced. `inheritedEventCount` is the durable cut, so the replay
+ * knows which part it was given.
+ */
+function sliceSession(sessionId, events, header, boundary) {
+  if (boundary === undefined || boundary === null) {
+    throw new Error('chatOffRecord: this session has no events to anchor at')
+  }
+  if (events[boundary]?.seq !== boundary) {
+    const last = events.length === 0 ? 'none' : String(events[events.length - 1].seq)
+    throw new Error(
+      `chatOffRecord: event ${String(boundary)} does not exist in session "${sessionId}" (last seq: ${last})`,
+    )
+  }
+  const seed = buildForkSeed(events, boundary)
+  // Not a fork: every seeded event belongs to this session, so the inherited prefix is empty.
+  return Session.create(sessionId, seed, header, SessionLogOffset(0))
 }
 
 /**
@@ -587,6 +652,15 @@ async function oneShot(ctx, options) {
   const assembler = new BlockAssembler()
   for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
   const blocks = assembler.blocks()
+  const finish = assembler.finish
+  // An empty answer is not an answer: a provider without a usable route or credential can end the
+  // stream with nothing in it, and returning "" would make that look like a model that said no.
+  if (blocks.length === 0 && assembler.usage === undefined) {
+    throw new Error(
+      `chatOffRecord: the model returned nothing (finish: ${finish?.kind ?? 'none'}) — ` +
+        'check the session route and its credential',
+    )
+  }
   return {
     text: blocks
       .filter((block) => block.type === 'text')
@@ -603,7 +677,7 @@ async function oneShot(ctx, options) {
         arguments: block.arguments ?? '',
       })),
     usage: assembler.usage ?? null,
-    finish_reason: typeof assembler.finish === 'string' ? assembler.finish : '',
+    finish_reason: finish?.kind ?? '',
   }
 }
 

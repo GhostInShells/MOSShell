@@ -11,6 +11,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+HIVE_DIR = ".hive"
+DSH_HOME_DIR = ".dsh"
+CASES_DIR = "cases"
+
 
 def main() -> int:
     try:
@@ -28,10 +32,11 @@ def main() -> int:
         return 1
 
     root = Path(__file__).resolve().parent
-    dsh_home = root / ".dsh"
+    hive = root / HIVE_DIR
+    dsh_home = hive / DSH_HOME_DIR
     missing = [
         path
-        for path in (dsh_home, root / ".memento", installed_patch(dsh_home))
+        for path in (hive, dsh_home, hive / CASES_DIR, installed_patch(dsh_home))
         if not path.exists()
     ]
     if missing:
@@ -44,7 +49,7 @@ def main() -> int:
             print(f"  missing: {path}", file=sys.stderr)
         return 1
 
-    print(f"dsh node ready: dsh {DSH_VERSION} at {binary}; home {root}")
+    print(f"dsh node ready: dsh {DSH_VERSION} at {binary}; hive {hive}")
     return 0
 
 

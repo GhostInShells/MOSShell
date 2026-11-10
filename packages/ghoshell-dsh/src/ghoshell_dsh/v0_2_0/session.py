@@ -537,8 +537,9 @@ class DshSession:
         (不 append、不建 session、不落盘). 代价照样发生 —— 所以 ``usage`` 原样交回给调用方,
         因为账本只有一个入口 (日志), 而这条调用不会出现在任何日志里.
 
-        ``anchor`` 目前只接受这个会话的**当前末端**: 组一个更早的前缀要先从日志切片造一个未发布的
-        session, 那是下一步; 现在给别的 seq 会显式报错, 不会静默从错的位置回答.
+        ``anchor`` 可以指向这个会话的任意 seq: 插件按日志切片、用 fork seed 造一个**未发布**的
+        session, 所以历史位置能问; 会话不在活表里时同样按存储日志重放。越界的 seq 显式报错,
+        不会静默从错的位置回答。
         """
         # ``max_tokens`` is the one-field shorthand; anything else about the model goes in the
         # patch, which merges over the session's own header instead of restating it.

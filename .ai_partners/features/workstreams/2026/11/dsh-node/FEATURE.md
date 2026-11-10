@@ -106,6 +106,25 @@ launcher 与 web connection 是两个概念，因此是两个 node。（他）
 - 配置面：`LlmConfigPatch.applied_to(base)`（缺省即保持，`reasoningEffort="off"` 是真指令）；
   权限是 `sandbox`（read-only / workspace-write / full-access）+ `approval`（ask / never）。
 
+## D10 晚：case agent 落地，节点改名 dsh-hives
+
+- 蓝图 `agents/blueprint/case.py` 重写为 Case（死的：branch + 两份文档）与 CaseAgent（活的：载体 + 循环）两层，
+  生命周期 `draft → bind → autopilot`；op 只属于执行方，且只标动作结束；`init` / `run.start` / `run.end`
+  是 metatype 标记的系统 commit，不带 operation；预算按 run 授权，写进 commit metadata，剩余量由 step 的
+  `usage` 推出，不另存计数器。
+- 实装 `deepseek_harness/v0_2_0/case_agent_hive.py` + `case_channel.py`：**不复用** `DshAgents`（case 载体有自己的
+  循环、自己的 commit、不发 dsh 信号）；case = 一条 memento branch，store 即花名册。
+- 布局改为一个目录一个 hive：`<home>/.hive/.dsh` + `<home>/.hive/cases`；整棵 `.hive/` 进 gitignore，
+  因为 case 里都是绝对路径（workspace / scratch / session ref），不可搬运。
+- 节点改名 `nodes/dsh-hives/v0_2_0`；`cases` 是 **sustain child**（import 注册、常驻），`agents` / `ui` 仍是
+  gated virtual children。
+- 已验：真 dsh 上 draft → bind（priming 送达，session 日志可见）→ autopilot（run.start/run.end）→ read；
+  turn 因环境缺 `DEEPSEEK_API_KEY` 以 `error` 收尾，run.end 如实写 `stop=error`。
+- `chat` 落地：插件 `chatOffRecord` 支持**冷会话**与**任意 seq**——`sessionQuery.observeSession`
+  取存储日志，`buildForkSeed` 切到目标 seq，`Session.create` 造一个未发布的 detached session，
+  再走原来的 `deriveMessages` / `requestHeader` / `toolHistory`。空回答不再静默（provider 无路由
+  或凭据时显式报错）。step commit 里记 `session_seq`，`chat` 就从那一刀问。
+
 ## 现状（D10 02:30，已提交）
 
 **抽象（`agents/blueprint/`）**

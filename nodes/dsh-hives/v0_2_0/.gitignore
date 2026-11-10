@@ -1,6 +1,6 @@
 # Runtime state of the dsh node — never committed.
-.dsh/
-.memento/
+# A case embeds absolute paths (workspace, scratch, session refs), so none of it is portable.
+.hive/
 .installed
 .env
 __pycache__/
