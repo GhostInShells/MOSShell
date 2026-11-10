@@ -120,3 +120,28 @@ def test_parse_operation_breaks_on_prose_and_unknown_words():
     unknown = parse_operation("sing: 唱歌", _protocol())
     assert unknown.violation and unknown.op == "sing"
     assert unknown.next is Next.BREAK
+
+
+def test_history_folds_steps_for_a_rebuilt_carrier(tmp_path):
+    import asyncio
+
+    from ghoshell_moss.deepseek_harness.v0_2_0.case_agent_hive import DshCase, _render_history
+
+    async def run():
+        manager = DshCaseAgentManager(None, tmp_path / "cases")  # type: ignore[arg-type]
+        case = await manager.draft(
+            CaseDefinition(
+                name="history-case", protocol=_protocol(), owner="ghost/moss"
+            )
+        )
+        assert "first run" in _render_history(case)
+        operation = parse_operation("do(s1): 写完了", case.brief.protocol)
+        case.branch.commit(
+            message="do(s1): 写完了\n细节一\n细节二",
+            metadata={"operation": operation.model_dump(mode="json")},
+        )
+        text = _render_history(DshCase(case.branch))
+        assert "1-1 do(s1): 写完了" in text
+        assert "细节一" in text
+
+    asyncio.run(run())

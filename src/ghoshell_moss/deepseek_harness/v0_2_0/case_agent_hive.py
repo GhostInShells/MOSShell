@@ -70,13 +70,16 @@ from ghoshell_moss.agents.blueprint.case import (
     CaseProtocol,
     CaseState,
     CommitCallback,
+    Level,
     Next,
     Operation,
     ProtocolTemplate,
     Run,
     Usage,
 )
+from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 from ghoshell_moss.memento import Branch, BranchAddr, CommitView, Memento, new_local_memento
 from ghoshell_moss.message import Message
 
@@ -96,6 +99,18 @@ what makes this sentence stable: a continuation carries no new information."""
 
 _SNAPSHOT_WAIT = 5.0
 """How long ``bind`` waits for the engine's follow snapshot before reading the cwd back."""
+
+_LEVEL_PRIORITY = {
+    Level.BACKGROUND: Priority.BACKGROUND,
+    Level.INFO: Priority.INFO,
+    Level.NOTICE: Priority.NOTICE,
+    Level.WARNING: Priority.WARNING,
+}
+"""The case author's attention level, mapped onto the project's signal ladder.
+
+The mapping lives here — the implementation — and not in the blueprint: a word says how loudly
+it wants to be heard, the runtime decides what a step costs to interrupt.
+"""
 
 
 def _now() -> datetime:
@@ -148,10 +163,12 @@ def _read_meta(path: Path) -> CaseMeta:
     return CaseMeta.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def _render_priming(brief: CaseBrief, manifest: str) -> str:
-    """The text a carrier receives before its first prompt — parts 2–5 of the chain.
+def _render_priming(brief: CaseBrief, manifest: str, history: str) -> str:
+    """The text a carrier receives before its first prompt — parts 2–6 of the chain.
 
     Part 1 (the preset's own prompt) belongs to the engine and is already in the session.
+    ``history`` is the trace folded to one line per step: a rebuilt carrier must continue a case,
+    not start it over, and the trajectory is the only thing that says where it stopped.
     """
     return "\n".join(
         [
@@ -165,11 +182,29 @@ def _render_priming(brief: CaseBrief, manifest: str) -> str:
             "",
             brief.protocol.instruction(),
             "",
+            "## Steps already taken",
+            "",
+            history,
+            "",
             "## Files in your scratch directory",
             "",
             manifest,
         ]
     )
+
+
+def _render_history(case: Case, limit: int = 20) -> str:
+    """The case's steps so far, folded to headlines plus a short body each."""
+    steps = [item for item in case.commits(limit=200) if item.operation is not None]
+    if not steps:
+        return "(none yet — this is the first run)"
+    lines: list[str] = []
+    for commit in steps[-limit:]:
+        lines.append(f"- {commit.coord} {commit.headline}")
+        body = "\n".join(commit.message.splitlines()[1:]).strip().replace("\n", " ")
+        if body:
+            lines.append(f"  {body[:300]}")
+    return "\n".join(lines)
 
 
 def _manifest(tmp_dir: Path) -> str:
@@ -627,7 +662,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         _mirror(case.tmp, scratch)
 
         brief = case.brief
-        priming = _render_priming(brief, _manifest(scratch))
+        priming = _render_priming(brief, _manifest(scratch), _render_history(case))
         await carrier.send(
             Message.new(tag="delegation").with_content(priming), mode=MessageMode.inject
         )
@@ -668,6 +703,37 @@ class DshCaseAgentManager(CaseAgentManager[str]):
             await task
 
     # -- the loop ---------------------------------------------------------------------------- #
+
+    def _signal(self, agent: DshCaseAgent, commit: DshCaseCommit) -> None:
+        """Push one step to the issuer when the step's word asks to be heard.
+
+        The level is the case author's intent, declared per word; a word without one is recorded
+        and never pushes — reading is the issuer's act. The container carries the address only
+        (case, coord, word), because a signal is a nudge to go read, not a copy of the trace.
+        """
+        sender = self._hive.send_signal
+        operation = commit.operation
+        if sender is None or operation is None or not operation.op:
+            return
+        operator = agent.case.brief.protocol.op(operation.op)
+        if operator is None or operator.level is None:
+            return
+        container = Message.new(
+            tag=self._hive.name,
+            attributes={"case": agent.name, "coord": commit.coord, "op": operation.op},
+            timestamp=True,
+        ).with_content(f"{commit.coord} {commit.headline}")
+        signal = new_notify_signal(
+            container,
+            priority=_LEVEL_PRIORITY[operator.level],
+            next=True,
+            description=f"{agent.name} · {operation.op}",
+        )
+        try:
+            sender(signal)
+        except Exception:  # noqa: BLE001 — a signal that cannot be sent must not kill the loop
+            self._hive.logger.debug("case %s: step signal dropped", agent.name, exc_info=True)
+
 
     async def _write_step(self, agent: DshCaseAgent, turn: _Turn) -> DshCaseCommit:
         case = agent.case
@@ -724,6 +790,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
                 used += turn.tokens
                 _mirror(agent._scratch, case.tmp)
                 agent._emit(commit)
+                self._signal(agent, commit)
 
                 operation = commit.operation
                 if operation is None or operation.violation:
@@ -764,7 +831,12 @@ class DshCaseAgentManager(CaseAgentManager[str]):
             )
         if agent.is_running():
             raise RuntimeError(f"case {request.case_name!r} is already running")
-        kickoff = f"kickoff: {agent.case.brief.name} — begin; one step per reply."
+        first_run = not any(ref.metatype == "run.start" for ref in agent.case.branch.commits())
+        kickoff = (
+            f"kickoff: {agent.case.brief.name} — begin; one step per reply."
+            if first_run
+            else f"continue: {agent.case.brief.name} — pick up where you stopped; one step per reply."
+        )
         run = Run(started=_now(), budget=request.budget)
         agent.case.branch.commit(
             message=kickoff, metatype="run.start", metadata={"run": run.model_dump(mode="json")}

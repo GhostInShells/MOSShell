@@ -124,6 +124,9 @@ launcher 与 web connection 是两个概念，因此是两个 node。（他）
   取存储日志，`buildForkSeed` 切到目标 seq，`Session.create` 造一个未发布的 detached session，
   再走原来的 `deriveMessages` / `requestHeader` / `toolHistory`。空回答不再静默（provider 无路由
   或凭据时显式报错）。step commit 里记 `session_seq`，`chat` 就从那一刀问。
+- 已知缺口（晚上修）：`chat` 走 RPC 时用 `DshClient` 的 10s 默认读超时，模型慢一点就 `ReadTimeout`；
+  而频道把异常渲染成 `failed: `（空串），看起来像"没有原因"。要补两处：`chat_off_record` 加 per-call
+  timeout，频道统一 `failed: <Type>: <msg>`。
 
 ## 现状（D10 02:30，已提交）
 
