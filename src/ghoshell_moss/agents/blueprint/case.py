@@ -80,7 +80,8 @@ metadata when the run starts, and each step records what its turn consumed. What
 therefore derived: the grant minus the usage of the steps since ``run.start``. Nothing is
 counted twice and nothing is stored in a second place.
 
-Context compaction is not here: it is a preset's own configuration.
+Context compaction is not here: the engine's own policy (pressure / overflow) and its
+summarizer own it. A case layer that compacted by itself would be a second, worse summarizer.
 
 ## The priming chain
 

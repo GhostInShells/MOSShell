@@ -191,6 +191,7 @@ export class GhostShellService extends TypertRemoteService {
     markRemote(this, 'ping')
     markRemote(this, 'anchor')
     markRemote(this, 'chatOffRecord')
+    markRemote(this, 'archiveSession')
     markRemote(this, 'sessionState')
     markRemote(this, 'waitState')
     markRemote(this, 'inject')
@@ -546,6 +547,23 @@ export class GhostShellService extends TypertRemoteService {
   }
 
   /**
+   * Archive a session: take it out of the workspace's active set, keep its log.
+   *
+   * This is the collection side of a finished case. `stopActivity` asks the composed providers to
+   * stop whatever still runs for it; the archive is written first, so a provider failure cannot
+   * undo it.
+   */
+  async archiveSession(request) {
+    const sessionId = requireSessionId(request, 'archiveSession')
+    const registry = optionalService(this.ctx, 'workspaceRegistry')
+    if (registry === undefined) {
+      throw new Error('archiveSession: workspaceRegistry is not composed in this deployment')
+    }
+    await registry.archiveSession(sessionId, { stopActivity: request?.stop === true })
+    return { sessionId, archived: true }
+  }
+
+  /**
    * The session to ask: the live one when it is at the right point, otherwise a detached replay.
    *
    * A detached replay is built from the *stored* log, so it works after a restart, after the
@@ -597,7 +615,12 @@ export class GhostShellService extends TypertRemoteService {
     // Extra tools are added on top of the session's own declarations. Removal is deliberately not
     // offered: it was measured to cost the cache (9088 -> 1024) and to make the model lose its
     // footing, and a knob whose only effect is that is not a knob worth shipping.
-    const tools = [...(header.tools ?? []), ...(Array.isArray(request?.tools) ? request.tools : [])]
+    // `readonly` is the bypass shape: the request is assembled with NOTHING that could write, so
+    // the tools menu is empty. That is the mechanical half of "do not call a tool" — a model that
+    // is offered a tool answers with one, and an off-record call cannot run it.
+    const tools = request?.readonly === true
+      ? []
+      : [...(header.tools ?? []), ...(Array.isArray(request?.tools) ? request.tools : [])]
     // A patch, not a config: the base is the session's own header, so a call stays inside the
     // conversation it borrowed and only states what is different about this one answer.
     const config = { ...header.config, ...(request?.llm ?? {}) }

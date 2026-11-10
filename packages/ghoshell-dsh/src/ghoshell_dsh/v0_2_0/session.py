@@ -86,6 +86,7 @@ _DOLORES_SESSION_SURFACE = "/moss-api/ghost/dolores/session/surface"
 # 在这个会话的上下文上问一句, 什么也不写回 —— 两者都不在 dsh 里留下任何东西.
 _GHOSHELL_ANCHOR = "ghoshell/anchor"
 _GHOSHELL_CHAT_OFF_RECORD = "ghoshell/chatOffRecord"
+_GHOSHELL_ARCHIVE_SESSION = "ghoshell/archiveSession"
 _GHOSHELL_SESSION_STATE = "ghoshell/sessionState"
 _GHOSHELL_WAIT_STATE = "ghoshell/waitState"
 _GHOSHELL_INJECT = "ghoshell/inject"
@@ -525,7 +526,9 @@ class DshSession:
         anchor: DshSessionAnchor | None = None,
         llm: LlmConfigPatch | None = None,
         tools: list[dict[str, Any]] | None = None,
+        readonly: bool | None = None,
         max_tokens: int | None = None,
+        timeout: float = 120.0,
     ) -> ChatReply:
         """站在这个会话的上下文上问一句, 不留痕迹.
 
@@ -557,8 +560,22 @@ class DshSession:
             payload["llm"] = patch.model_dump(exclude_none=True)
         if tools:
             payload["tools"] = tools
-        value = await self._client.remote(_GHOSHELL_CHAT_OFF_RECORD, payload)
+        if readonly is not None:
+            payload["readonly"] = readonly
+        # A model call is not an ordinary RPC: the client's default read timeout is ten seconds,
+        # which a slow answer turns into a timeout with nothing to show for it.
+        value = await self._client.remote(_GHOSHELL_CHAT_OFF_RECORD, payload, timeout=timeout)
         return ChatReply.model_validate(value)
+
+    async def archive_session(self, *, stop: bool = False) -> None:
+        """把这个会话从 workspace 的活动集合里收走; 日志保留, 按 id 仍可读.
+
+        ``stop`` 让组合进来的 provider 停止仍在跑的东西 —— 归档先写, provider 失败不会撤销它.
+        它是 case 结束时的回收动作: 不归档, workspace 的 sessionIds 只增不减.
+        """
+        await self._client.remote(
+            _GHOSHELL_ARCHIVE_SESSION, {"sessionId": self._session_id, "stop": stop}
+        )
 
     async def fork(self, *, at_seq: int | None = None) -> sessions.SessionForkValue:
         params = sessions.SessionForkParams(sessionId=self._session_id, atSeq=at_seq)

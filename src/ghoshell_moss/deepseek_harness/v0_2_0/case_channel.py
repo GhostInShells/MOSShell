@@ -52,6 +52,12 @@ A case whose loop stopped is still open: `autopilot` again is how it continues.
 """
 
 
+def _failed(exc: Exception) -> str:
+    """One failure shape: the type is part of the reason (an empty message is not a reason)."""
+    detail = str(exc).strip()
+    return f"failed: {type(exc).__name__}: {detail}" if detail else f"failed: {type(exc).__name__}"
+
+
 def _schema(model: type) -> str:
     """The model's JSON schema, as the body the command expects."""
     return json.dumps(model.model_json_schema(), ensure_ascii=False, indent=2)
@@ -80,7 +86,14 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
             refs = case.branch.commits()
             last = f"{case.branch.index}-{refs[-1].seq}" if refs else "empty"
             state = case.meta.state.value
-            fragments[name] = f"{state} · {'running' if _running(manager, name) else 'idle'} · {last}"
+            running = "running" if _running(manager, name) else "idle"
+            description = case.brief.description.strip()
+            if len(description) > 80:
+                description = description[:80] + "…"
+            line = f"{state} · {running} · {last}"
+            if description:
+                line += f" · {description}"
+            fragments[name] = line
         return fragments
 
     @chan.build.refresh_meta
@@ -95,7 +108,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
             definition = CaseDefinition.model_validate_json(text__)
             case = await manager.draft(definition)
         except Exception as exc:  # noqa: BLE001 — a refused draft is a fact, not a crash
-            return f"failed: {exc}"
+            return _failed(exc)
         return f"ok: {case.branch.ref.name} · {case.document}"
 
     @chan.build.command(name="bind", blocking=False, always_observe=True, doc=_bind_doc())
@@ -104,7 +117,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
             request = BindRequest.model_validate_json(text__)
             agent = await manager.bind(request)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         return f"ok: bound {agent.name} ({agent.carrier.session_id})"
 
     @chan.build.command(name="autopilot", blocking=False, always_observe=True, doc=_autopilot_doc())
@@ -113,7 +126,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
             request = AutopilotRequest.model_validate_json(text__)
             agent = await manager.autopilot(request)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         return f"ok: running {agent.name}"
 
     @chan.build.command(name="pause", blocking=False, always_observe=True)
@@ -126,7 +139,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
         try:
             await manager.pause(case, reason)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         return "ok"
 
     @chan.build.command(name="resolve", blocking=False, always_observe=True)
@@ -135,7 +148,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
         try:
             await manager.resolve(case, reason)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         return "ok"
 
     @chan.build.command(name="close", blocking=False, always_observe=True)
@@ -144,7 +157,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
         try:
             await manager.close(case, reason)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         return "ok"
 
     # -- reading ---------------------------------------------------------------------------- #
@@ -160,7 +173,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
         try:
             commits = manager.read(case, coord, limit)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         if not commits:
             return "(no commits)"
         lines = []
@@ -177,16 +190,22 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
 
     @chan.build.command(name="chat", blocking=False, always_observe=True)
     async def _chat(case: str, coord: str, question: str) -> str:
-        """Ask one step a question, on the carried session's own context.
+        """Ask one step a question; answers come back as a signal, not as this command's return.
+
+        The receipt names the exchange: the signal carries `case`, `coord` and `chat=<id>`, so a
+        result can be matched to the question that produced it. The exchange is not written into
+        the case.
 
         :param case: the case name.
         :param coord: the step to ask about, e.g. ``1-42``.
-        :param question: what you want to know. The exchange is not written into the case.
+        :param question: what you want to know.
+        :return: `ok: <chat id>`, or `failed: <Type>: <reason>`.
         """
         try:
-            return await manager.chat(case, coord, question)
+            chat_id = await manager.chat(case, coord, question)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
+        return f"ok: {chat_id}"
 
     # -- protocol library --------------------------------------------------------------------- #
 
@@ -213,7 +232,7 @@ def new_cases_channel(manager: DshCaseAgentManager) -> MutableChannel:
             template = ProtocolTemplate.model_validate_json(text__)
             await manager.save_protocol(template)
         except Exception as exc:  # noqa: BLE001
-            return f"failed: {exc}"
+            return _failed(exc)
         return f"ok: {template.name}"
 
     return chan

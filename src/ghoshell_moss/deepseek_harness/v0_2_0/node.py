@@ -280,6 +280,30 @@ def new_dsh_node_channel(
                 line += f" · cases: {len(cases.list_cases())}"
         return line
 
+    @chan.build.named_notices
+    def _named_notices() -> dict[str, str | None]:
+        # Small, stable facts the ghost decides with every time — who can compose an agent, and
+        # where one may act. The cold reads keep the schemas; these keep the picture.
+        if hive is None:
+            return {}
+        places = hive.workspaces()
+        presets = hive.presets()
+        return {
+            "workspaces": "\n".join(
+                f"{place.name or place.id} · {place.path}" for place in places
+            )
+            or "(none declared)",
+            "presets": "\n".join(
+                f"{item.name or item.id} · {item.description}" for item in presets
+            )
+            or "(none declared)",
+        }
+
+    @chan.build.refresh_meta
+    async def _refresh_meta() -> None:
+        if hive is not None:
+            await hive.refresh_if_stale()
+
     @chan.build.instruction
     def _instruction() -> str:
         return (

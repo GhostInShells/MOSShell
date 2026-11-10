@@ -145,3 +145,36 @@ def test_history_folds_steps_for_a_rebuilt_carrier(tmp_path):
         assert "细节一" in text
 
     asyncio.run(run())
+
+
+def test_mirror_is_a_mirror_not_a_copy(tmp_path):
+    from ghoshell_moss.deepseek_harness.v0_2_0.case_agent_hive import _mirror
+
+    source = tmp_path / "scratch"
+    target = tmp_path / "durable"
+    (source / "sub").mkdir(parents=True)
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    (source / "sub" / "b.txt").write_text("b", encoding="utf-8")
+    target.mkdir()
+    (target / "stale.txt").write_text("gone", encoding="utf-8")
+    (target / "olddir").mkdir()
+
+    _mirror(source, target)
+    assert (target / "a.txt").read_text(encoding="utf-8") == "a"
+    assert (target / "sub" / "b.txt").read_text(encoding="utf-8") == "b"
+    assert not (target / "stale.txt").exists()
+    assert not (target / "olddir").exists()
+
+    (source / "a.txt").unlink()
+    _mirror(source, target)
+    assert not (target / "a.txt").exists()
+
+
+def test_failed_says_which_failure_it_was():
+    from ghoshell_moss.deepseek_harness.v0_2_0.case_channel import _failed
+
+    class Boom(Exception):
+        pass
+
+    assert _failed(Boom("nope")) == "failed: Boom: nope"
+    assert _failed(Boom("")) == "failed: Boom"

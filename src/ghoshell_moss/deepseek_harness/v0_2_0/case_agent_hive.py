@@ -42,6 +42,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -207,6 +208,21 @@ def _render_history(case: Case, limit: int = 20) -> str:
     return "\n".join(lines)
 
 
+def _off_record_prompt(coord: str, question: str) -> str:
+    """The prompt a bypass question carries: what this is, and what it may not do.
+
+    The plugin's `readonly` already removes the tools menu — the mechanical half. This is the
+    other half: a model that is told it is in an off-record question answers instead of reaching
+    for one.
+    """
+    return (
+        "<system_reminder>This is an off-record question about step "
+        f"{coord}. You are not taking a turn: nothing is written back, and no tool can run. "
+        "Answer in prose; do not call a tool.</system_reminder>\n"
+        f"{question}"
+    )
+
+
 def _manifest(tmp_dir: Path) -> str:
     if not tmp_dir.is_dir():
         return "(empty)"
@@ -217,18 +233,33 @@ def _manifest(tmp_dir: Path) -> str:
 
 
 def _mirror(source: Path, target: Path) -> None:
-    """Copy the files under ``source`` into ``target``, overwriting; never delete."""
+    """Make ``target`` a mirror of ``source``: copy what changed, remove what is gone.
+
+    Copy-only would make the durable ``tmp/`` grow without bound — a scratch file the agent
+    deletes would stay in the copy forever, and the copy runs after every step. Removal is part
+    of what "mirror" means here, in both directions.
+    """
     if not source.is_dir():
         return
     target.mkdir(parents=True, exist_ok=True)
+    keep: set[Path] = set()
     for item in source.rglob("*"):
         relative = item.relative_to(source)
+        keep.add(relative)
         destination = target / relative
         if item.is_dir():
             destination.mkdir(parents=True, exist_ok=True)
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, destination)
+    for item in sorted(target.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+        if item.relative_to(target) in keep:
+            continue
+        if item.is_dir():
+            shutil.rmtree(item, ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                item.unlink()
 
 
 # --------------------------------------------------------------------------- #
@@ -504,6 +535,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         self._memento: Memento = new_local_memento(store)
         self._cases: dict[str, DshCase] = {}
         self._agents: dict[str, DshCaseAgent] = {}
+        self._chats: set[asyncio.Task[None]] = set()
 
     # -- the store -------------------------------------------------------------------------- #
 
@@ -687,6 +719,15 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         await self._stop_loop(agent, reason or "closed")
         with contextlib.suppress(Exception):
             await agent.carrier.cancel(reason)
+        try:
+            # A carrier that is gone still occupies the workspace's session list; archiving is
+            # how a finished case gives its seat back. The log stays readable by id.
+            await agent.carrier.engine_session.archive_session(stop=True)
+        except Exception:  # noqa: BLE001 — the case still retires; the miss is logged, not hidden
+            self._hive.logger.warning(
+                "case %s: could not archive session %s", agent.name, agent.carrier.session_id,
+                exc_info=True,
+            )
         await agent._close()
         self._agents.pop(agent.name, None)
 
@@ -884,12 +925,16 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         return [DshCaseCommit(item) for item in case.branch.view(n=limit).latest]
 
     async def chat(self, case_name: str, commit_coord: str, question: str) -> str:
-        """Ask one step a question with the context that produced it.
+        """Dispatch one question about a step; the answer arrives as a signal.
+
+        Returns a receipt, not an answer: a model call is seconds long, and a command that waits
+        for it is a command that can time out for no reason the caller can see. The receipt names
+        the exchange — the signal that carries the answer is tagged with the same id, so ``chat``
+        and its result are one pair even when several are in flight.
 
         The commit carries the session that produced it, so the question is answered on that
         session's own context — same model, same history. A live carrier is asked directly; a
-        carrier that is gone needs the plugin's resume-and-slice path, and says so instead of
-        answering from the wrong place.
+        stored one is replayed by the plugin at the anchored seq.
         """
         view = self._memento.resolve_commit(commit_coord)
         if view is None:
@@ -898,20 +943,84 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         if not isinstance(session_ref, str) or not session_ref:
             raise ValueError(f"commit {commit_coord!r} was not produced by a carrier")
         seq = view.ref.metadata.get("session_seq")
-        anchor = DshSessionAnchor(session_id=session_ref, seq=seq if isinstance(seq, int) else None)
-        agent = self._agents.get(case_name)
-        if agent is not None and agent.carrier.session_id == session_ref:
-            reply = await agent.carrier.engine_session.chat_off_record(question, anchor=anchor)
-            return reply.text
-        # No live carrier: the plugin slices the stored log at the anchored seq and asks there,
-        # so a cold case is as answerable as a live one.
-        session = self._hive.connection.create_session(session_ref, self._hive.logger)
+        chat_id = f"chat-{uuid4().hex[:8]}"
+        task = asyncio.create_task(
+            self._answer(
+                case_name=case_name,
+                coord=commit_coord,
+                chat_id=chat_id,
+                session_ref=session_ref,
+                seq=seq if isinstance(seq, int) else None,
+                question=question,
+            )
+        )
+        self._chats.add(task)
+        task.add_done_callback(self._chats.discard)
+        return chat_id
+
+    async def _answer(
+        self,
+        *,
+        case_name: str,
+        coord: str,
+        chat_id: str,
+        session_ref: str,
+        seq: int | None,
+        question: str,
+    ) -> None:
+        """Run the question to completion, then deliver it — answer or failure, both as signals."""
+        anchor = DshSessionAnchor(session_id=session_ref, seq=seq)
+        prompt = _off_record_prompt(coord, question)
         try:
-            reply = await session.chat_off_record(question, anchor=anchor)
-        finally:
-            with contextlib.suppress(Exception):
-                await session.close()
-        return reply.text
+            agent = self._agents.get(case_name)
+            if agent is not None and agent.carrier.session_id == session_ref:
+                reply = await agent.carrier.engine_session.chat_off_record(
+                    prompt, anchor=anchor, readonly=True
+                )
+            else:
+                session = self._hive.connection.create_session(session_ref, self._hive.logger)
+                try:
+                    reply = await session.chat_off_record(
+                        prompt, anchor=anchor, readonly=True
+                    )
+                finally:
+                    with contextlib.suppress(Exception):
+                        await session.close()
+            text = reply.text.strip()
+            if not text and reply.tool_calls:
+                # Off-record means nothing runs: a model that answers with a tool call has not
+                # answered, and the caller must see what it asked for instead of a blank.
+                asked = "; ".join(
+                    f"{call.name}({call.arguments[:200]})" for call in reply.tool_calls
+                )
+                text = f"(the model asked to run a tool instead of answering: {asked})"
+            elif not text:
+                text = "(the model returned no text)"
+        except Exception as exc:  # noqa: BLE001 — a failed question is a result, not a crash
+            text = f"failed: {type(exc).__name__}: {exc}"
+        self._chat_signal(case_name, coord, chat_id, text)
+
+    def _chat_signal(self, case_name: str, coord: str, chat_id: str, text: str) -> None:
+        """Deliver one answer, addressed back to the question that asked for it."""
+        sender = self._hive.send_signal
+        if sender is None:
+            self._hive.logger.debug("case %s: no signal sender; chat %s dropped", case_name, chat_id)
+            return
+        container = Message.new(
+            tag=self._hive.name,
+            attributes={"case": case_name, "coord": coord, "chat": chat_id},
+            timestamp=True,
+        ).with_content(text)
+        signal = new_notify_signal(
+            container,
+            priority=Priority.NOTICE,
+            next=True,
+            description=f"{case_name} · {chat_id}",
+        )
+        try:
+            sender(signal)
+        except Exception:  # noqa: BLE001 — a signal that cannot be sent must not kill the task
+            self._hive.logger.debug("case %s: chat signal dropped", case_name, exc_info=True)
 
     # -- presentation ------------------------------------------------------------------------ #
 
