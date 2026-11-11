@@ -35,15 +35,19 @@ from pydantic import BaseModel, Field
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
-from ghoshell_moss.deepseek_harness.trajectory import render_transcript
-from ghoshell_moss.deepseek_harness.types.refs import DshSessionRef
-from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TokenUsage
+from ghoshell_moss.deepseek_harness.v0_2_0 import (
+    DshSessionRef,
+    SessionEvent,
+    TokenUsage,
+    event_from_dict,
+    render_transcript,
+)
 from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
 from ghoshell_moss.memento.hooks import hook_env, run_slot
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
-    from ghoshell_moss.deepseek_harness.launcher import DshConnection
+    from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection
 
 __all__ = [
     "BranchInfo", "BrokenCommitError", "BypassCommit", "BypassState",
@@ -529,7 +533,7 @@ class EgoMementoManager:
             raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc
-        events = [SessionEvent.from_dict(event) for event in (raw or {}).get("events", [])]
+        events = [event_from_dict(event) for event in (raw or {}).get("events", [])]
         text = render_transcript(events)
         # What this commit's directory says about itself comes from the commit_view slot and is
         # part of the read — not a tail the channel appends after the transcript. A commit with

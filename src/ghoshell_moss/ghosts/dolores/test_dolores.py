@@ -1111,9 +1111,9 @@ class TestDoloresEgoCommit:
 
     @staticmethod
     def _turn_end(turn: int):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+        from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
 
-        return SessionEvent.from_dict({"type": "turn/end", "seq": turn, "data": {"turn": turn}})
+        return event_from_dict({"type": "turn/end", "seq": turn, "data": {"turn": turn}})
 
     @staticmethod
     def _set_up(tmp_path: Path, *, force_tokens: int = 0, warn_tokens: int = 50_000):
@@ -1197,9 +1197,9 @@ class TestDoloresEgoCommit:
 
     @staticmethod
     def _assistant_message(turn: int, *, input_tokens: int, cache_read: int = 0):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+        from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
 
-        return SessionEvent.from_dict({
+        return event_from_dict({
             "type": "assistant/message", "seq": turn * 10,
             "data": {
                 "turn": turn, "step": 1, "message": {"role": "assistant"},
@@ -1249,12 +1249,12 @@ class TestDoloresEgoCommit:
 
     @staticmethod
     def _request_header(turn: int, *, provider: str, model: str, effort: str = ""):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+        from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
 
         config = {"provider": provider, "model": model}
         if effort:
             config["reasoningEffort"] = effort
-        return SessionEvent.from_dict({
+        return event_from_dict({
             "type": "request/header", "seq": turn * 10,
             "data": {
                 "header": {"config": config},
@@ -2080,7 +2080,7 @@ class _NoopShellFacade:
 
 def fake_tool_call(call_id: str = "call_00_test"):
     """_dispatch_tool_result 只用 callId, 其余字段走默认."""
-    from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+    from ghoshell_moss.deepseek_harness.v0_2_0 import ToolCallEvent
 
     return ToolCallEvent(callId=call_id)
 
@@ -2134,7 +2134,7 @@ class TestDoloresRun:
 
     @staticmethod
     def _event(event_type: str, data: dict, seq: int = 1):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+        from ghoshell_moss.deepseek_harness.v0_2_0 import SessionEvent, SessionEventMeta
 
         return SessionEvent(meta=SessionEventMeta(type=event_type, seq=seq), data=data)
 
@@ -2148,7 +2148,7 @@ class TestDoloresRun:
 
     @staticmethod
     def _tool_call(name: str, arguments: str = "{}", call_id: str = "call_x"):
-        from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+        from ghoshell_moss.deepseek_harness.v0_2_0 import ToolCallEvent
 
         return ToolCallEvent(callId=call_id, name=name, arguments=arguments)
 
@@ -2788,7 +2788,7 @@ class TestDoloresRun:
         插件侧 /tool-result 可能先于 dsh 派发该 tool 的 execute 到达 (MOSS 走 mux 事件流更快);
         结果里的 turn 让插件在 execute 尚未注册时也能按轮归属, 而不是悬空.
         """
-        from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+        from ghoshell_moss.deepseek_harness.v0_2_0 import ToolCallEvent
 
         from ._tools import ToolCallResult
 
@@ -3655,13 +3655,13 @@ class TestBuildChannel:
 
     @staticmethod
     async def _empty_catalog():
-        from ghoshell_moss.deepseek_harness.types.sessions import ModelCatalog
+        from ghoshell_moss.deepseek_harness.v0_2_0 import ModelCatalog
 
         return ModelCatalog()
 
     def test_catalog_renders_models_with_their_own_depth_ladder(self):
         """目录文本按 provider 分组, 每个模型带自己的档位表 —— 换模型前先看见它能想多深."""
-        from ghoshell_moss.deepseek_harness.types.sessions import (
+        from ghoshell_moss.deepseek_harness.v0_2_0 import (
             ModelCatalog,
             ModelCatalogModel,
             ModelProviderGroup,
@@ -4012,7 +4012,7 @@ class TestEgoSilentFailureSurfaces:
     @pytest.mark.asyncio
     async def test_missing_usage_warns_once(self):
         """usage 一直缺失 = 自动落锚整体静默失效. 报一次, 不逐帧刷屏."""
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+        from ghoshell_moss.deepseek_harness.v0_2_0 import SessionEvent, SessionEventMeta
 
         from ._ego import DoloresEgo, DoloresEgoConfig, DoloresEgoContext
 
@@ -4067,12 +4067,12 @@ class TestTurnEndClassification:
 
     @staticmethod
     def _end(kind: str, turn: int = 7, cause=None):
-        from ghoshell_moss.deepseek_harness.types.session_events import TurnEnd, TurnEndReason
+        from ghoshell_moss.deepseek_harness.v0_2_0 import TurnEnd, TurnEndReason
         return TurnEnd(turn=turn, reason=TurnEndReason(kind=kind, reason=cause))
 
     @staticmethod
     def _cause(kind: str, reason: str = ""):
-        from ghoshell_moss.deepseek_harness.types.session_events import AgentCancelCause
+        from ghoshell_moss.deepseek_harness.v0_2_0 import AgentCancelCause
         return AgentCancelCause(kind=kind, reason=reason or None)
 
     def test_natural_ends_do_not_touch_the_body(self):

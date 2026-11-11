@@ -213,7 +213,6 @@ class DshLauncherConfig(DshConnectionConfig):
         default=None,
         description="本代际插件的 patch 文件; 由 install() 放到 dsh home 后传入, 启动时以 --patch 叠加.",
     )
-    readiness_path: str = Field(default="/plugin-api/ping", description="就绪探针: 轮询到它返回即视为 dsh+plugin 起来.")
     readiness_timeout: float = Field(default=30.0, description="等待就绪的时限 (秒).")
     shutdown_timeout: float = Field(default=5.0, description="拆除进程的时限 (秒).")
 

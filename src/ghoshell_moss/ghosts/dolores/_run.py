@@ -32,11 +32,13 @@ from ghoshell_moss.types.topics.ghost import GHOST_THINKING
 from ghoshell_moss.core.blueprint.mindflow import ActionExitedException, Thinking
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
-from ghoshell_moss.deepseek_harness.types.session_events import (
+from ghoshell_moss.deepseek_harness.v0_2_0 import (
     AssistantChunk,
     SessionEvent,
     ToolCallEvent,
     TurnEnd,
+    event_to_dict,
+    model_from_event,
 )
 
 from ._ctml_stream import CtmlArgumentStream
@@ -99,7 +101,7 @@ _TOOL_DESCRIPTION_KEYS = ("description", "desc")
 
 def _tool_payload(event: Any) -> dict:
     """tool 事件的 data 体 —— 信封形状随 dsh 版本变, 取到 dict 为止."""
-    envelope = event.to_dict()
+    envelope = event_to_dict(event)
     data = envelope.get("data")
     return data if isinstance(data, dict) else envelope
 
@@ -858,17 +860,17 @@ class DoloresRun:
                         yield GhostEvent(
                             event=f"{_DSH_EVENT_NAME_PREFIX}{event.meta.type}",
                             content=_event_content(event),
-                            payload=event.to_dict(),
+                            payload=event_to_dict(event),
                         )
                     if self._note_turn_end(event):
                         turn_aborted = self._interrupt_aborted
                         break
-                    if chunk := AssistantChunk.from_session_event(event):
+                    if chunk := model_from_event(AssistantChunk, event):
                         logos_delta = await self._handle_ctml_delta(chunk.chunk, streams)
                         if logos_delta is not None:
                             yield logos_delta
                         continue
-                    if tool := ToolCallEvent.from_session_event(event):
+                    if tool := model_from_event(ToolCallEvent, event):
                         await self._handle_tool_use_event(tool, streams)
                 if turn_aborted:
                     return
@@ -945,7 +947,7 @@ class DoloresRun:
 
         reason 是调用方自己的话 (对齐 ``Future.cancel(msg)``), 不当词汇表用; 日志里只带 kind (+ cause).
         """
-        end = TurnEnd.from_session_event(event)
+        end = model_from_event(TurnEnd, event)
         if end is None:
             return False
         if not self._turn_end_noted:
@@ -1038,7 +1040,7 @@ class DoloresRun:
         """
         if self._interrupt_aborted:
             return
-        end = TurnEnd.from_session_event(event)
+        end = model_from_event(TurnEnd, event)
         if end is None:
             return
         reason = _turn_end_abort_reason(end)

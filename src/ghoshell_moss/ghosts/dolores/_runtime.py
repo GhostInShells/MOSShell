@@ -28,7 +28,7 @@ from ghoshell_moss.message import Message
 if TYPE_CHECKING:
     from ghoshell_moss.core.blueprint.channel_builder import MutableChannel
     from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
-    from ghoshell_moss.deepseek_harness.launcher import DshLauncher
+    from ghoshell_moss.deepseek_harness.v0_2_0 import DshLauncher
     from ghoshell_moss.memento._fs_memento import FsMemento
 
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
@@ -646,7 +646,7 @@ class Dolores(Ghost):
         return get_moss_logger()
 
     def _build_dsh_launcher(self) -> "DshLauncher":
-        from ghoshell_moss.deepseek_harness.launcher import DshLauncher
+        from ghoshell_moss.deepseek_harness.v0_2_0 import DshLauncher
 
         dsh = self._load_config().dsh
         home = self._resolve_dsh_home(dsh.home)

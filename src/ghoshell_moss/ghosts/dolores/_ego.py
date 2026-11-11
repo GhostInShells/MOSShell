@@ -34,13 +34,15 @@ from typing_extensions import Self
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, Thinking
-from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
-from ghoshell_moss.deepseek_harness.session import DshSession
-from ghoshell_moss.deepseek_harness.types.session_events import (
+from ghoshell_moss.deepseek_harness.v0_2_0 import (
     AssistantMessageEvent,
+    DshLauncher,
+    DshLauncherConfig,
+    DshSession,
     RequestHeader,
     SessionEvent,
     TurnEnd,
+    model_from_event,
 )
 from ghoshell_moss.message import Content, Message
 from ghoshell_moss.memento.abcd import CommitRef
@@ -496,7 +498,7 @@ class DoloresEgo:
         """assistant/message 回调 — 用 usage 刷新窗口大小 (覆盖, 非累加: 语义是最近一次调用的 prompt 大小)."""
         if self._memento_manager is None:
             return
-        message = AssistantMessageEvent.from_session_event(event)
+        message = model_from_event(AssistantMessageEvent, event)
         if message is None:
             self._logger.warning("assistant/message did not parse — window size unchanged")
             return
@@ -519,7 +521,7 @@ class DoloresEgo:
         首次观测也发: 思考档决定交互礼仪 (off 直答 / max 憋到最后), 模型开局就得知道自己在哪一档,
         否则会按错误的档位选礼仪. 上下文压缩后模型自己声明过的 effort 也不复记忆, 这条 notice 补上.
         """
-        header = RequestHeader.from_session_event(event)
+        header = model_from_event(RequestHeader, event)
         if header is None:
             return
         config = header.header.config
@@ -527,7 +529,7 @@ class DoloresEgo:
 
     async def _on_turn_end(self, event: SessionEvent) -> None:
         """turn/end 回调 — 推进 last_turn, 再按阈值决定是否强制提交."""
-        turn_end = TurnEnd.from_session_event(event)
+        turn_end = model_from_event(TurnEnd, event)
         if turn_end is None:
             return
         self._last_turn = max(self._last_turn, turn_end.turn)

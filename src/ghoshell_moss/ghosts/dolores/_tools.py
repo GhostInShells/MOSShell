@@ -14,7 +14,7 @@ from typing import Optional, Callable, Awaitable
 from pydantic import BaseModel, Field, ValidationError
 from typing_extensions import Self
 
-from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+from ghoshell_moss.deepseek_harness.v0_2_0 import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
