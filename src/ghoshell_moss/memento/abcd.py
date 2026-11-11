@@ -49,13 +49,14 @@ the model's sovereignty; the contract layer is human-reviewed.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 import ulid
 
 __all__ = [
@@ -65,6 +66,7 @@ __all__ = [
     "Child",
     "Confluence",
     "Note",
+    "CommitMessage",
     "BranchRef",
     "BranchEvent",
     "ForkRef",
@@ -265,6 +267,123 @@ class Note(BaseModel):
     )
 
 
+_COMMIT_OP_LINE = re.compile(
+    r"^(?P<op>[A-Za-z][A-Za-z0-9_-]*)"
+    r"(?:\((?P<target>[^()]*)\))?"
+    r"\s*[:：]\s*(?P<content>.*)$"
+)
+"""The one op-line grammar — shared by stored messages and the case agent's reply parser.
+
+Only the first line is ever matched. ``op`` is an ASCII identifier, ``target`` may not
+contain parentheses, and the colon may be ASCII or full-width.
+"""
+
+_OP_WORD = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+
+
+class CommitMessage(BaseModel):
+    """A commit's message as a protocol value — the typed reading of a Note's message.
+
+    The first line may be an op line, ``op(target): content``; everything after it is
+    ``body``. Prose is a legal message: ``op`` is empty and ``content`` is the whole first
+    line. ``Note`` remains the storage row; this value object is how its message is read
+    and written.
+
+    Reads are tolerant: :meth:`parse` never raises unless ``strict=True``; a first line
+    that does not match the grammar is prose. ``op`` is a **candidate reading, not a
+    guarantee** — a title like ``D11：...`` parses as op ``D11``; a consumer must validate
+    the word against its own vocabulary. Construction is strict: these validators are the
+    one place a protocol message can be built.
+
+    ``to_str`` / ``str`` is the whole write path: the storage API keeps taking strings.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    op: str = Field(default="", description="The op word; empty when the message is prose.")
+    target: str = Field(default="", description="The parenthesized target; empty when there is none.")
+    content: str = Field(
+        default="",
+        description="The human title after ``op(target):``; the whole first line when op is empty.",
+    )
+    body: str = Field(
+        default="",
+        description="Everything after the first line; the separator blank line is stripped.",
+    )
+
+    @field_validator("op")
+    @classmethod
+    def _op_is_an_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if value and _OP_WORD.fullmatch(value) is None:
+            raise ValueError(f"op must be an ASCII identifier, got {value!r}")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def _target_has_no_parentheses(cls, value: str) -> str:
+        value = value.strip()
+        if "(" in value or ")" in value:
+            raise ValueError(f"target cannot contain parentheses, got {value!r}")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def _content_is_one_line(cls, value: str) -> str:
+        value = value.strip()
+        if "\n" in value:
+            raise ValueError("content is the first line only; put the rest in body")
+        return value
+
+    @field_validator("body")
+    @classmethod
+    def _body_is_the_remainder(cls, value: str) -> str:
+        return value.strip("\n")
+
+    @model_validator(mode="after")
+    def _target_belongs_to_an_op(self) -> CommitMessage:
+        if self.target and not self.op:
+            raise ValueError("a target belongs to an op; pass an op or drop the target")
+        return self
+
+    @property
+    def headline(self) -> str:
+        """``op(target): content`` on one line — the full first line of the message."""
+        if not self.op:
+            return self.content
+        head = f"{self.op}({self.target})" if self.target else self.op
+        return f"{head}: {self.content}" if self.content else head
+
+    def to_str(self) -> str:
+        """The message as it is stored: the headline, then a blank line and the body."""
+        line = self.headline
+        return f"{line}\n\n{self.body}" if self.body else line
+
+    def __str__(self) -> str:
+        return self.to_str()
+
+    @classmethod
+    def parse(cls, message: str, *, strict: bool = False) -> CommitMessage:
+        """Read a message; tolerant by default, strict only when asked.
+
+        ``strict=True`` raises when the first line is not an op line — for writers and
+        tests, never for readers of existing notes.
+        """
+        first, _, rest = message.partition("\n")
+        first = first.strip()
+        match = _COMMIT_OP_LINE.match(first)
+        if match is None:
+            if strict:
+                raise ValueError(f"a commit message must start with an op line, got {first!r}")
+            return cls(content=first, body=rest)
+        return cls(
+            op=match.group("op"),
+            target=(match.group("target") or "").strip(),
+            content=match.group("content").strip(),
+            body=rest,
+        )
+
+
 class BranchRef(BaseModel):
     """Points at a branch's current pointer — the content of ``{branch_name}.ref.json``."""
 
@@ -366,14 +485,21 @@ class CommitView(BaseModel):
     def message(self) -> str:
         return self.note.message if self.note is not None else ""
 
+    def message_view(self) -> CommitMessage:
+        """The message as a protocol value — a pure parse, never cached or stored.
+
+        ``message`` stays the raw string and the single authority; this method is the
+        read-side reading, so a view holds no derived state and two calls parse twice.
+        """
+        return CommitMessage.parse(self.message)
+
     @property
     def title(self) -> str:
-        return self.message.split("\n", 1)[0]
+        return self.message_view().headline
 
     @property
     def body(self) -> str:
-        lines = self.message.split("\n")
-        return "\n".join(lines[1:])
+        return self.message_view().body
 
     @property
     def recipients(self) -> list[BranchAddr]:

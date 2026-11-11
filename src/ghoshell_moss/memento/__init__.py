@@ -6,6 +6,7 @@ from .abcd import (
     CommitRef,
     Confluence,
     Note,
+    CommitMessage,
     BranchRef,
     ForkRef,
     BranchMeta,

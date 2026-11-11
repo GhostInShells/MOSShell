@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import shutil
 import time
 from datetime import datetime, timezone
@@ -84,7 +83,14 @@ from ghoshell_moss.agents.blueprint.case import (
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
-from ghoshell_moss.memento import Branch, BranchAddr, CommitView, Memento, new_local_memento
+from ghoshell_moss.memento import (
+    Branch,
+    BranchAddr,
+    CommitMessage,
+    CommitView,
+    Memento,
+    new_local_memento,
+)
 from ghoshell_moss.message import Message
 
 from .agent import DshAgentSession
@@ -324,11 +330,6 @@ def _mirror(source: Path, target: Path) -> None:
 # The op line
 # --------------------------------------------------------------------------- #
 
-_STEP_LINE = re.compile(
-    r"^(?P<op>[A-Za-z][A-Za-z0-9_-]*)(?:\("
-    r"(?P<target>[^)]*)\))?\s*[:：]\s*(?P<title>.*)$"
-)
-
 
 def _strip_fence(text: str) -> str:
     stripped = text.strip()
@@ -345,21 +346,23 @@ def _strip_fence(text: str) -> str:
 def parse_operation(text: str, protocol: CaseProtocol) -> Operation:
     """Read one reply as one step. A violation is a step that cannot be read — never an exception.
 
-    The word must come from the case's own protocol: an unknown word is a violation exactly
+    The syntax is ``CommitMessage``'s (one parser for stored notes and model replies); the
+    word must come from the case's own protocol: an unknown word is a violation exactly
     like an unreadable line, because the loop cannot know what follows it.
     """
-    message = _strip_fence(text)
-    first, _, _rest = message.partition("\n")
-    match = _STEP_LINE.match(first.strip())
-    if match is None:
-        return Operation(op="", title=first.strip(), next=Next.BREAK, violation=True)
-    word = match.group("op")
-    target = (match.group("target") or "").strip()
-    title = match.group("title").strip()
-    operator = protocol.op(word)
+    message = CommitMessage.parse(_strip_fence(text))
+    if not message.op:
+        return Operation(op="", title=message.content, next=Next.BREAK, violation=True)
+    operator = protocol.op(message.op)
     if operator is None:
-        return Operation(op=word, target=target, title=title, next=Next.BREAK, violation=True)
-    return Operation(op=word, target=target, title=title, next=operator.next, violation=False)
+        return Operation(
+            op=message.op, target=message.target, title=message.content,
+            next=Next.BREAK, violation=True,
+        )
+    return Operation(
+        op=message.op, target=message.target, title=message.content,
+        next=operator.next, violation=False,
+    )
 
 
 def _no_answer_stop(reason: str) -> str:
