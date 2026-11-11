@@ -814,7 +814,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     async def _main_loop(self) -> None:
         pass
 
-    def create_asyncio_task(self, cor: Coroutine) -> asyncio.Task:
+    def create_asyncio_task(self, cor: Coroutine, name: str = '') -> asyncio.Task:
         """
         create asyncio task during runtime
         """
@@ -822,7 +822,30 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             raise RuntimeError('channel not running')
         task = self._loop.create_task(cor)
         self._runtime_asyncio_task_group.add(task)
-        task.add_done_callback(self._remove_done_asyncio_task)
+        task_name = name or getattr(cor, '__qualname__', '')
+
+        # Must stay a plain function: add_done_callback does not await its return
+        # value, so an async callback body silently never runs -- no cleanup, no log.
+        def _discord(t: asyncio.Task) -> None:
+            cancelled = t.cancelled()
+            # Task.exception() raises CancelledError on a cancelled task.
+            exception = None if cancelled else t.exception()
+            if exception is not None:
+                # Retrieve it here, so asyncio does not also report
+                # "Task exception was never retrieved" later on.
+                self.logger.error(
+                    "%s finish channel async task %s with error: %s",
+                    self.log_prefix, task_name, exception,
+                )
+            else:
+                self.logger.debug(
+                    "%s finish channel async task %s, cancelled(%s)",
+                    self.log_prefix, task_name, cancelled,
+                )
+
+            self._remove_done_asyncio_task(t)
+
+        task.add_done_callback(_discord)
         return task
 
     def _remove_done_asyncio_task(self, task: asyncio.Task) -> None:
