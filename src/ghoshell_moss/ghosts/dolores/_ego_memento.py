@@ -25,6 +25,7 @@ dep 只有不可变项 (connection / memento / config / logger) —— 这些是
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 from datetime import datetime
 from enum import Enum
@@ -36,6 +37,8 @@ from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.v0_2_0 import (
+    ContentBlock,
+    DshSessionAnchor,
     DshSessionRef,
     SessionEvent,
     TokenUsage,
@@ -553,24 +556,39 @@ class EgoMementoManager:
         return hooked.ground if hooked is not None else ""
 
     async def chat(self, coord: str, prompt: str) -> str:
-        """和某条 commit **所属的上下文**对话一轮 (走旁路原语).
+        """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
         坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
-        prompt 前缀点破"对话对象是上下文而不是 commit 本身", 否则模型会以为在和一条记录说话.
+        处境说明在这里组装成第一条消息 (``system_reminder``), 问题作为第二条: 两条消息的先后
+        就是"先讲清在和谁说话, 再问". 插件不认识 reminder, 只按给定顺序说; 消息怎么分由这一侧定.
+        不建 session、不落盘 —— 代价以 ``usage`` 回执, 因为这条调用不会出现在任何日志里.
         """
         view = self._require_commit(coord)
         if view.is_broken:
             raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
+        anchor = DshSessionAnchor(session_id=ref.session_id, seq=ref.end_seq, turn=ref.end_turn)
+        session = self._connection.create_session(ref.session_id)
         try:
-            result = await self._connection.call(
-                _BYPASS_RUN_ROUTE,
-                {"ref": ref.model_dump(mode="json"), "prompt": f"{_CHAT_PREAMBLE}\n\n{prompt}"},
+            reply = await session.chat_off_record(
+                [
+                    [ContentBlock(type="text", text=f"<system_reminder>{_CHAT_PREAMBLE}</system_reminder>")],
+                    [ContentBlock(type="text", text=prompt)],
+                ],
+                anchor=anchor,
             )
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc
-        text = str((result or {}).get("message", ""))
+        finally:
+            with contextlib.suppress(Exception):
+                await session.close()
+        text = reply.text
         if text == "":
+            if reply.tool_calls:
+                asked = "; ".join(f"{call.name}({call.arguments[:120]})" for call in reply.tool_calls)
+                raise RuntimeError(
+                    f"chat with commit {view.coord} answered with a tool call instead of prose: {asked}"
+                )
             raise RuntimeError(f"chat with commit {view.coord} returned no text")
         return text
 

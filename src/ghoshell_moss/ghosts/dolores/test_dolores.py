@@ -1679,12 +1679,35 @@ class TestMementoReadSurface:
         def __init__(self, response):
             self.response = response
             self.calls: list[tuple[str, dict]] = []
+            self.chats: list[tuple[str, list, object]] = []
+            self.closed = 0
 
         async def call(self, path, payload=None, *, timeout=None):
             self.calls.append((path, payload))
             if isinstance(self.response, Exception):
                 raise self.response
             return self.response
+
+        def create_session(self, session_id, logger=None):
+            return self._Session(self, session_id)
+
+        class _Session:
+            """``chat_off_record`` 的 fake: 记录消息与锚点, 回一份 ChatReply."""
+
+            def __init__(self, conn, session_id):
+                self.conn = conn
+                self.session_id = session_id
+
+            async def chat_off_record(self, messages, *, anchor=None, **kwargs):
+                self.conn.chats.append((self.session_id, messages, anchor))
+                if isinstance(self.conn.response, Exception):
+                    raise self.conn.response
+                from ghoshell_dsh.blueprint.agent import ChatReply
+
+                return ChatReply.model_validate(self.conn.response)
+
+            async def close(self):
+                self.conn.closed += 1
 
     @staticmethod
     def _manager(tmp_path: Path, connection=None):
@@ -1844,7 +1867,7 @@ class TestMementoReadSurface:
 
     @pytest.mark.asyncio
     async def test_chat_frames_the_context_not_the_commit(self, tmp_path: Path):
-        conn = self._Connection({"message": "reply"})
+        conn = self._Connection({"text": "reply"})
         manager, memento = self._manager(tmp_path, conn)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         memento.get_branch("main").note(anchor.id, "note")
@@ -1853,12 +1876,18 @@ class TestMementoReadSurface:
         text = await manager.chat(self._coord(memento, anchor.seq), question)
 
         assert text == "reply"
-        path, payload = conn.calls[0]
-        assert path.endswith("/bypass/run")
-        assert question in payload["prompt"]
-        # 要求 #7: 说清对话对象是上下文 (那段对话历史), 而不是 commit 本身.
-        assert "talking to the context that commit belongs to" in payload["prompt"]
-        assert "outside your view" in payload["prompt"]
+        # 走 chat off record: 一条未发布的 detached session, 不碰旁路路由.
+        assert conn.calls == []
+        session_id, messages, sent_anchor = conn.chats[0]
+        assert session_id == "s1"
+        # 两条消息: 处境说明在前, 问题在后 —— 消息怎么分由 Python 侧决定.
+        assert len(messages) == 2
+        assert "talking to the context that commit belongs to" in messages[0][0].text
+        assert "outside your view" in messages[0][0].text
+        assert messages[1][0].text == question
+        # 锚点: 只有 turn 时用它定位, seq 缺省.
+        assert sent_anchor.turn == 1 and sent_anchor.seq is None
+        assert conn.closed == 1
 
     @pytest.mark.asyncio
     async def test_chat_refuses_broken_commit(self, tmp_path: Path):
@@ -1872,6 +1901,7 @@ class TestMementoReadSurface:
             await manager.chat(self._coord(memento, anchor.seq), "问题")
 
         assert conn.calls == []  # 坏 commit 连旁路都不发
+        assert conn.chats == []  # 也不开 off-record 会话
 
 
 class TestMementoCommitSpan:
@@ -3394,12 +3424,35 @@ class TestMementoChannel:
         def __init__(self, response):
             self.response = response
             self.calls: list[tuple[str, dict]] = []
+            self.chats: list[tuple[str, list, object]] = []
+            self.closed = 0
 
         async def call(self, path, payload=None, *, timeout=None):
             self.calls.append((path, payload))
             if isinstance(self.response, Exception):
                 raise self.response
             return self.response
+
+        def create_session(self, session_id, logger=None):
+            return self._Session(self, session_id)
+
+        class _Session:
+            """``chat_off_record`` 的 fake: 记录消息与锚点, 回一份 ChatReply."""
+
+            def __init__(self, conn, session_id):
+                self.conn = conn
+                self.session_id = session_id
+
+            async def chat_off_record(self, messages, *, anchor=None, **kwargs):
+                self.conn.chats.append((self.session_id, messages, anchor))
+                if isinstance(self.conn.response, Exception):
+                    raise self.conn.response
+                from ghoshell_dsh.blueprint.agent import ChatReply
+
+                return ChatReply.model_validate(self.conn.response)
+
+            async def close(self):
+                self.conn.closed += 1
 
     @staticmethod
     def _manager(tmp_path: Path, connection=None):

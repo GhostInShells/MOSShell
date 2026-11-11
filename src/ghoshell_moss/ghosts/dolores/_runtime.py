@@ -62,6 +62,10 @@ _PLAIN_SCALAR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # dsh_plugin/{package.json,cordis.patch.yml}, so they move together.
 _DSH_PLUGIN_NAME = "@local/moss-dolores-ghost"
 _DSH_PLUGIN_ENTRY = "dolores-ghost-plugin"
+# The session verbs (anchor / chat off record / session read) ship in the ghoshell-dsh bundle.
+# It is a second package on purpose: those verbs belong to dsh sessions in general, not to this
+# ghost, and a ghost that wants them installs them instead of reimplementing them.
+_DSH_SERVICE_NAME = "@local/ghoshell-dsh"
 # The previous generation copied a bare .ts into the profile dir and registered it by
 # relative path in the profile patch. Migration removes exactly those two things.
 _LEGACY_PLUGIN_FILE = "moss-dolores-ghost-plugin.ts"
@@ -306,8 +310,9 @@ class Dolores(Ghost):
         self._startup_doc: "StartupDoc | None" = None
         # the cognition epoch is opened on the first thinking and again after every compact (see think()).
         self._epoch_opened: bool = False
-        # the plugin bundle's patch, installed in __aenter__ — the launcher applies it with --patch.
-        self._plugin_patch: Path | None = None
+        # the plugin bundles' patches, installed in __aenter__ — the launcher applies each with
+        # --patch. Order matters: the ghost's own plugin, then the session-verb service.
+        self._plugin_patches: list[Path] = []
 
     # ── Ghost ABC ──────────────────────────────────
 
@@ -800,9 +805,11 @@ class Dolores(Ghost):
 
         dsh = self._load_config().dsh
         home = self._resolve_dsh_home(dsh.home)
-        # the bundle's patch is the whole registration -- dsh composes it after the profile
-        # layer, so the profile's own patch is never edited to mount the plugin.
-        launcher_config = dsh.model_copy(update={"home": home, "plugin_patch": self._plugin_patch})
+        # the bundles' patches are the whole registration -- dsh composes them after the profile
+        # layer, so the profile's own patch is never edited to mount a plugin.
+        launcher_config = dsh.model_copy(
+            update={"home": home, "plugin_patch": None, "plugin_patches": list(self._plugin_patches)}
+        )
         return DshLauncher(launcher_config, subprocesses=self._matrix.processes)
 
     @contextlib.asynccontextmanager
@@ -952,18 +959,19 @@ class Dolores(Ghost):
         if self._home is None:
             return
         from ghoshell_moss.deepseek_harness.v0_2_0 import (
-            installed_patch, refresh_bundle, resolve_dsh_binary,
+            bundle_dir, installed_patch, refresh_bundle, resolve_dsh_binary,
         )
 
         config = self._load_config().dsh
         home = self._resolve_dsh_home(config.home)
         profile = config.profile or "web"
+        binary = resolve_dsh_binary()
         refresh_bundle(
             source=self._meta.dsh_plugin_bundle(),
             name=_DSH_PLUGIN_NAME,
             home=home,
             profile=profile,
-            binary=resolve_dsh_binary(),
+            binary=binary,
             init=True,
             transform=_strip_types,
             # verify by package name: the loader entry id is also carried by the legacy layer
@@ -971,7 +979,28 @@ class Dolores(Ghost):
             # migrated boot.
             verify_marker=_DSH_PLUGIN_NAME,
         )
-        self._plugin_patch = installed_patch(home, _DSH_PLUGIN_NAME)
+        self._plugin_patches = [installed_patch(home, _DSH_PLUGIN_NAME)]
+        # The session verbs (anchor / chat off record) live in the ghoshell-dsh bundle, not in the
+        # ghost's own plugin. Installing it here is what makes a ghost home able to talk to a past
+        # context without inventing a second implementation of the same verb.
+        #
+        # A failure here degrades, it does not stop the ghost: without the bundle the ego still
+        # boots, and only the verbs that ride on it answer with an error. That is the difference
+        # between a missing capability and a dead body.
+        try:
+            refresh_bundle(
+                source=bundle_dir(),
+                name=_DSH_SERVICE_NAME,
+                home=home,
+                profile=profile,
+                binary=binary,
+                init=True,
+                verify_marker=_DSH_SERVICE_NAME,
+            )
+        except Exception:  # noqa: BLE001 — a missing verb must not take the ego down
+            self.logger.exception("dolores: cannot install the %s bundle", _DSH_SERVICE_NAME)
+        else:
+            self._plugin_patches.append(installed_patch(home, _DSH_SERVICE_NAME))
         self._retire_legacy_plugin(home, profile)
         self._seed_profile_suppressions(home, profile)
         self._sync_providers(home, profile)

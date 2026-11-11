@@ -10,11 +10,13 @@ engine's module tree: a name is here because MOSS uses it, and importing ``ghosh
 directly is how a consumer re-couples itself to a version it does not own.
 """
 
+from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.blueprint.models.refs import DshSessionRef
 from ghoshell_dsh.blueprint.models.session_events import (
     AgentCancelCause,
     AssistantChunk,
     AssistantMessageEvent,
+    ContentBlock,
     RequestHeader,
     SessionEvent,
     SessionEventMeta,
@@ -30,7 +32,7 @@ from ghoshell_dsh.blueprint.models.sessions import (
     ModelReasoning,
     ModelReasoningEffort,
 )
-from ghoshell_dsh.v0_2_0.install import install_bundle, installed_patch, refresh_bundle
+from ghoshell_dsh.v0_2_0.install import bundle_dir, install_bundle, installed_patch, refresh_bundle
 from ghoshell_dsh.v0_2_0.launcher import (
     DshConnection,
     DshConnectionConfig,
@@ -58,6 +60,7 @@ __all__ = [
     "DshExit",
     "resolve_dsh_binary",
     # installing a plugin bundle into a dsh home
+    "bundle_dir",
     "install_bundle",
     "refresh_bundle",
     "installed_patch",
@@ -70,6 +73,8 @@ __all__ = [
     "model_from_event",
     "model_to_event",
     "DshSessionRef",
+    "DshSessionAnchor",
+    "ContentBlock",
     "SessionEvent",
     "SessionEventMeta",
     "TurnEnd",

@@ -51,12 +51,13 @@ import asyncio
 import contextlib
 import logging
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, TypeVar
 
 from ghoshell_dsh.blueprint.agent import ChatReply, ForkResult, InjectResult
 from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.blueprint.models.llm import LlmConfigPatch
+from ghoshell_dsh.blueprint.models.session_events import ContentBlock
 from ghoshell_dsh.blueprint.models.session_state import SessionPolicy
 from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
@@ -521,7 +522,7 @@ class DshSession:
 
     async def chat_off_record(
         self,
-        message: str,
+        messages: str | Sequence[list[ContentBlock]],
         *,
         anchor: DshSessionAnchor | None = None,
         llm: LlmConfigPatch | None = None,
@@ -540,9 +541,13 @@ class DshSession:
         (不 append、不建 session、不落盘). 代价照样发生 —— 所以 ``usage`` 原样交回给调用方,
         因为账本只有一个入口 (日志), 而这条调用不会出现在任何日志里.
 
-        ``anchor`` 可以指向这个会话的任意 seq: 插件按日志切片、用 fork seed 造一个**未发布**的
-        session, 所以历史位置能问; 会话不在活表里时同样按存储日志重放。越界的 seq 显式报错,
-        不会静默从错的位置回答。
+        ``messages`` 按顺序接在会话历史后面, 每条消息是一组内容块; 单独一个 ``str`` 是一条
+        纯文本消息的语法糖. 处境说明、问题、以及它们之间的先后, 都由调用方在 Python 侧组装好
+        —— 这个 verb 不认识 "reminder" 这种概念, 只负责把消息按给定顺序说出去.
+
+        ``anchor`` 用 ``seq`` 或 ``turn`` 定位, seq 精确、优先; 只有 turn 时按该 turn 的
+        ``turn/end`` 切片. 插件按日志切片、用 fork seed 造一个**未发布**的 session, 所以历史位置
+        能问; 会话不在活表里时同样按存储日志重放. 越界的位置显式报错, 不会静默从错的位置回答.
         """
         # ``max_tokens`` is the one-field shorthand; anything else about the model goes in the
         # patch, which merges over the session's own header instead of restating it.
@@ -553,9 +558,19 @@ class DshSession:
         )
         if max_tokens is not None:
             patch.maxTokens = max_tokens
-        payload: dict[str, Any] = {"sessionId": self._session_id, "message": message}
+        bodies = (
+            [messages]
+            if isinstance(messages, str)
+            else [[block.model_dump(exclude_none=True) for block in body] for body in messages]
+        )
+        payload: dict[str, Any] = {"sessionId": self._session_id, "messages": bodies}
         if anchor is not None:
-            payload["anchor"] = {"seq": anchor.seq}
+            coordinate: dict[str, int] = {}
+            if anchor.seq is not None:
+                coordinate["seq"] = anchor.seq
+            if anchor.turn is not None:
+                coordinate["turn"] = anchor.turn
+            payload["anchor"] = coordinate
         if patch.model_dump(exclude_none=True):
             payload["llm"] = patch.model_dump(exclude_none=True)
         if tools:

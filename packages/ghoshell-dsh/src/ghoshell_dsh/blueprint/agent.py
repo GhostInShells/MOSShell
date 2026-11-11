@@ -28,6 +28,7 @@ one. "Off record" is the property a caller must not be able to miss: if you want
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -223,7 +224,7 @@ class AdvancedDshAgentSession(DshAgentSession, ABC):
     @abstractmethod
     async def chat_off_record(
         self,
-        message: str | list[ContentBlock],
+        messages: str | Sequence[list[ContentBlock]],
         *,
         anchor: DshSessionAnchor | None = None,
         readonly: bool | None = None,
@@ -231,10 +232,18 @@ class AdvancedDshAgentSession(DshAgentSession, ABC):
     ) -> ChatReply:
         """One model turn against the session's context, with nothing written back.
 
+        `messages` is one body or several, appended in order after the session's own history.
+        Each body is a list of content blocks; a bare string is sugar for one text message.
+        How many messages there are, and what each says, is the caller's decision — a situation
+        note and a question are two things said in sequence, and this verb does not know either
+        concept: it says what it is given.
+
         `anchor` says *where* in the session to think from; `None` means the current end. The
-        answer never becomes a turn: the session's log, its queue and its `seq` are untouched,
-        so this can be called while another turn is running, and calling it twice costs two
-        calls but leaves the same session behind.
+        position is `seq` when known and falls back to `turn` — a caller that only recorded the
+        turn (a ghost's commit ref) still gets the right cut. The answer never becomes a turn:
+        the session's log, its queue and its `seq` are untouched, so this can be called while
+        another turn is running, and calling it twice costs two calls but leaves the same session
+        behind.
 
         This is the verb for "what would the model say here" — a preview, an evaluation, a
         judgement — as opposed to `run()`, which is "make it part of the conversation".

@@ -1,0 +1,3 @@
+- insert:
+    - id: ghoshell-bridge
+      name: '@local/ghoshell-dsh-bridge'

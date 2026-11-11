@@ -213,6 +213,13 @@ class DshLauncherConfig(DshConnectionConfig):
         default=None,
         description="本代际插件的 patch 文件; 由 install() 放到 dsh home 后传入, 启动时以 --patch 叠加.",
     )
+    plugin_patches: list[Path] = Field(
+        default_factory=list,
+        description=(
+            "额外的 --patch 层, 按顺序叠加. 与 ``plugin_patch`` 并存而不是取代它: "
+            "老配置只写前者照常启动, 新配置把多个 bundle 都放进这里, 启动时合并去重."
+        ),
+    )
     readiness_timeout: float = Field(default=30.0, description="等待就绪的时限 (秒).")
     shutdown_timeout: float = Field(default=5.0, description="拆除进程的时限 (秒).")
 
@@ -1121,6 +1128,27 @@ class DshLauncher(DshConnection):
             self._logger.info("%sdsh binary: %s", self._log_prefix, self._resolved_binary)
         return self._resolved_binary
 
+    def _patch_layers(self) -> list[Path]:
+        """Which `--patch` layers this launcher hands dsh, in order.
+
+        The legacy single ``plugin_patch`` comes first, then ``plugin_patches`` as given. A path
+        that appears twice is passed once: the same layer applied twice composes its entries
+        twice, and the failure that produces (a duplicate plugin instance) looks nothing like
+        its cause.
+        """
+        layers: list[Path] = []
+        seen: set[Path] = set()
+        candidates = list(self.config.plugin_patches)
+        if self.config.plugin_patch is not None:
+            candidates.insert(0, self.config.plugin_patch)
+        for patch in candidates:
+            key = patch.expanduser().resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            layers.append(patch)
+        return layers
+
     async def _spawn_dsh(self) -> ManagedProcess:
         """spawn dsh subprocess"""
         args = [
@@ -1128,8 +1156,10 @@ class DshLauncher(DshConnection):
             "--profile", self.config.profile,
         ]
         # `--patch` 是 launcher 级 flag: 必须在 profile 之后、任何 app 参数(`--port` / `--no-open`)之前.
-        if self.config.plugin_patch is not None:
-            args.extend(["--patch", str(self.config.plugin_patch)])
+        # 单数 ``plugin_patch`` 是旧字段, 复数 ``plugin_patches`` 是新增的; 两者合并, 重复路径只叠一次
+        # (同一个 patch 叠两遍会让同一组 entry 被组合两次).
+        for patch in self._patch_layers():
+            args.extend(["--patch", str(patch)])
         args.extend(["--port", str(self.config.port)])
         # 是否自动开浏览器由 ghost home 的 .env 决定 (DSH_WEB_NO_OPEN 真值 → --no-open), 默认开.
         # 带 token 的 URL 由 dsh 自己拼, 这里只决定要不要加 flag.

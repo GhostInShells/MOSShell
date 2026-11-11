@@ -50,6 +50,8 @@ from typing import Callable
 __all__ = [
     "BUNDLE_NAME",
     "BUNDLE_STAMP",
+    "BRIDGE_BUNDLE_NAME",
+    "bridge_dir",
     "bundle_changed",
     "bundle_dir",
     "bundle_fingerprint",
@@ -66,6 +68,9 @@ __all__ = [
 #: This generation's own bundle name — also its path under `node_modules`.
 BUNDLE_NAME = "@local/ghoshell-dsh"
 
+#: The page bridge's bundle name — a second package, installed only where a page is driven.
+BRIDGE_BUNDLE_NAME = "@local/ghoshell-dsh-bridge"
+
 #: The marker that must appear in `dsh --dump-config` once this bundle's patch is applied.
 BUNDLE_ENTRY_ID = "ghoshell"
 
@@ -77,8 +82,20 @@ BundleTransform = Callable[[Path], None]
 
 
 def bundle_dir() -> Path:
-    """Where this generation's plugin lives inside the installed package."""
-    return Path(__file__).resolve().parent / "plugin"
+    """Where this generation's service bundle lives inside the installed package.
+
+    The service bundle is the one every consumer wants: the RPC verbs over sessions.
+    """
+    return Path(__file__).resolve().parent / "plugin" / "service"
+
+
+def bridge_dir() -> Path:
+    """Where the page bridge bundle lives — installed only where a dsh page is meant to be driven.
+
+    It is a separate package on purpose: the service answers questions about sessions, the
+    bridge holds a queue a browser polls. A ghost home wants the first and not the second.
+    """
+    return Path(__file__).resolve().parent / "plugin" / "bridge"
 
 
 # ---- placement ---- #

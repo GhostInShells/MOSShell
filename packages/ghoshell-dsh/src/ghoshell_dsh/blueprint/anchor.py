@@ -80,10 +80,12 @@ class DshSessionAnchor(BaseModel):
 
     Two halves, and the difference matters:
 
-    - **the coordinate** — `session_id` and `seq`: enough to go back and take up the thread.
-    - **the self-description** — `turn`, `agent_preset`, `cwd`, `title`, `created`: enough for a
-      reader to know what this point is about without connecting to anything. None of it is
-      used to reconstruct the conversation, so none of it has to be trusted.
+    - **the coordinate** — `session_id` and, for the position, `seq` or `turn`: enough to go back
+      and take up the thread. `seq` is exact and wins; `turn` is the fallback for a caller that
+      only ever recorded the turn (a ghost's commit ref carries turns, and its seq may be empty).
+    - **the self-description** — `agent_preset`, `cwd`, `title`, `created`: enough for a reader to
+      know what this point is about without connecting to anything. None of it is used to
+      reconstruct the conversation, so none of it has to be trusted.
 
     The anchor is deliberately *not* self-sufficient for reading. A transcript copied into a
     file is a snapshot that rots; an anchor stays true by pointing at the thing that keeps
@@ -98,9 +100,15 @@ class DshSessionAnchor(BaseModel):
         default=None,
         description="log position — the point itself. None means 'wherever the session starts'.",
     )
+    turn: int | None = Field(
+        default=None,
+        description=(
+            "the turn whose end this point is, when no seq was recorded. Read as a coordinate, "
+            "not the seq's decoded turn: whichever the caller has, a reader can cut at it."
+        ),
+    )
 
     # ---- for the reader, not for reconstruction ---- #
-    turn: int | None = Field(default=None, description="turn index containing this seq, when known.")
     workspace_id: str | None = Field(default=None, description="dsh workspace this session belongs to.")
     workspace_path: str | None = Field(default=None, description="the workspace's host-side path.")
     model: str | None = Field(default=None, description="the model answering at this point.")

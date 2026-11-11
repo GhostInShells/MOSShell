@@ -65,6 +65,54 @@ function turnAt(events, seq) {
 }
 
 /**
+ * The message bodies a call asks for, in order.
+ *
+ * A bare string is one text body — the Python side's only piece of sugar. Everything else is the
+ * one convention: an array of bodies, each an array of content blocks. Nothing here knows what a
+ * "reminder" is; the caller assembles the sequence, and this says it in that order.
+ */
+function normalizeMessages(raw) {
+  if (typeof raw === 'string') return raw === '' ? [] : [raw]
+  if (!Array.isArray(raw)) return []
+  return raw.filter((body) => {
+    if (typeof body === 'string') return body !== ''
+    return Array.isArray(body) && body.length > 0
+  })
+}
+
+/**
+ * The seq a call should stop at: `seq` when the caller has one, otherwise the end of the turn.
+ *
+ * Both are coordinates for the same point, so they are read as one: `seq` is exact and wins when
+ * present; `turn` is what a caller who never recorded a seq actually has (a ghost's commit ref
+ * carries turns). Neither means "the session's end" — that is a position too, not a guess.
+ */
+function boundarySeq(events, askedSeq, askedTurn) {
+  if (askedSeq !== undefined && askedSeq !== null) return askedSeq
+  if (askedTurn !== undefined && askedTurn !== null) return turnBoundarySeq(events, askedTurn)
+  return lastSeq(events)
+}
+
+/**
+ * The last event a turn owns: its `turn/end`, plus the standalone records that trail it before
+ * the next `turn/start` (titles, injections) — the same cut the ghost's own seed uses.
+ */
+function turnBoundarySeq(events, turn) {
+  let cut = -1
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i]
+    if (event.type === 'turn/end' && event.data?.turn === turn) cut = i
+  }
+  if (cut < 0) throw new Error(`chatOffRecord: no turn/end for turn ${turn}`)
+  let end = cut
+  for (let i = cut + 1; i < events.length; i++) {
+    if (events[i].type === TURN_START) break
+    end = i
+  }
+  return events[end].seq
+}
+
+/**
  * A service that may be absent in a given deployment.
  *
  * Required services are declared in `inject` — their absence should stop the plugin, loudly.
@@ -527,20 +575,26 @@ export class GhostShellService extends TypertRemoteService {
    * Two requirements, both about not lying:
    *
    * - **A cold session is replayed from its log.** A case outlives its carrier, so asking a step
-   *   a question must work when nothing is live: the stored events are sliced at the anchored seq
-   *   and replayed into a detached session — the same seed the fork path builds, never published.
-   * - **Any seq can be anchored.** Asking about an old step means the prefix stops there, not at
-   *   the session's end. An unknown seq throws instead of answering from the wrong place.
+   *   a question must work when nothing is live: the stored events are sliced at the anchored
+   *   position and replayed into a detached session — the same seed the fork path builds, never
+   *   published.
+   * - **Any position can be anchored, and the coordinate is `seq` first.** A caller that only
+   *   knows the turn (the ghost's commit refs carry turns, not seqs) still gets the right cut:
+   *   `seq` wins when given, `turn` resolves to that turn's end when it is not.
+   *
+   * `messages` is an ordered list of bodies: each one is a content-block array, and a bare
+   * string is one text body. A reminder and a question are two messages because the caller said
+   * two things in sequence — this verb does not know what either word means.
    */
   async chatOffRecord(request) {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
     if (sessionId === '') throw new Error('chatOffRecord: sessionId is required')
-    const message = typeof request?.message === 'string' ? request.message : ''
-    if (message === '') throw new Error('chatOffRecord: message must be a non-empty string')
+    const bodies = normalizeMessages(request?.messages ?? request?.message)
+    if (bodies.length === 0) throw new Error('chatOffRecord: messages must contain at least one non-empty body')
 
-    const resolved = await this.resolveSession(sessionId, request?.anchor?.seq)
+    const resolved = await this.resolveSession(sessionId, request?.anchor?.seq, request?.anchor?.turn)
     try {
-      return await this.answerOffRecord(resolved.session, request, message)
+      return await this.answerOffRecord(resolved.session, request, bodies)
     } finally {
       if (resolved.dispose !== undefined) await resolved.dispose()
     }
@@ -567,17 +621,18 @@ export class GhostShellService extends TypertRemoteService {
    * The session to ask: the live one when it is at the right point, otherwise a detached replay.
    *
    * A detached replay is built from the *stored* log, so it works after a restart, after the
-   * carrier was retired, and at any seq — which is exactly what "ask an old step" means.
+   * carrier was retired, and at any position — which is exactly what "ask an old step" means.
+   * The position is `seq` when the caller has one, otherwise the end of the named `turn`.
    */
-  async resolveSession(sessionId, askedSeq) {
+  async resolveSession(sessionId, askedSeq, askedTurn) {
     const live = this.ctx.sessions.get(sessionId)
     if (live !== undefined) {
       const events = live.snapshotEvents()
-      const end = lastSeq(events)
-      if (askedSeq === undefined || askedSeq === null || askedSeq === end) {
+      const boundary = boundarySeq(events, askedSeq, askedTurn)
+      if (boundary === lastSeq(events)) {
         return { session: live, dispose: undefined }
       }
-      return { session: sliceSession(sessionId, events, live.header, askedSeq), dispose: undefined }
+      return { session: sliceSession(sessionId, events, live.header, boundary), dispose: undefined }
     }
 
     // `sessionQuery` is not in this service's inject list (the property guard would throw); the
@@ -588,7 +643,7 @@ export class GhostShellService extends TypertRemoteService {
     }
     const observed = await query.observeSession(sessionId)
     const events = observed.events
-    const boundary = askedSeq === undefined || askedSeq === null ? lastSeq(events) : askedSeq
+    const boundary = boundarySeq(events, askedSeq, askedTurn)
     const session = sliceSession(sessionId, events, observed.header, boundary)
     const dispose =
       observed[Symbol.asyncDispose]?.bind(observed) ?? observed[Symbol.dispose]?.bind(observed)
@@ -596,7 +651,7 @@ export class GhostShellService extends TypertRemoteService {
   }
 
   /** One model call, assembled from the resolved session's own header and history. */
-  async answerOffRecord(session, request, message) {
+  async answerOffRecord(session, request, bodies) {
     const header = session.requestHeader()
     if (header === undefined) {
       throw new Error('chatOffRecord: session has no request header yet, nothing to inherit')
@@ -624,9 +679,16 @@ export class GhostShellService extends TypertRemoteService {
     // A patch, not a config: the base is the session's own header, so a call stays inside the
     // conversation it borrowed and only states what is different about this one answer.
     const config = { ...header.config, ...(request?.llm ?? {}) }
+    // One user message per body, in the order given: the parts are the caller's, not ours. A
+    // reminder and a question are two things said in sequence, and collapsing them into one
+    // message would decide a shape the caller already expressed.
+    const said = bodies.map((body) => ({
+      role: 'user',
+      content: typeof body === 'string' ? [{ type: 'text', text: body }] : body,
+    }))
     const outcome = await oneShot(this.ctx, {
       ...config,
-      messages: [...inherited, { role: 'user', content: [{ type: 'text', text: message }] }],
+      messages: [...inherited, ...said],
       toolHistory: session.toolHistory(),
       ...(tools.length === 0 ? {} : { tools }),
       sessionId: session.id,
@@ -712,133 +774,13 @@ export const name = 'ghoshell'
 export const inject = ['sessions', 'llm', 'agents']
 
 /**
- * The bridge half, as its own plugin.
+ * The service half alone.
  *
- * `inject: ['webServer']` is the whole point: cordis applies a plugin only once its dependencies
- * exist, so this half starts when the web server does and simply never starts where there is none
- * (a headless deployment has no page to drive). Probing with `ctx.get` at apply time was the wrong
- * shape — it could silently miss a service that had not been registered yet.
+ * The page bridge used to ride in this file. It is its own package
+ * (`@local/ghoshell-dsh-bridge`) because the two are installed by different owners for
+ * different reasons: a ghost home wants the verbs, a page-driving deployment also wants a
+ * page it can reach. Welding them meant every consumer carried the other one's cost.
  */
-const bridgePlugin = {
-  name: 'ghoshell-bridge',
-  inject: ['webServer'],
-  apply(ctx) {
-    attachBridge(ctx, ctx.webServer)
-  },
-}
-
 export function apply(ctx) {
   ctx.plugin(GhostShellService)
-  ctx.plugin(bridgePlugin)
-}
-
-const BRIDGE = '/ghoshell/bridge'
-
-function readJson(req) {
-  return new Promise((resolve, reject) => {
-    let raw = ''
-    req.on('data', (chunk) => { raw += chunk })
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}) } catch (err) { reject(err) }
-    })
-    req.on('error', reject)
-  })
-}
-
-function sendJson(res, status, body) {
-  res.statusCode = status
-  res.setHeader('content-type', 'application/json; charset=utf-8')
-  res.setHeader('cache-control', 'no-store')
-  res.end(JSON.stringify(body ?? null))
-}
-
-/**
- * The page bridge — host half. Three routes and one queue.
- *
- * The ghost posts code; the page polls for it, runs it against its own cordis context, and posts
- * the outcome back. No websocket, no build step, no RPC envelope — it is a transport, so the layer
- * above can stay about *what* to ask a page rather than *how* to reach one.
- *
- * It does not decide who may call it. These are plain routes, so they bypass the api gateway's
- * auth; the boundary lives in whatever exposes `page_exec` to a model (a channel command, a node).
- */
-function attachBridge(ctx, webServer) {
-  /** @type {Array<{id: string, code: string, timeoutMs: number}>} */
-  const queue = []
-  /** @type {Map<string, {resolve: (v: any) => void}>} */
-  const waiting = new Map()
-  let seq = 0
-  /** When the page last asked for work — the only liveness signal there is. */
-  let lastPullAt = 0
-
-  const pull = webServer.register({
-    kind: 'exact',
-    path: `${BRIDGE}/pull`,
-    async handler(req, res) {
-      lastPullAt = Date.now()
-      sendJson(res, 200, queue.shift() ?? {})
-    },
-  })
-
-  const result = webServer.register({
-    kind: 'exact',
-    path: `${BRIDGE}/result`,
-    async handler(req, res) {
-      let body
-      try { body = await readJson(req) } catch (err) { sendJson(res, 400, { error: 'bad json' }); return }
-      const pending = waiting.get(body.id)
-      if (!pending) { sendJson(res, 404, { error: 'unknown job' }); return }
-      pending.resolve(body)
-      sendJson(res, 200, { ok: true })
-    },
-  })
-
-  const status = webServer.register({
-    kind: 'exact',
-    path: `${BRIDGE}/status`,
-    async handler(req, res) {
-      const ago = lastPullAt === 0 ? null : Date.now() - lastPullAt
-      sendJson(res, 200, { attached: ago !== null && ago < 5000, lastPullAgoMs: ago, queued: queue.length })
-    },
-  })
-
-  const exec = webServer.register({
-    kind: 'exact',
-    path: `${BRIDGE}/exec`,
-    async handler(req, res) {
-      let body
-      try { body = await readJson(req) } catch (err) { sendJson(res, 400, { ok: false, error: 'bad json' }); return }
-      if (typeof body.code !== 'string' || body.code.trim() === '') {
-        sendJson(res, 400, { ok: false, error: 'code required' })
-        return
-      }
-      // A page that stopped polling is a page we cannot drive; saying so beats queueing into a void.
-      if (lastPullAt === 0 || Date.now() - lastPullAt > 5000) {
-        sendJson(res, 409, { ok: false, error: 'no page attached (no poll within 5s)' })
-        return
-      }
-      const id = `j${++seq}`
-      const timeoutMs = Number(body.timeoutMs) > 0 ? Number(body.timeoutMs) : 5000
-      const settled = new Promise((resolve) => waiting.set(id, { resolve }))
-      queue.push({ id, code: body.code, timeoutMs })
-      const timer = setTimeout(() => {
-        const pending = waiting.get(id)
-        if (pending) { pending.resolve({ id, ok: false, error: 'host timeout' }); waiting.delete(id) }
-      }, timeoutMs + 2000)
-      const outcome = await settled
-      clearTimeout(timer)
-      waiting.delete(id)
-      // A page that answers late would otherwise leave the job in the queue and run it twice.
-      const stuck = queue.findIndex((job) => job.id === id)
-      if (stuck >= 0) queue.splice(stuck, 1)
-      sendJson(res, 200, outcome)
-    },
-  })
-
-  ctx.effect(() => () => {
-    pull()
-    result()
-    status()
-    exec()
-  })
 }
