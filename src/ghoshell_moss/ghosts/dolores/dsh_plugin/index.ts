@@ -13,21 +13,6 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
 /*
- * 探针出口 (2026-10-15): cordis 的 ctx.logger 只挂一个内存环形缓冲 (1000 条,
- * 给 web 的 cordis 面看) —— 全仓没有任何包给它注册 console exporter, 所以
- * logger 的每一行**都不落 stdout/stderr**, 无论什么级别. 诊断要走 stderr:
- * launcher 的 _consume_dsh_process_stderr 把它按 ERROR 记进
- * .moss/runtime/logs/moss.log (按天滚动). 前缀 __DOLORES_PROBE__ 便于 grep.
- */
-function probe(message: string): void {
-  try {
-    process.stderr.write(`__DOLORES_PROBE__ ${message}\n`)
-  } catch {
-    /* 探针不该改变行为: 写不出去就算了 */
-  }
-}
-
-/*
  * ═══════════════════════════════════════════════════════════════════════
  * Dolores ghost — dsh 内核特权桥插件 (plugin 表面: 函数 + 注释, 实现逐步落地)
  * ═══════════════════════════════════════════════════════════════════════
@@ -1135,15 +1120,7 @@ export function apply(ctx: Context) {
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
         }
-        const gateOpened = openThinking(thinkingSeq)
-        // 探针 (2026-10-15): 换档后下一帧开不出来, 岔口收窄到「enter 拿到的这一帧」——
-        // needsObserve 是否为 true 决定走 steer 自续还是滞留 pendingMoments.
-        // 这一行必须打在分支判定**之前**, 才能区分「flag 没到」与「到了但没走那条支」.
-        probe(
-          `thinking/enter seq=${thinkingSeq} gate=${gateOpened ? 'opened' : 'ignored-stale'} `
-          + `open=${thinkingGate.isOpen} effort=${String(body.effort)} needsObserve=${String(body.needsObserve)} `
-          + `inputs=${inputs.length} context=${context.length}`,
-        )
+        openThinking(thinkingSeq)
         if (inputs.length > 0) {
           // 正常 enter: steer inputs 驱动 turn. inputs 为空则不起 turn — turn 由真实输入驱动,
           // 不再为「无 percepts」造 'thinking' 占位.
@@ -1165,10 +1142,6 @@ export function apply(ctx: Context) {
             source: { kind: name },
           }))
         }
-        probe(
-          `thinking/enter seq=${thinkingSeq} `
-          + `turn-drive=${inputs.length > 0 ? 'steer-inputs' : (body.needsObserve === true ? 'steer-observe' : 'buffered')}`,
-        )
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: true }))
       } catch (error) {
@@ -1208,11 +1181,6 @@ export function apply(ctx: Context) {
         if (thinkingGate.isOpen && agent.status === 'idle') {
           agent.steer(createUserMessage({ content: [], source: { kind: name } }))
         }
-        const pushed = body.moment as MomentPayload
-        probe(
-          `moment/push id=${String(pushed.moment_id ?? '?')} `
-          + `context=${pushed.context?.length ?? 0} inputs=${pushed.inputs?.length ?? 0}`,
-        )
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ pushed: true }))
       } catch (error) {
@@ -1248,7 +1216,6 @@ export function apply(ctx: Context) {
         if (pendingMoments.length > 0 && thinkingGate.isOpen && agent.status === 'idle') {
           agent.steer(createUserMessage({ content: [], source: { kind: name } }))
           steered = true
-          probe(`turn-end-probe steered=${pendingMoments.length} pending frame(s)`)
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ steered }))
