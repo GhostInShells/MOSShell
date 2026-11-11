@@ -41,12 +41,12 @@ def test_echoes_defaults():
 def test_echoes_new_moment_passes_all_params():
     r = Echoes(executed_logos="prev logos", stop_reason="done")
     moment = r.new_moment(
-        percepts={"test": [Message.new().with_content("p")]},
+        inputs={"test": [Message.new().with_content("p")]},
         hint="hint text",
         command_logos="reflex!",
     )
     assert moment.previous is r
-    assert _text(next(iter(moment.percepts_messages()))) == "p"
+    assert _text(next(iter(moment.inputs_messages(with_hint=False, with_command_executing=False)))) == "p"
     assert moment.hint == "hint text"
     assert moment.command_logos == "reflex!"
 
@@ -54,15 +54,15 @@ def test_echoes_new_moment_passes_all_params():
 def test_echoes_new_moment_defaults_empty():
     r = Echoes(executed_logos="prev")
     moment = r.new_moment()
-    assert moment.percepts == {}
+    assert moment.inputs == {}
     assert moment.hint == ""
     assert moment.command_logos == ""
     assert moment.previous is r
 
 
-def test_echoes_new_moment_percepts_none_is_empty_dict():
-    moment = Echoes().new_moment(percepts=None)
-    assert moment.percepts == {}
+def test_echoes_new_moment_inputs_none_is_empty_dict():
+    moment = Echoes().new_moment(inputs=None)
+    assert moment.inputs == {}
 
 
 # ============================================================
@@ -127,7 +127,7 @@ def test_moment_defaults():
     assert m.id  # auto unique_id
     assert m.previous is None
     assert m.dynamic_context == {}
-    assert m.percepts == {}
+    assert m.inputs == {}
     assert m.hint == ""
     assert m.command_logos == ""
     assert m.logos == ""
@@ -167,13 +167,13 @@ def test_moment_with_perspective_sets_and_dedups_by_key():
 def test_with_percepts_only_records_when_source_has_messages():
     # 与 with_dynamic_context 不对称: 空列表不落 key, 即不记录空 source.
     m = Moment()
-    m.with_percepts("cam", [])
+    m.with_inputs("cam", [])
     assert "cam" not in m.percepts
     # 同 source 覆盖写, 不累加.
-    m.with_percepts("cam", [Message.new().with_content("frame")])
-    assert _texts(m.percepts["cam"]) == ["frame"]
-    m.with_percepts("cam", [Message.new().with_content("frame2")])
-    assert _texts(m.percepts["cam"]) == ["frame2"]
+    m.with_inputs("cam", [Message.new().with_content("frame")])
+    assert _texts(m.inputs["cam"]) == ["frame"]
+    m.with_inputs("cam", [Message.new().with_content("frame2")])
+    assert _texts(m.inputs["cam"]) == ["frame2"]
 
 
 # ============================================================
@@ -183,16 +183,16 @@ def test_with_percepts_only_records_when_source_has_messages():
 def test_moment_is_empty_matrix():
     empty = Moment()
     assert empty.is_empty()
-    assert empty.is_percepts_empty()
+    assert empty.is_inputs_empty()
 
-    with_percept = Moment(percepts={"test": [Message.new().with_content("x")]})
+    with_percept = Moment(inputs={"test": [Message.new().with_content("x")]})
     assert not with_percept.is_empty()
-    assert not with_percept.is_percepts_empty()
+    assert not with_percept.is_inputs_empty()
 
     # 有 previous 但无新 percepts: 不算 empty, 但算 empty_request.
     with_prev = Moment(previous=Echoes(messages=[Message.new().with_content("prev")]))
     assert not with_prev.is_empty()
-    assert with_prev.is_percepts_empty()
+    assert with_prev.is_inputs_empty()
 
 
 # ============================================================
@@ -250,7 +250,7 @@ def test_previous_echoes_messages_stop_reason_only():
 
 def test_inputs_messages_order_percepts_executing_hint():
     m = Moment(
-        percepts={"test": [Message.new().with_content("p1")]},
+        inputs={"test": [Message.new().with_content("p1")]},
         command_logos="cmd",
         hint="do it",
     )
@@ -263,19 +263,19 @@ def test_inputs_messages_order_percepts_executing_hint():
 
 
 def test_inputs_messages_without_command_executing():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, command_logos="cmd")
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]}, command_logos="cmd")
     msgs = list(m.inputs_messages(with_command_executing=False))
     assert all(mm.meta.tag != "executing" for mm in msgs)
 
 
 def test_inputs_messages_without_hint():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="skip")
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]}, hint="skip")
     msgs = list(m.inputs_messages(with_hint=False))
     assert all(mm.meta.tag != "hint" for mm in msgs)
 
 
 def test_inputs_messages_skips_empty_command_and_hint():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]})
     msgs = list(m.inputs_messages(with_hint=True, with_command_executing=True))
     assert len(msgs) == 1
 
@@ -286,7 +286,7 @@ def test_inputs_messages_skips_empty_command_and_hint():
 
 
 def test_moment_messages_without_dynamic_context():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]})
     m.with_dynamic_context("ctx", [Message.new().with_content("full")])
     texts = _texts(m.full_moment_messages(with_dynamic_context=False, with_hint=False))
     # with_dynamic_context=False 时, 动态上下文不进输入.
@@ -301,7 +301,7 @@ def test_moment_messages_without_dynamic_context():
 def test_as_history_messages_keeps_previous_and_percepts():
     """as_history_messages 遗忘 dynamic_context, 只保留 previous + percepts."""
     prev = Echoes(messages=[Message.new().with_content("outcome")])
-    m = Moment(previous=prev, percepts={"test": [Message.new().with_content("p1")]})
+    m = Moment(previous=prev, inputs={"test": [Message.new().with_content("p1")]})
     texts = _texts(m.as_history_messages())
     # 历史视图遗忘 dynamic_context, 只保留 previous + percepts.
     assert texts == ["outcome", "p1"]
@@ -309,7 +309,7 @@ def test_as_history_messages_keeps_previous_and_percepts():
 
 def test_as_history_messages_forgets_live_dynamic_context():
     prev = Echoes(messages=[Message.new().with_content("outcome")])
-    m = Moment(previous=prev, percepts={"test": [Message.new().with_content("p1")]})
+    m = Moment(previous=prev, inputs={"test": [Message.new().with_content("p1")]})
     m.with_dynamic_context("ctx", [Message.new().with_content("live perspective")])
     texts = _texts(m.as_history_messages())
     # 实时 dynamic_context 被遗忘, previous + percepts 保留.
@@ -318,7 +318,7 @@ def test_as_history_messages_forgets_live_dynamic_context():
 
 
 def test_as_history_messages_forgets_dynamic_context_even_when_present():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]})
     m.with_dynamic_context("ctx", [Message.new().with_content("never in history")])
     texts = _texts(m.as_history_messages())
     assert "never in history" not in texts
@@ -328,8 +328,18 @@ def test_as_history_messages_forgets_dynamic_context_even_when_present():
 # Moment — 序列化
 # ============================================================
 
+def test_role_classified_percepts_render_their_own_block():
+    m = Moment(percepts={"tool": {"k": [Message.new().with_content("tool out")]}})
+    msg = m.as_moment_message()
+    assert msg is not None
+    text = msg.to_content_string()
+    assert "<percepts>" in text
+    assert "<tool>" in text and "tool out" in text
+    assert "<inputs>" not in text
+
+
 def test_to_dict_excludes_defaults_and_none():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]})
     d = m.to_dict()
     assert isinstance(d, dict)
     # 默认值字段不应出现.
@@ -337,12 +347,12 @@ def test_to_dict_excludes_defaults_and_none():
     assert "command_logos" not in d
     assert "dynamic_context" not in d
     # 非默认字段应出现.
-    assert "percepts" in d
+    assert "inputs" in d
 
 
 def test_to_json_excludes_dynamic_context_and_hint_by_default():
     """默认 exclude_dynamic_context=True + exclude_hint=True: 两者都不应泄漏."""
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="secret hint")
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]}, hint="secret hint")
     m.with_dynamic_context("ctx", [Message.new().with_content("secret perspective")])
     j = m.to_json()
     assert "secret perspective" not in j
@@ -357,7 +367,7 @@ def test_to_json_can_keep_dynamic_context():
 
 
 def test_to_json_can_keep_hint():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="keep hint")
+    m = Moment(inputs={"test": [Message.new().with_content("p1")]}, hint="keep hint")
     j = m.to_json(exclude_dynamic_context=True, exclude_hint=False)
     assert "keep hint" in j
 
@@ -366,7 +376,7 @@ def test_for_saving_clears_dynamic_context_and_hint():
     prev = Echoes(executed_logos="ran")
     m = Moment(
         previous=prev,
-        percepts={"test": [Message.new().with_content("p1")]}, hint="ephemeral",
+        inputs={"test": [Message.new().with_content("p1")]}, hint="ephemeral",
         command_logos="cmd",
         logos="model output",
     )
@@ -377,7 +387,7 @@ def test_for_saving_clears_dynamic_context_and_hint():
     assert saved.hint == ""
     # 其余字段保留.
     assert saved.previous is prev
-    assert _texts(saved.percepts_messages()) == ["p1"]
+    assert _texts(saved.inputs_messages(with_hint=False, with_command_executing=False)) == ["p1"]
     assert saved.command_logos == "cmd"
     assert saved.logos == "model output"
     # 原 moment 不被修改 (model_copy).
@@ -392,7 +402,7 @@ def test_for_saving_clears_dynamic_context_and_hint():
 def _moment_with_logos(logos: str, percept: str = "", previous: Echoes | None = None) -> Moment:
     return Moment(
         previous=previous,
-        percepts={"test": [Message.new().with_content(percept)]} if percept else {}, logos=logos,
+        inputs={"test": [Message.new().with_content(percept)]} if percept else {}, logos=logos,
     )
 
 
@@ -412,7 +422,7 @@ def test_to_history_turns_single_moment_with_logos():
 def test_to_history_turns_splits_on_logos():
     m1 = _moment_with_logos("logos 1", percept="input 1")
     r1 = m1.new_echoes_container()
-    m2 = m1.new_echoes_container().new_moment(percepts={"test": [Message.new().with_content("input 2")]})
+    m2 = m1.new_echoes_container().new_moment(inputs={"test": [Message.new().with_content("input 2")]})
     m2.logos = "logos 2"
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
@@ -423,11 +433,11 @@ def test_to_history_turns_splits_on_logos():
 def test_to_history_turns_stitches_executed_logos_when_no_model_logos():
     """某轮模型未产 logos 但系统执行了 command, executed_logos 应缝合进下一回合."""
     # m1: 无 model logos, 但执行了 command.
-    m1 = Moment(percepts={"test": [Message.new().with_content("input 1")]}, logos="")
+    m1 = Moment(inputs={"test": [Message.new().with_content("input 1")]}, logos="")
     r1 = m1.new_echoes_container()
     r1.executed_logos = "command ran"
     # m2: 承接 r1, 模型产出 logos.
-    m2 = r1.new_moment(percepts={"test": [Message.new().with_content("input 2")]})
+    m2 = r1.new_moment(inputs={"test": [Message.new().with_content("input 2")]})
     m2.logos = "model logos"
     turns = list(Moment.to_history_turns([m1, m2]))
     # m1 无 logos → 不切回合, buffer 继续; m2 有 logos → 切一个回合.
@@ -445,7 +455,7 @@ def test_to_history_turns_trailing_buffer_yields_none_logos():
     """末尾若有未被 logos 切分的 buffer, 以 (messages, None) 收尾."""
     m1 = _moment_with_logos("logos 1", percept="input 1")
     # m2 无 logos, 末尾残留.
-    m2 = m1.new_echoes_container().new_moment(percepts={"test": [Message.new().with_content("trailing")]})
+    m2 = m1.new_echoes_container().new_moment(inputs={"test": [Message.new().with_content("trailing")]})
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
     assert turns[0][1] == "logos 1"
@@ -458,7 +468,7 @@ def test_to_history_turns_executed_logos_not_duplicated_after_model_logos():
     m1 = _moment_with_logos("model logos 1", percept="input 1")
     r1 = m1.new_echoes_container()
     r1.executed_logos = "executed for m1"
-    m2 = r1.new_moment(percepts={"test": [Message.new().with_content("input 2")]})
+    m2 = r1.new_moment(inputs={"test": [Message.new().with_content("input 2")]})
     m2.logos = "model logos 2"
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
@@ -469,7 +479,7 @@ def test_to_history_turns_executed_logos_not_duplicated_after_model_logos():
 
 def test_to_history_turns_single_moment_without_logos():
     """单条无 logos 但有消息 → 以 (messages, None) 收尾, 不丢消息."""
-    m = Moment(percepts={"test": [Message.new().with_content("only input")]})
+    m = Moment(inputs={"test": [Message.new().with_content("only input")]})
     turns = list(Moment.to_history_turns([m]))
     assert len(turns) == 1
     messages, logos = turns[0]
@@ -479,9 +489,9 @@ def test_to_history_turns_single_moment_without_logos():
 
 def test_to_history_turns_all_moments_without_logos_merge_into_one():
     """n 条全程无 logos → 合并为单个 (messages, None) 回合."""
-    m1 = Moment(percepts={"test": [Message.new().with_content("a")]})
-    m2 = m1.new_echoes_container().new_moment(percepts={"test": [Message.new().with_content("b")]})
-    m3 = m2.new_echoes_container().new_moment(percepts={"test": [Message.new().with_content("c")]})
+    m1 = Moment(inputs={"test": [Message.new().with_content("a")]})
+    m2 = m1.new_echoes_container().new_moment(inputs={"test": [Message.new().with_content("b")]})
+    m3 = m2.new_echoes_container().new_moment(inputs={"test": [Message.new().with_content("c")]})
     turns = list(Moment.to_history_turns([m1, m2, m3]))
     assert len(turns) == 1
     messages, logos = turns[0]

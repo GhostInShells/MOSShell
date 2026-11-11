@@ -42,7 +42,7 @@ def build_listener_mindflow(**kwargs) -> BaseMindflow:
 def _percept_texts(thinking: Thinking) -> list[str]:
     """抽取当前 thinking 帧的 percepts 文本 (ghost 感知到的输入)."""
     texts = []
-    for msg in thinking.moment.percepts_messages():
+    for msg in thinking.moment.inputs_messages(with_hint=False, with_command_executing=False):
         for c in msg.contents:
             if isinstance(c, dict) and c.get('type') == 'text':
                 texts.append(c.get('text', ''))

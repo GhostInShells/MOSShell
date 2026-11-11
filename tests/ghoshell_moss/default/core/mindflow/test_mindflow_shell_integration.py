@@ -186,7 +186,7 @@ async def test_single_input_signal_yields_exactly_one_percept():
     captured_percepts = []
 
     async def articulate(thinking: Thinking) -> None:
-        captured_percepts.extend(list(thinking.moment.percepts_messages()))
+        captured_percepts.extend(list(thinking.moment.inputs_messages(with_hint=False, with_command_executing=False)))
         art = thinking.articulator()
         async with art:
             art.send_nowait("ok")
@@ -792,7 +792,7 @@ async def test_notify_buffer_drains_to_next_attention_percepts():
                 art.send_nowait("frame1_done")
             else:
                 # 第二帧 (attention2): observe 已把 buffer drain 到 percepts.
-                captured_percepts.append(list(thinking.moment.percepts_messages()))
+                captured_percepts.append(list(thinking.moment.inputs_messages(with_hint=False, with_command_executing=False)))
                 art.send_nowait("frame2_done")
                 attention2_articulate_done.set()
             if not thinking.is_aborted():
@@ -829,7 +829,7 @@ async def test_notify_buffer_drains_to_next_attention_percepts():
         # buffer 里应该有 notify 内容.
         buffered = suite.mindflow.moments.peek()
         buffered_text = ''.join(
-            c['text'] for m in buffered.percepts_messages() for c in m.contents if 'text' in c
+            c['text'] for m in buffered.inputs_messages(with_hint=False, with_command_executing=False) for c in m.contents if 'text' in c
         )
         assert notify_text in buffered_text
 

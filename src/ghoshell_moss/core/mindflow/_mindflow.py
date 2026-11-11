@@ -713,10 +713,10 @@ class AbsMindflow(Mindflow, ABC):
             await self._create_attention_from_impulse(challenger)
         elif verdict == 'buffered':
             self._notify_impulse_attended(challenger)
-            self._moments_observer.inject_percepts(*challenger.messages)
+            self._moments_observer.buffer_impulse(challenger)
         elif verdict == 'queued':
             self._notify_impulse_attended(challenger)
-            self._moments_observer.inject_percepts(*challenger.messages)
+            self._moments_observer.buffer_impulse(challenger)
             self._moments_observer.add_echoes([], need_observe=True)
         elif verdict == 'absorbed':
             self._notify_impulse_attended(challenger)

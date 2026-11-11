@@ -35,7 +35,7 @@ def test_update_moment_extends_percepts():
     moment = Moment()
     imp = Impulse(messages=[Message.new().with_content('a'), Message.new().with_content('b')])
     imp.update_moment(moment)
-    assert _texts(moment.percepts_messages()) == ['a', 'b']
+    assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['a', 'b']
 
 
 def test_update_moment_sets_hint_and_command_logos():
@@ -87,7 +87,7 @@ def test_update_moment_twice_accumulates():
     )
     imp.update_moment(moment)
     imp.update_moment(moment)
-    assert _texts(moment.percepts_messages()) == ['msg']
+    assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['msg']
     assert moment.command_logos == 'cmdcmd'
 
 
@@ -155,7 +155,7 @@ def test_update_moment_hint_overwrites_unconditionally():
 #     att = _make_attention(imp)
 #     moment = att._ctx.moment
 #     att._prepare_moment(moment)
-#     assert _texts(moment.percepts_messages()) == ['hello', 'world']
+#     assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['hello', 'world']
 #     assert moment.command_logos == 'cmd!'
 #     assert moment.hint == 'think'
 #
@@ -167,7 +167,7 @@ def test_update_moment_hint_overwrites_unconditionally():
 #     att._prepare_moment(att._ctx.moment)  # 首帧
 #     moment2 = Moment()
 #     att._prepare_moment(moment2)
-#     assert moment2.percepts == {}
+#     assert moment2.inputs == {}
 #     assert moment2.command_logos == ''
 #
 #
@@ -245,7 +245,7 @@ def test_update_moment_hint_overwrites_unconditionally():
 #     att._buffer_impulse(imp2)
 #     moment = Moment()
 #     att._prepare_moment(moment)
-#     assert _texts(moment.percepts_messages()) == ['frame1', 'audio1']
+#     assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['frame1', 'audio1']
 #     assert _texts(moment.dynamic_context['vision']) == ['snapshot1']
 #     assert _texts(moment.dynamic_context['audio']) == ['clip1']
 #     assert moment.command_logos == 'greet'
@@ -285,7 +285,7 @@ def test_update_moment_hint_overwrites_unconditionally():
 #     moment = Moment()
 #     att._prepare_moment(moment)
 #     # 先 func 再 impulse.
-#     assert _texts(moment.percepts_messages()) == ['from_func', 'from_impulse']
+#     assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['from_func', 'from_impulse']
 #
 #
 # def test_prepare_moment_perspectives_func_exception_isolated():
@@ -303,7 +303,7 @@ def test_update_moment_hint_overwrites_unconditionally():
 #     # broken 未写入, ok 写入, impulse 仍正常 drain.
 #     assert 'broken' not in moment.dynamic_context
 #     assert _texts(moment.dynamic_context['ok']) == ['ok']
-#     assert _texts(moment.percepts_messages()) == ['m']
+#     assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['m']
 #
 #
 # def test_prepare_moment_percepts_func_exception_isolated():
@@ -319,8 +319,8 @@ def test_update_moment_hint_overwrites_unconditionally():
 #     moment = Moment()
 #     att._prepare_moment(moment)
 #     # broken 无产出, ok 产出, impulse 正常 drain.
-#     assert 'extra' in _texts(moment.percepts_messages())
-#     assert 'm' in _texts(moment.percepts_messages())
+#     assert 'extra' in _texts(moment.inputs_messages(with_hint=False, with_command_executing=False))
+#     assert 'm' in _texts(moment.inputs_messages(with_hint=False, with_command_executing=False))
 
 
 # ============================================================

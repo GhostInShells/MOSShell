@@ -3305,7 +3305,7 @@ class TestDoloresMomentPayload:
 
         moment = Moment(
             previous=Echoes(messages=[Message.new().with_content("echo")]),
-            percepts={"test": [Message.new().with_content("percept")]},
+            inputs={"test": [Message.new().with_content("percept")]},
             hint="hint text",
             command_logos="cmd!",
         )
@@ -3338,7 +3338,7 @@ class TestDoloresMomentPayload:
 
         moment = Moment(
             previous=Echoes(messages=[Message.new().with_content("echo")]),
-            percepts={"test": [Message.new().with_content("percept")]},
+            inputs={"test": [Message.new().with_content("percept")]},
         )
         payload = self._ego().moment_payload(moment, "0-1")
         assert payload["moment_id"] == "0-1"

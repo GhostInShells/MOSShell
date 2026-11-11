@@ -74,13 +74,13 @@ async def test_two_frame_separation_percepts_vs_echoes():
     async with shell:
         async with MShellTrajectory(shell) as trajectory:
             obs.with_dynamic_context_func("shell", lambda: _flatten(trajectory.facade.dynamic_context()))
-            obs.with_percepts_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
+            obs.with_inputs_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
 
             # 帧1: 执行前生产 moment.
             m1 = obs.observe()
             assert isinstance(m1, Moment)
             # percepts 是执行前帧: 尚无 task-done 结果.
-            assert "world" not in _texts(m1.percepts["shell"])
+            assert "world" not in _texts(m1.inputs["shell"])
 
             # 执行 ctml, logos 缓冲到 moment.
             async with shell.interpreter_in_ctx() as interp:
@@ -96,7 +96,7 @@ async def test_two_frame_separation_percepts_vs_echoes():
             obs.add_echoes(frame_b.project(with_dynamic=False), need_observe=frame_b.need_observe)
             assert obs.need_observe() is False
             # 结果不进当前 moment 的 percepts (仍是执行前帧).
-            assert "world" not in _texts(m1.percepts["shell"])
+            assert "world" not in _texts(m1.inputs["shell"])
 
             # 下一帧 moment 捕获执行结果作 previous (feedback).
             m2 = obs.observe()
@@ -123,7 +123,7 @@ async def test_sequential_two_frame_loop_twenty_rounds():
     async with shell:
         async with MShellTrajectory(shell) as trajectory:
             obs.with_dynamic_context_func("shell", lambda: _flatten(trajectory.facade.dynamic_context()))
-            obs.with_percepts_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
+            obs.with_inputs_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
 
             for i in range(rounds):
                 phase["v"] = str(i)
@@ -134,7 +134,7 @@ async def test_sequential_two_frame_loop_twenty_rounds():
                 m = obs.observe()
                 assert obs.need_observe() is False  # observe 已归零.
                 # percepts 是无 task-done 的执行前帧.
-                assert "world" not in _texts(m.percepts["shell"])
+                assert "world" not in _texts(m.inputs["shell"])
                 # 动态上下文读到当前 phase.
                 assert any(f"phase-{i}" in t for t in _texts(m.dynamic_context["shell"]))
 
@@ -157,7 +157,7 @@ async def test_sequential_two_frame_loop_twenty_rounds():
             # 每轮 logos 已缓冲.
             assert all(m.logos == "<chan:hello />" for m in all_moments)
             # 结果是 feedback (previous), 不是 percepts: 任意 moment 的 percepts 不含 task-done.
-            assert all("world" not in _texts(m.percepts["shell"]) for m in all_moments)
+            assert all("world" not in _texts(m.inputs["shell"]) for m in all_moments)
             # 零丢失: 前 rounds-1 个 moment 的 previous 各带一个 task-done 结果.
             world_in_previous = sum(
                 sum(1 for t in _texts(m.previous_echoes_messages()) if "world" in t)
@@ -179,7 +179,7 @@ async def test_need_observe_derived_from_command():
     obs_norm = BaseMomentsObserver(max_size=5)
     async with shell_norm:
         async with MShellTrajectory(shell_norm) as trajectory:
-            obs_norm.with_percepts_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
+            obs_norm.with_inputs_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
             async with shell_norm.interpreter_in_ctx() as interp:
                 interp.feed("<chan:hello />")
                 interp.commit()
@@ -194,7 +194,7 @@ async def test_need_observe_derived_from_command():
     obs_obs = BaseMomentsObserver(max_size=5)
     async with shell_obs:
         async with MShellTrajectory(shell_obs) as trajectory:
-            obs_obs.with_percepts_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
+            obs_obs.with_inputs_buffer("shell", lambda: trajectory.pop_frame().project(with_dynamic=False))
             async with shell_obs.interpreter_in_ctx() as interp:
                 interp.feed("<chan:hello />")
                 interp.commit()
@@ -211,7 +211,7 @@ async def test_need_observe_derived_from_command():
 # ============================================================
 # ghost_runtime._wire_mindflow 装线 — 正式验证套件
 # ============================================================
-# 上面的旧测试走 with_percepts_buffer + 手工 add_echoes 的"两帧分开"路径.
+# 上面的旧测试走 with_inputs_buffer + 手工 add_echoes 的"两帧分开"路径.
 # ghost_runtime (host/ghost_runtime.py _wire_mindflow) 用的是另几条装线:
 #   trajectory.when_need_observe(_notify_moments_need_observe)
 #   moments.on_moment_created(_on_moments_observing)
@@ -281,8 +281,8 @@ async def test_runtime_wiring_frame_injected_into_previous_on_observe():
             prev = _texts(m.previous_echoes_messages())
             assert any("world" in t for t in prev)  # task-done 反馈
             assert any("<moss at=" in t for t in prev)  # project 的 moss 容器
-            # 帧不进 percepts: 那是 with_percepts_buffer 的路径.
-            assert "world" not in _texts(m.percepts_messages())
+            # 帧不进 percepts: 那是 with_inputs_buffer 的路径.
+            assert "world" not in _texts(m.inputs_messages(with_hint=False, with_command_executing=False))
 
 
 @pytest.mark.asyncio
@@ -389,7 +389,7 @@ async def test_runtime_wiring_full_rounds_no_loss_dup():
             all_m = obs.moments()
             assert len(all_m) == rounds
             # 帧从不进 percepts (零重复).
-            assert all("world" not in _texts(m.percepts_messages()) for m in all_m)
+            assert all("world" not in _texts(m.inputs_messages(with_hint=False, with_command_executing=False)) for m in all_m)
             # 每轮一个 task-done 反馈 (零丢失).
             world_prev = sum(
                 sum(1 for t in _texts(m.previous_echoes_messages()) if "world" in t)

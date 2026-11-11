@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from ghoshell_container import Container
 
-from ghoshell_moss.core.blueprint.mindflow import Moment, Echoes
+from ghoshell_moss.core.blueprint.mindflow import Moment, Echoes, Impulse
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.system_prompter import SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.contracts.workspace import Workspace, LocalWorkspace
@@ -159,7 +159,7 @@ class TestAtomMessages:
         from pydantic_ai.messages import ModelRequest
         atom = self._atom(tmp_path)
         msg = Message.new().with_content("hello")
-        moment = Moment(percepts={"input": [msg]})
+        moment = Moment(inputs={"input": [msg]})
         request = atom.to_model_request(moment)
         assert isinstance(request, ModelRequest)
 
@@ -226,7 +226,7 @@ class TestAdapter:
     def test_moment_to_request(self):
         from ._adapter import moment_to_request
         from pydantic_ai.messages import ModelRequest
-        moment = Moment(percepts={"input": [Message.new().with_content("test")]})
+        moment = Moment(inputs={"input": [Message.new().with_content("test")]})
         request = moment_to_request(moment)
         assert isinstance(request, ModelRequest)
         assert len(request.parts) > 0
@@ -234,7 +234,7 @@ class TestAdapter:
     def test_moment_to_request_includes_percepts(self):
         from ._adapter import moment_to_request
         msg = Message.new().with_content("percept content")
-        request = moment_to_request(Moment(percepts={"input": [msg]}))
+        request = moment_to_request(Moment(inputs={"input": [msg]}))
         assert any("percept content" in str(p) for p in request.parts)
 
     def test_moment_to_request_includes_previous_echoes(self):
@@ -257,10 +257,10 @@ class TestAdapter:
         from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver
 
         obs = BaseMomentsObserver(max_size=10)
-        obs.inject_percepts("hi")
+        obs.buffer_impulse(Impulse(messages=[Message.new().with_content("hi")]))
         first = obs.observe()
         first.logos = "hello"
-        obs.inject_percepts("again")
+        obs.buffer_impulse(Impulse(messages=[Message.new().with_content("again")]))
         second = obs.observe()
         second.logos = "world"
 

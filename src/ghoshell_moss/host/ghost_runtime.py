@@ -560,10 +560,13 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
                 )],
             )
         if self._moss_runtime.session.is_running():
+            inputs = list(moment.inputs_messages(with_hint=False, with_command_executing=False))
+            percepts = list(moment.percepts_messages())
             self._moss_runtime.session.output(
                 'moment',
-                *moment.percepts_messages(),
-                log=f"moment {moment.id}: {len(moment.percepts)} percepts",
+                *inputs,
+                *percepts,
+                log=f"moment {moment.id}: {len(inputs)} inputs, {len(percepts)} percepts",
             )
 
     def _on_thinking_exited(self, thinking: Thinking, err: BaseException | None) -> None:

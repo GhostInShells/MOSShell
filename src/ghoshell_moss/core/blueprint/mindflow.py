@@ -95,6 +95,14 @@ class Signal(BaseModel):
     name: SignalName = Field(
         description="the signal name, if not match any mind pulse, the signal will be ignore",
     )
+    role: str = Field(
+        default='',
+        description="delivery identity — who this signal speaks as, in MOSS's own vocabulary "
+                    "(user / assistant / tool / system, or a producer-defined one such as email). "
+                    "Not the LLM chat role: it classifies a delivery, not a speaker in a "
+                    "two-party chat. Empty means unclassified, so the delivery lands in the "
+                    "moment's inputs; non-empty routes it to percepts[role].",
+    )
     id: str = Field(
         default_factory=unique_id,
         description="unique identifier of the signal",
@@ -384,6 +392,14 @@ class Impulse(BaseModel):
         default='',
         description="the nucleus source name",
     )
+    role: str = Field(
+        default='',
+        description="the delivery identity: inherited from the signal, or set by the nucleus "
+                    "that produced this impulse. Empty means unclassified — the messages land "
+                    "in Moment.inputs, the default delivery slot. Non-empty routes them to "
+                    "Moment.percepts[role], a bucket of their own inside the percepts slot. "
+                    "Two impulses with the same role still stay separate: dedup is by id.",
+    )
 
     priority: Priority | int = Field(
         default=Priority.NOTICE,
@@ -498,6 +514,7 @@ class Impulse(BaseModel):
         # 从 signal 直接反射 impulse 的做法, signal 相当于原始协议. 所以剥离了 impulse 所有高阶机制.
         return Impulse(
             source=source,
+            role=signal.role,
             trace_id=signal.trace_id or signal.id,
             priority=signal.priority,
             strength=signal.strength,
@@ -532,7 +549,13 @@ class Impulse(BaseModel):
         if self.dynamic_messages:
             # 用 source 源, 占据一个 perspective.
             moment.with_dynamic_context(self.source, self.dynamic_messages)
-        moment.with_percepts(self.source, self.messages)
+        if self.messages:
+            # 路由只由 role 决定: 空 = 默认投递槽 inputs; 非空 = 自己的分类桶.
+            # key 用 impulse id —— 同一投递的后到包覆盖先到, 保序.
+            if self.role:
+                moment.with_percepts(self.role, self.id, self.messages)
+            else:
+                moment.with_inputs(self.id, self.messages)
         moment.hint = self.hint
         if self.logos:
             moment.command_logos += self.logos

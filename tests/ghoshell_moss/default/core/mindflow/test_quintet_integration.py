@@ -19,7 +19,7 @@ API 迁移说明 (重构 41f0cb63 — decouple attention/thinking/action):
     - ``attention.abort_attention('reason')`` → ``thinking.abort('reason')``
     - ``attention.is_attention_aborted()`` → ``attention.is_aborted()``
     - ``attention.effort`` → ``thinking.effort()``
-    - ``mindflow.project_percepts()`` → ``mindflow.moments.peek().percepts_messages()``
+    - ``mindflow.project_percepts()`` → ``mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)``
     - ``mindflow.faculties()`` → ``mindflow.nuclei()``
 """
 import asyncio
@@ -142,7 +142,7 @@ async def test_aside_signal_quiet_path_buffers_not_attention():
         await asyncio.sleep(0.2)
         # quiet 系统下 aside 不应创建 attention.
         assert mindflow.attention() is None
-        buffered = mindflow.moments.peek().percepts_messages()
+        buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
         assert 'quiet_data' in _texts(buffered)
 
 
@@ -255,7 +255,7 @@ async def test_input_then_aside_aside_buffers_into_input_attention():
             # aside 抢占成功不接管 attention, 原 attention 仍活.
             assert not defender.is_aborted()
             # messages 进 buffer.
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             assert 'quiet_supplement' in _texts(buffered)
             defender.abort('test done')
 
@@ -305,7 +305,7 @@ async def test_input_then_notify_notify_fails_and_buffers():
             # defender 仍在.
             assert not defender.is_aborted()
             # messages 进 buffer (notify 偏离侧).
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             assert 'user_msg' in _texts(buffered)
             defender.abort('test done')
 
@@ -346,7 +346,7 @@ async def test_aside_aggregates_multiple_signals_into_one_buffer_drain():
         await asyncio.sleep(0.2)
         # quiet → aside 不创建 attention.
         assert mindflow.attention() is None
-        buffered = mindflow.moments.peek().percepts_messages()
+        buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
         texts = _texts(buffered)
         # 三条都应在 buffer 里.
         for i in range(3):

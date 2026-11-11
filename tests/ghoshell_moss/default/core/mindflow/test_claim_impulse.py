@@ -56,7 +56,7 @@ def _impulse_text(impulse: Impulse) -> str:
 
 
 def _percepts_text(moment) -> str:
-    return " ".join(moment.percepts_texts())
+    return " ".join(moment.inputs_texts())
 
 
 async def _first_thinking(mindflow: BaseMindflow) -> Thinking:

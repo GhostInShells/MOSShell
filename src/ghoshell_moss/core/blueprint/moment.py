@@ -10,7 +10,7 @@ history.
 import dataclasses
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Iterable, Any, Tuple, Callable
+from typing import TYPE_CHECKING, Iterable, Any, Tuple, Callable
 from typing_extensions import Self
 from pydantic import BaseModel, Field, AwareDatetime
 
@@ -19,6 +19,9 @@ from ghoshell_moss.message import unique_id
 from datetime import datetime
 from dateutil import tz
 import logging
+
+if TYPE_CHECKING:  # mindflow imports Moment; a real import here would close the cycle.
+    from ghoshell_moss.core.blueprint.mindflow import Impulse
 
 __all__ = [
     'Echoes',
@@ -105,7 +108,7 @@ class Echoes(BaseModel, WithAdditional):
             self,
             *,
             dynamic_context: dict[str, list[Message]] | None = None,
-            percepts: dict[str, list[Message]] | None = None,
+            inputs: dict[str, list[Message]] | None = None,
             command_logos: str = '',
             hint: str = '',
     ) -> "Moment":
@@ -116,7 +119,7 @@ class Echoes(BaseModel, WithAdditional):
         """
         return Moment(
             previous=self,
-            percepts=percepts or {},
+            inputs=inputs or {},
             dynamic_context=dynamic_context or {},
             hint=hint,
             command_logos=command_logos,
@@ -156,14 +159,25 @@ class Moment(BaseModel, WithAdditional):
         description="A dynamic context snapshot produced at the instant this Moment is "
                     "generated, merging the different context types.",
     )
-    percepts: dict[str, list[Message]] = Field(
+    inputs: dict[str, list[Message]] = Field(
         default_factory=dict,
-        description="This round's external inputs, keyed by source. Each source overwrites, "
-                    "so duplicates are naturally removed. Aligned with dynamic_context: within "
-                    "one frame, only the latest value per source is kept. Moment instances are "
-                    "independent across turns and do not accumulate across frames. After JSON "
-                    "deserialization the dict order is lost — the storage layer must rebuild it "
-                    "in insertion order (not persisted yet, reserved).",
+        description="This round's deliveries into the default slot — what the world handed "
+                    "this frame (a human speaking, a sensor frame, an impulse with no role), "
+                    "keyed by identity. The key is what dedups: a later delivery under the same "
+                    "key replaces the earlier one **in place**, so order is preserved while "
+                    "duplicates do not stack. Moment instances are independent across turns and "
+                    "do not accumulate across frames. After JSON deserialization the dict order "
+                    "is lost — a storage layer must rebuild it in insertion order (not persisted "
+                    "yet, reserved).",
+    )
+    percepts: dict[str, dict[str, list[Message]]] = Field(
+        default_factory=dict,
+        description="This round's deliveries that carry an identity of their own, keyed by "
+                    "role and then by the same identity key as inputs. Role is MOSS's own "
+                    "classification of a delivery (user / assistant / tool / system, or a "
+                    "producer-defined one such as email) — not the LLM chat role. It exists so "
+                    "an instrument's inbox never mixes with a human's sentence: role decides "
+                    "the bucket, the inner key decides dedup and order.",
     )
     hint: str = Field(
         default='',
@@ -240,22 +254,60 @@ class Moment(BaseModel, WithAdditional):
         self.dynamic_context[key] = messages
         return self
 
-    def with_percepts(self, source: str, messages: list[Message]) -> Self:
-        """Write source-keyed percepts. Same source overwrites, dedup naturally."""
+    def with_inputs(self, key: str, messages: list[Message]) -> Self:
+        """Write one delivery into the default slot, keyed by its identity.
+
+        A later delivery under the same key replaces the earlier one in place; order across
+        keys is preserved. Empty messages are dropped rather than stored under an empty key.
+        """
         messages = [msg for msg in messages if not msg.is_empty()]
         if messages:
-            self.percepts[source] = messages
+            self.inputs[key] = messages
         return self
 
-    def percepts_messages(self) -> Iterable[Message]:
-        """Flatten all sources' percepts in insertion order."""
-        for messages in self.percepts.values():
+    def with_percepts(self, role: str, key: str, messages: list[Message]) -> Self:
+        """Write one delivery into the percepts slot, under its role and identity key.
+
+        ``role`` is the bucket (an instrument's inbox should never mix with a human's
+        sentence); ``key`` is the identity that dedups inside that bucket.
+        """
+        messages = [msg for msg in messages if not msg.is_empty()]
+        if messages:
+            self.percepts.setdefault(role, {})[key] = messages
+        return self
+
+    def inputs_messages(
+            self,
+            with_hint: bool = True,
+            with_command_executing: bool = True,
+    ) -> Iterable[Message]:
+        """The input half of the frame: default-slot deliveries, then executing and hint."""
+        for messages in self.inputs.values():
             for msg in messages:
                 if not msg.is_empty():
                     yield msg
+        if with_command_executing and self.command_logos:
+            yield Message.new(tag='executing').with_content(self.command_logos)
+        if with_hint and self.hint:
+            yield Message.new(tag='hint').with_content(self.hint)
+
+    def inputs_texts(self) -> list[str]:
+        """Flatten the default-slot deliveries and extract plain text, for assertions."""
+        return [
+            msg.to_content_string()
+            for msg in self.inputs_messages(with_hint=False, with_command_executing=False)
+        ]
+
+    def percepts_messages(self) -> Iterable[Message]:
+        """Flatten the role-classified deliveries, role by role, in insertion order."""
+        for bucket in self.percepts.values():
+            for messages in bucket.values():
+                for msg in messages:
+                    if not msg.is_empty():
+                        yield msg
 
     def percepts_texts(self) -> list[str]:
-        """Flatten all percepts and extract plain text, for test assertions and debugging."""
+        """Flatten the role-classified deliveries and extract plain text, for assertions."""
         return [msg.to_content_string() for msg in self.percepts_messages()]
 
     def last_moment_id(self) -> str | None:
@@ -289,25 +341,16 @@ class Moment(BaseModel, WithAdditional):
             yield Message.new(tag='stop_reason').with_content(result.stop_reason)
 
     def is_empty(self) -> bool:
-        return self.is_echoes_empty() and self.is_percepts_empty()
+        return self.is_echoes_empty() and self.is_inputs_empty() and self.is_percepts_empty()
+
+    def is_inputs_empty(self) -> bool:
+        return all(len(v) == 0 for v in self.inputs.values())
 
     def is_percepts_empty(self) -> bool:
-        return all(len(v) == 0 for v in self.percepts.values())
+        return all(not bucket for bucket in self.percepts.values())
 
     def is_echoes_empty(self) -> bool:
         return self.previous is None or len(self.previous.messages) == 0
-
-    def inputs_messages(
-            self,
-            with_hint: bool = True,
-            with_command_executing: bool = True,
-    ) -> Iterable[Message]:
-        """Alias so that percepts read naturally as the agent's input messages."""
-        yield from self.percepts_messages()
-        if with_command_executing and self.command_logos:
-            yield Message.new(tag='executing').with_content(self.command_logos)
-        if with_hint and self.hint:
-            yield Message.new(tag='hint').with_content(self.hint)
 
     def full_moment_messages(
             self,
@@ -316,18 +359,21 @@ class Moment(BaseModel, WithAdditional):
             with_hint: bool = True,
             with_command_executing: bool = True,
             with_percepts: bool = True,
+            with_inputs: bool = True,
     ) -> list[Message]:
         """
         Fold the whole keyframe into a single moment message.
 
-        Wraps this frame's echoes / dynamic_context / percepts / executing / hint
+        Wraps this frame's echoes / dynamic_context / percepts / inputs / executing / hint
         into one ``<moment moment_id=...>`` message carrying the moment id, so it can be
         inserted as a single tool-result or user message. The transient sub-blocks
         (dynamic_context / command_logos / hint) belong to the current frame only;
         history should drop them via ``as_history_messages``.
 
-        ``with_percepts=False`` folds the context half only (echoes / dynamic_context /
-        command_logos), leaving percepts for the separate input message.
+        Role-classified deliveries fold into one ``<percepts>`` block with one inner tag per
+        role; ``with_percepts=False`` drops that block, ``with_inputs=False`` drops the default
+        slot as well. Both default True: the folded form carries everything. A caller that
+        delivers the half separately (the ghost's slot split) turns the corresponding flag off.
         """
         messages: list[Message] = []
         echoes = list(self.previous_echoes_messages())
@@ -340,13 +386,17 @@ class Moment(BaseModel, WithAdditional):
                 messages.append(
                     Message.new(tag='dynamic_context').with_messages(*dynamic_messages)
                 )
-        if with_percepts:
-            percepts = list(self.percepts_messages())
-            if percepts:
-                percepts_message = Message.new(tag='percepts').with_messages(*percepts)
-                messages.append(
-                    percepts_message
-                )
+        percepts_blocks: list[Message] = []
+        for role, bucket in (self.percepts.items() if with_percepts else []):
+            delivered = [msg for messages_ in bucket.values() for msg in messages_ if not msg.is_empty()]
+            if delivered:
+                percepts_blocks.append(Message.new(tag=role).with_messages(*delivered))
+        if percepts_blocks:
+            messages.append(Message.new(tag='percepts').with_messages(*percepts_blocks))
+        if with_inputs:
+            inputs = list(self.inputs_messages(with_hint=False, with_command_executing=False))
+            if inputs:
+                messages.append(Message.new(tag='inputs').with_messages(*inputs))
         if with_command_executing and self.command_logos:
             messages.append(
                 Message.new(tag='executing').with_content(self.command_logos)
@@ -365,17 +415,20 @@ class Moment(BaseModel, WithAdditional):
             always_return: bool = True,
             with_moment_id: bool = True,
             with_percepts: bool = True,
+            with_inputs: bool = True,
             with_hint: bool = True,
             attributes: dict[str, Any] | None = None,
     ) -> Message | None:
         """Fold the keyframe into one ``<moment moment_id=...>`` message.
 
-        ``with_percepts=False`` / ``with_hint=False`` drop the input half (percepts / hint),
-        leaving the context half (echoes / dynamic_context / command_logos). Callers that
-        want the input half as a separate message assemble it from ``percepts_messages()``
-        and ``hint`` themselves.
+        ``with_inputs=False`` / ``with_percepts=False`` / ``with_hint=False`` drop the input
+        half (inputs / percepts / hint), leaving the context half (echoes / dynamic_context /
+        command_logos). Callers that deliver the half separately assemble it from
+        ``inputs_messages()`` / ``percepts_messages()`` and ``hint`` themselves.
         """
-        messages = self.full_moment_messages(with_percepts=with_percepts, with_hint=with_hint)
+        messages = self.full_moment_messages(
+            with_percepts=with_percepts, with_inputs=with_inputs, with_hint=with_hint
+        )
         attributes = attributes or {}
         if with_moment_id:
             attributes['moment_id'] = self.id
@@ -386,6 +439,7 @@ class Moment(BaseModel, WithAdditional):
     def as_history_messages(self) -> Iterable[Message]:
         """When used as history, this drops all dynamic messages. A code-as-prompt."""
         yield from self.previous_echoes_messages()
+        yield from self.inputs_messages(with_hint=False, with_command_executing=False)
         yield from self.percepts_messages()
 
     @classmethod
@@ -489,7 +543,7 @@ class Moments(ABC):
         ...
 
     @abstractmethod
-    def with_percepts_buffer(self, key: str, drain: Callable[[], Iterable[Message]]) -> Disposer:
+    def with_inputs_buffer(self, key: str, drain: Callable[[], Iterable[Message]]) -> Disposer:
         """Register a percepts drain function, called whenever a Moment is generated."""
         ...
 
@@ -498,8 +552,12 @@ class Moments(ABC):
         ...
 
     @abstractmethod
-    def inject_percepts(self, *messages: Message | str) -> None:
-        """Add new percepts, to be produced on the next observe."""
+    def buffer_impulse(self, impulse: "Impulse") -> None:
+        """Hold a delivery that lost arbitration until the next observe.
+
+        The whole impulse is kept, not only its messages: routing (by ``role``) and dedup
+        (by ``id``) both happen when the frame is built, and neither survives a flattening.
+        """
         ...
 
     def turns(self, peek: bool = False) -> Iterable[tuple[list[Message], Logos | None]]:
@@ -569,8 +627,8 @@ class Observer(Moments, ABC):
     ) -> Disposer:
         """Hear about buffered percepts the moment they land.
 
-        Without it a buffered impulse is silent — ``inject_percepts`` only
-        appends. This is how "something entered the buffer" becomes an event the
+        Without it a buffered impulse is silent — ``buffer_impulse`` only
+        holds it. This is how "something entered the buffer" becomes an event the
         scheduler can act on instead of a fact someone has to poll for.
         """
         ...
@@ -602,13 +660,13 @@ class BaseMomentsObserver(Observer):
         self._moment_index: int = 0
 
         self._dynamic_context_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
-        self._percepts_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
+        self._inputs_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._drain_new_echoes_funcs: dict[str, Callable[[], tuple[list[Message], bool]]] = dict()
         self._epoch_recap_funcs: dict[str, Callable[[], list[Message]]] = dict()
         self._epoch_baseline_funcs: dict[str, Callable[[], str]] = dict()
 
         self._buffered_drained_percepts = {}
-        self._injected_percepts = []
+        self._buffered_impulses: dict[str, Impulse] = {}
         self._percepts_injected_callbacks: set[Callable[[list[Message]], None]] = set()
         self._logger: logging.Logger = logger or logging.getLogger(__name__)
         self._current_epoch: Epoch | None = None
@@ -717,11 +775,11 @@ class BaseMomentsObserver(Observer):
         return self._echoes.need_observe
 
     def has_pending(self) -> bool:
-        return bool(self._injected_percepts)
+        return bool(self._buffered_impulses)
 
     def drain_percepts(self) -> list[Message]:
-        drained = list(self._injected_percepts)
-        self._injected_percepts = []
+        drained = [msg for impulse in self._buffered_impulses.values() for msg in impulse.messages]
+        self._buffered_impulses = {}
         return drained
 
     def peek(self) -> Moment:
@@ -746,25 +804,31 @@ class BaseMomentsObserver(Observer):
                     moment.with_dynamic_context(key, list(messages))
                 except Exception as e:
                     self._logger.error(e)
-        if len(self._percepts_drain_funcs) > 0:
-            for key, func in self._percepts_drain_funcs.items():
+        if len(self._inputs_drain_funcs) > 0:
+            for key, func in self._inputs_drain_funcs.items():
                 try:
                     messages = func()
                     if messages:
                         buffer = self._buffered_drained_percepts.get(key, [])
                         buffer.extend(messages)
-                        moment.with_percepts(key, buffer)
+                        moment.with_inputs(key, buffer)
                 except Exception as e:
                     self._logger.error(e)
-        if len(self._injected_percepts) > 0:
-            moment.with_percepts("MomentsInjectedPercepts", self._injected_percepts)
+        for impulse in self._buffered_impulses.values():
+            if not impulse.messages:
+                continue
+            # role 决定槽位, id 决定去重与顺序: 同一 impulse 的后到包覆盖先到.
+            if impulse.role:
+                moment.with_percepts(impulse.role, impulse.id, impulse.messages)
+            else:
+                moment.with_inputs(impulse.id, impulse.messages)
         return moment
 
     def observe(self) -> Moment:
         moment = self._peek_moment()
         self._echoes = moment.new_echoes_container()
         self._buffered_drained_percepts = {}
-        self._injected_percepts = []
+        self._buffered_impulses: dict[str, Impulse] = {}
         self._moment_index += 1
         moment.index = self._moment_index
         self._moments.append(moment)
@@ -781,7 +845,7 @@ class BaseMomentsObserver(Observer):
         self._moments.clear()
         self._echoes = Echoes()
         self._buffered_drained_percepts = {}
-        self._injected_percepts = []
+        self._buffered_impulses: dict[str, Impulse] = {}
 
     def on_moment_created(self, callback: Callable[[Moment], None]) -> Disposer:
         self._moment_created_callbacks.add(callback)
@@ -833,14 +897,14 @@ class BaseMomentsObserver(Observer):
 
         return _disposer
 
-    def with_percepts_buffer(self, key: str, drain: Callable[[], Iterable[Message]]) -> Disposer:
-        self._percepts_drain_funcs[key] = drain
+    def with_inputs_buffer(self, key: str, drain: Callable[[], Iterable[Message]]) -> Disposer:
+        self._inputs_drain_funcs[key] = drain
 
         def _disposer():
-            if key in self._percepts_drain_funcs:
-                value = self._percepts_drain_funcs.get(key)
+            if key in self._inputs_drain_funcs:
+                value = self._inputs_drain_funcs.get(key)
                 if value is drain:
-                    self._percepts_drain_funcs.pop(key)
+                    self._inputs_drain_funcs.pop(key)
 
         return _disposer
 
@@ -856,17 +920,16 @@ class BaseMomentsObserver(Observer):
     def add_executed_logos(self, logos: str) -> None:
         self._echoes.executed_logos += logos
 
-    def inject_percepts(self, *messages: Message | str) -> None:
-        percepts = []
-        for message in messages:
-            if isinstance(message, str):
-                percepts.append(Message.new().with_content(message))
-            elif isinstance(message, Message):
-                percepts.append(message)
-        self._injected_percepts.extend(percepts)
-        if percepts and len(self._percepts_injected_callbacks) > 0:
+    def buffer_impulse(self, impulse: "Impulse") -> None:
+        """Hold a delivery by its own id: a later package from the same impulse replaces the
+        earlier one in place (order kept), and different impulses coexist."""
+        if not impulse.messages:
+            return
+        self._buffered_impulses[impulse.id] = impulse
+        messages = list(impulse.messages)
+        if len(self._percepts_injected_callbacks) > 0:
             for callback in self._percepts_injected_callbacks:
                 try:
-                    callback(list(percepts))
+                    callback(messages)
                 except Exception as e:
                     self._logger.error(e)

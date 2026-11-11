@@ -900,31 +900,52 @@ class DoloresEgo:
             always_return=False,
             with_moment_id=False,
             with_percepts=False,
+            with_inputs=False,
             with_hint=False,
             attributes={'moment_id': moment_id},
         )
 
     def _inputs_message(self, moment: Moment) -> Message | None:
-        """inputs slot — percepts + hint wrapped into one ``<inputs>`` message (steer, may be empty).
+        """inputs slot — default-slot deliveries + hint wrapped into one ``<inputs>`` message.
 
         Reuses moment.inputs_messages with executing excluded — executing belongs to the context
-        slot, not the inputs slot. None when there are no percepts and no hint.
+        slot, not the inputs slot. None when there are no deliveries and no hint.
         """
         messages: list[Message] = list(moment.inputs_messages(with_command_executing=False))
         if not messages:
             return None
         return Message.new(tag='inputs').with_messages(*messages)
 
-    def _moment_payload(self, moment: Moment, moment_id: str) -> dict:
-        """moment → wire content of two messages: context + inputs.
+    def _percepts_message(self, moment: Moment) -> Message | None:
+        """percepts slot — role-classified deliveries, one inner tag per role.
 
-        context = the <moment> fold (echoes/dynamic/executing, inject); inputs = the <inputs> fold
-        (percepts + hint, steer). The mapping is done Python-side; the plugin receives two ready
-        content blocks. Text is passed through; images are converted to base64 EncodedImageAttachment
-        (multimodal preserved). moment_id = "{epoch.index}-{moment.index}".
+        A delivery that carries an identity of its own (a tool callback, another context's
+        answer, a node's inbox) must not mix into ``<inputs>``: it gets a bucket the model can
+        tell apart. None when nothing carried a role.
+        """
+        blocks: list[Message] = []
+        for role, bucket in moment.percepts.items():
+            delivered = [
+                msg for messages in bucket.values() for msg in messages if not msg.is_empty()
+            ]
+            if delivered:
+                blocks.append(Message.new(tag=role).with_messages(*delivered))
+        if not blocks:
+            return None
+        return Message.new(tag='percepts').with_messages(*blocks)
+
+    def _moment_payload(self, moment: Moment, moment_id: str) -> dict:
+        """moment → wire content of three slots: context + inputs + percepts.
+
+        context = the <moment> fold (echoes/dynamic/executing, inject); inputs = the <inputs>
+        fold (default-slot deliveries + hint, steer); percepts = the <percepts> fold (each role
+        its own inner tag, steer). The mapping is done Python-side; the plugin receives ready
+        content blocks. Text is passed through; images are converted to base64
+        EncodedImageAttachment (multimodal preserved). moment_id = "{epoch.index}-{moment.index}".
         """
         context_msg = self._context_message(moment, moment_id)
         inputs_msg = self._inputs_message(moment)
+        percepts_msg = self._percepts_message(moment)
         return {
             "context": [
                 self._content_payload(content)
@@ -934,6 +955,10 @@ class DoloresEgo:
                 self._content_payload(content)
                 for content in inputs_msg.as_contents(with_meta=True)
             ] if inputs_msg is not None else [],
+            "percepts": [
+                self._content_payload(content)
+                for content in percepts_msg.as_contents(with_meta=True)
+            ] if percepts_msg is not None else [],
             "moment_id": moment_id,
         }
 

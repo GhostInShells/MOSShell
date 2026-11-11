@@ -2,19 +2,20 @@
 moments + observer 状态编排单测.
 
 Moments / Observer / BaseMomentsObserver 是 mindflow 里感知→观测→记忆的编排核心:
-观察者持有 moments 容器, observe() 生产 Moment, add_echoes / inject_percepts /
-with_dynamic_context_func / with_percepts_buffer 从不同入口向下一帧注入数据.
+观察者持有 moments 容器, observe() 生产 Moment, add_echoes / buffer_impulse /
+with_dynamic_context_func / with_inputs_buffer 从不同入口向下一帧注入数据.
 本套件全部走 public 方法, 只测行为契约, 不捅私有状态.
 
 覆盖:
 - observe 状态机: need_observe 生命周期、previous 衔接、进历史
-- 注入通道: inject_percepts / with_dynamic_context_func / with_percepts_buffer
+- 注入通道: buffer_impulse / with_dynamic_context_func / with_inputs_buffer
 - 回调: on_echoes_add / on_moment
 - 容器: moments 上限驱逐、peek 不落历史、compact / recap、clear
 - turns(): 将观测到的 moments 组织为回合历史
 """
 import asyncio
 
+from ghoshell_moss.core.blueprint.mindflow import Impulse
 from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver, Moment, Moments, Observer
 from ghoshell_moss.message import Message
 
@@ -25,6 +26,11 @@ def _text(msg: Message) -> str:
         if "text" in c:
             return c["text"]
     return ""
+
+
+def _delivery(text: str, *, role: str = "") -> Impulse:
+    """One buffered delivery: the impulse is what the observer now holds, not its messages."""
+    return Impulse(role=role, messages=[Message.new().with_content(text)])
 
 
 def _texts(msgs) -> list[str]:
@@ -71,8 +77,9 @@ def test_observe_appends_to_history_until_max_size():
 
 def test_peek_previews_without_entering_history():
     obs = BaseMomentsObserver(max_size=5)
-    obs.inject_percepts("preview")
-    assert _texts(obs.peek().percepts["MomentsInjectedPercepts"]) == ["preview"]
+    delivery = _delivery("preview")
+    obs.buffer_impulse(delivery)
+    assert _texts(obs.peek().inputs[delivery.id]) == ["preview"]
     # peek 不吞进历史; preview 视图可由 moments(peek=True) 预览.
     assert obs.moments() == []
     assert len(obs.moments(peek=True)) == 1
@@ -82,11 +89,38 @@ def test_peek_previews_without_entering_history():
 # 注入通道
 # ============================================================
 
-def test_inject_percepts_land_on_next_observe():
+def test_buffered_impulse_lands_on_next_observe():
     obs = BaseMomentsObserver(max_size=5)
-    obs.inject_percepts("from outside")
+    delivery = _delivery("from outside")
+    obs.buffer_impulse(delivery)
     m = obs.observe()
-    assert _texts(m.percepts["MomentsInjectedPercepts"]) == ["from outside"]
+    assert _texts(m.inputs[delivery.id]) == ["from outside"]
+
+
+def test_role_routes_delivery_to_its_own_bucket():
+    """A delivery that carries a role must not mix into inputs."""
+    obs = BaseMomentsObserver(max_size=5)
+    delivery = _delivery("tool said", role="tool")
+    obs.buffer_impulse(delivery)
+    m = obs.observe()
+    assert _texts(m.percepts["tool"][delivery.id]) == ["tool said"]
+    assert m.inputs == {}
+
+
+def test_same_impulse_id_replaces_in_place_and_keeps_order():
+    """Dedup is by impulse id: a later package replaces the earlier one, order preserved."""
+    from ghoshell_moss.core.blueprint.mindflow import Impulse
+
+    obs = BaseMomentsObserver(max_size=5)
+    first = Impulse(messages=[Message.new().with_content("a")])
+    second = Impulse(messages=[Message.new().with_content("b")])
+    obs.buffer_impulse(first)
+    obs.buffer_impulse(second)
+    # Same id, new content: replaces in place.
+    obs.buffer_impulse(first.model_copy(update={"messages": [Message.new().with_content("a2")]}))
+    m = obs.observe()
+    assert list(m.inputs) == [first.id, second.id]
+    assert _texts(m.inputs[first.id]) == ["a2"]
 
 
 def test_dynamic_context_func_registers_and_disposes():
@@ -106,8 +140,8 @@ def test_percepts_buffer_drains_each_observe():
         shared.clear()
         return out
 
-    obs.with_percepts_buffer("cam", drain)
-    assert _texts(obs.observe().percepts["cam"]) == ["frame"]
+    obs.with_inputs_buffer("cam", drain)
+    assert _texts(obs.observe().inputs["cam"]) == ["frame"]
     # 上一帧已被 drain, 下一帧无 cam 通道.
     assert "cam" not in obs.observe().percepts
 
@@ -169,7 +203,7 @@ def test_compact_missing_id_clears_all_moments_and_sets_epoch():
 
 def test_clear_resets_state():
     obs = BaseMomentsObserver(max_size=5)
-    obs.inject_percepts("p")
+    obs.buffer_impulse(_delivery("p"))
     obs.add_echoes([Message.new().with_content("x")], need_observe=True)
     obs.observe()
     # 让 need_observe 重新为 True, 断言 clear 彻底复位.
@@ -218,10 +252,10 @@ def test_epoch_creating_fires_before_baseline():
 
 def test_turns_organizes_observed_moments_by_logos():
     obs = BaseMomentsObserver(max_size=10)
-    obs.inject_percepts("input 1")
+    obs.buffer_impulse(_delivery("input 1"))
     m1 = obs.observe()
     m1.logos = "logos 1"
-    obs.inject_percepts("input 2")
+    obs.buffer_impulse(_delivery("input 2"))
     obs.observe()
     turns = list(obs.turns())
     assert len(turns) == 2

@@ -15,7 +15,7 @@ complete=False + strength=0 构造 "占住 attention 但不竞争" 的首包.
     因此短路必须在 defender/quiet 分支之前, 且 verdict 恒为 'yielded'.
 
 API 迁移 (重构 41f0cb63): 用 ``mindflow.thinking_loop()`` 取 Thinking,
-``mindflow.project_percepts()`` → ``mindflow.moments.peek().percepts_messages()``.
+``mindflow.project_percepts()`` → ``mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)``.
 
 覆盖路径:
 - quiet 系统 (无 defender) + strength=0 → yielded, 不创建 attention
@@ -152,7 +152,7 @@ async def test_strength_zero_with_aside_mode_still_yields_not_buffer():
             ))
             await asyncio.sleep(0.2)
             # messages 没进 buffer (yielded 不走 buffer 分支).
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'yielded_msg' not in texts
             defender_think.abort('test done')
@@ -172,7 +172,7 @@ async def test_strength_zero_with_notify_mode_still_yields_not_buffer():
                 messages=[Message.new().with_content('yielded_msg')],
             ))
             await asyncio.sleep(0.2)
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'yielded_msg' not in texts
             defender_think.abort('test done')

@@ -34,7 +34,7 @@ def test_signal_to_impulse_conversion():
 def test_moment_echoes_stitching():
     # 模拟第一轮 Observation
     obs = Moment()
-    obs.percepts = {"test": [Message.new().with_content("Input 1")]}
+    obs.inputs = {"test": [Message.new().with_content("Input 1")]}
 
     # 生成 Echoes
     echoes = obs.new_echoes_container()
@@ -100,13 +100,13 @@ def test_new_moment_passes_all_params():
     echoes = Echoes(executed_logos="test logos", stop_reason="done")
     percept_msg = Message.new().with_content("percept content")
     moment = echoes.new_moment(
-        percepts={"test": [percept_msg]},
+        inputs={"test": [percept_msg]},
         hint="handle this",
         command_logos="reflex!",
     )
     assert moment.previous is echoes
-    assert len(moment.percepts) == 1
-    assert next(iter(moment.percepts_messages())).contents[0]["text"] == "percept content"
+    assert len(moment.inputs) == 1
+    assert next(iter(moment.inputs_messages(with_hint=False, with_command_executing=False))).contents[0]["text"] == "percept content"
     assert moment.hint == "handle this"
     assert moment.command_logos == "reflex!"
 
@@ -115,16 +115,16 @@ def test_new_moment_without_params_creates_empty_moment():
     """不带参数的 new_moment() 创建空的 Moment — observe 轮次应走此路径."""
     echoes = Echoes(executed_logos="prev")
     moment = echoes.new_moment()
-    assert moment.percepts == {}
+    assert moment.inputs == {}
     assert moment.hint == ""
     assert moment.command_logos == ""
 
 
-def test_new_moment_percepts_none_treated_as_empty():
+def test_new_moment_inputs_none_treated_as_empty():
     """percepts=None 时转为空列表，不抛异常."""
     echoes = Echoes()
-    moment = echoes.new_moment(percepts=None)
-    assert moment.percepts == {}
+    moment = echoes.new_moment(inputs=None)
+    assert moment.inputs == {}
     r2 = moment.new_echoes_container()
     assert r2.moment_id == moment.id
 
@@ -133,7 +133,7 @@ def test_moment_inputs_messages_yields_percepts_and_instruction():
     """inputs_messages() 按序产出 percepts → hint."""
     percept = Message.new().with_content("p1")
     moment = Moment(
-        percepts={"test": [percept]},
+        inputs={"test": [percept]},
         hint="do it",
     )
     msgs = list(moment.inputs_messages(with_hint=True))
@@ -146,7 +146,7 @@ def test_moment_inputs_messages_yields_percepts_and_instruction():
 def test_moment_inputs_messages_without_instruction():
     """with_hint=False 时不产出 instruction."""
     moment = Moment(
-        percepts={"test": [Message.new().with_content("p1")]}, hint="skip me",
+        inputs={"test": [Message.new().with_content("p1")]}, hint="skip me",
     )
     msgs = list(moment.inputs_messages(with_hint=False))
     assert len(msgs) == 1
@@ -154,7 +154,7 @@ def test_moment_inputs_messages_without_instruction():
 
 def test_moment_inputs_messages_skips_empty_instruction():
     """hint 为空时不产出多余消息."""
-    moment = Moment(percepts={"test": [Message.new().with_content("p1")]})
+    moment = Moment(inputs={"test": [Message.new().with_content("p1")]})
     msgs = list(moment.inputs_messages(with_hint=True))
     assert len(msgs) == 1
 
@@ -189,15 +189,15 @@ def test_moment_is_empty_and_is_empty_request():
     """is_empty / is_empty_request 判断."""
     empty = Moment()
     assert empty.is_empty()
-    assert empty.is_percepts_empty()
+    assert empty.is_inputs_empty()
 
-    with_percept = Moment(percepts={"test": [Message.new().with_content("x")]})
+    with_percept = Moment(inputs={"test": [Message.new().with_content("x")]})
     assert not with_percept.is_empty()
-    assert not with_percept.is_percepts_empty()
+    assert not with_percept.is_inputs_empty()
 
     with_prev = Moment(previous=Echoes(need_observe=True))
     assert with_prev.is_empty()  # 没有消息, 所以是 empty
-    assert with_prev.is_percepts_empty()  # 有 previous 但没有新 percepts
+    assert with_prev.is_inputs_empty()  # 有 previous 但没有新 percepts
 
 
 def test_as_moment_message_wraps_content_into_container():
@@ -207,7 +207,7 @@ def test_as_moment_message_wraps_content_into_container():
     )
     moment = Moment(
         previous=prev,
-        percepts={"test": [Message.new().with_content("percept 1")]}, hint="react!",
+        inputs={"test": [Message.new().with_content("percept 1")]}, hint="react!",
     )
     moment.dynamic_context["moss_dynamic"] = [Message.new().with_content("dynamic ctx")]
     msg = moment.as_moment_message()
@@ -217,13 +217,13 @@ def test_as_moment_message_wraps_content_into_container():
     text = msg.to_content_string()
     assert "<echoes>" in text and "echoes 1" in text
     assert "<dynamic_context>" in text and "dynamic ctx" in text
-    assert "<percepts>" in text and "percept 1" in text
+    assert "<inputs>" in text and "percept 1" in text
     assert "<hint>" in text and "react!" in text
 
 
 def test_moment_as_request_messages_without_perspectives():
     """with_dynamic_context=False 时动态上下文不进单条消息, percepts 保留."""
-    moment = Moment(percepts={"test": [Message.new().with_content("p1")]})
+    moment = Moment(inputs={"test": [Message.new().with_content("p1")]})
     moment.dynamic_context["ctx"] = [Message.new().with_content("ctx1")]
     msgs = moment.full_moment_messages(with_dynamic_context=False, with_hint=False)
     assert len(msgs) == 1
@@ -232,7 +232,7 @@ def test_moment_as_request_messages_without_perspectives():
     assert "ctx1" not in text
     assert "<dynamic_context>" not in text
     # percepts 保留.
-    assert "<percepts>" in text and "p1" in text
+    assert "<inputs>" in text and "p1" in text
 
 
 def test_moment_command_logos_preserved_in_new_moment():
@@ -247,16 +247,16 @@ def test_moment_command_logos_preserved_in_new_moment():
 
 
 def test_as_moment_message_excludes_percepts_and_hint_when_requested():
-    """as_moment_message(with_percepts=False, with_hint=False) 只折叠 context 半 (echoes/dynamic/executing)."""
+    """as_moment_message(with_inputs=False, with_hint=False) 只折叠 context 半 (echoes/dynamic/executing)."""
     prev = Echoes(messages=[Message.new().with_content("echo")])
     moment = Moment(
         previous=prev,
-        percepts={"test": [Message.new().with_content("percept")]},
+        inputs={"test": [Message.new().with_content("percept")]},
         hint="hint text",
         command_logos="cmd!",
     )
     moment.dynamic_context["ctx"] = [Message.new().with_content("dyn")]
-    msg = moment.as_moment_message(with_percepts=False, with_hint=False)
+    msg = moment.as_moment_message(with_inputs=False, with_hint=False)
     assert msg is not None
     assert msg.meta.tag == "moment"
     text = msg.to_content_string()
@@ -270,7 +270,7 @@ def test_as_moment_message_excludes_percepts_and_hint_when_requested():
 def test_as_moment_message_keeps_percepts_and_hint_by_default():
     """默认 as_moment_message 仍含 percepts + hint (向后兼容)."""
     moment = Moment(
-        percepts={"test": [Message.new().with_content("percept")]},
+        inputs={"test": [Message.new().with_content("percept")]},
         hint="hint text",
     )
     msg = moment.as_moment_message()

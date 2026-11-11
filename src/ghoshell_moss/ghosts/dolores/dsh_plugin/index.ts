@@ -1731,19 +1731,23 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
 interface MomentPayload {
   context: MomentContentPart[]
   inputs: MomentContentPart[]
+  /** Role-classified deliveries (tool callbacks, other contexts' answers, node inboxes). */
+  percepts?: MomentContentPart[]
   moment_id?: string
 }
 
 /** 载荷形状判定 — 缺省 / 空载荷 (没有 context 也没有 inputs) 视为"无 moment". */
 function hasMomentPayload(moment: unknown): boolean {
   if (moment === null || typeof moment !== 'object' || Array.isArray(moment)) return false
-  const { context, inputs } = moment as { context?: unknown; inputs?: unknown }
-  return (Array.isArray(context) && context.length > 0) || (Array.isArray(inputs) && inputs.length > 0)
+  const { context, inputs, percepts } = moment as { context?: unknown; inputs?: unknown; percepts?: unknown }
+  return (Array.isArray(context) && context.length > 0)
+    || (Array.isArray(inputs) && inputs.length > 0)
+    || (Array.isArray(percepts) && percepts.length > 0)
 }
 
-/** 注入一次投递的 moment: context 与 inputs 各成一条消息, 两半都注, 绝不只注一半. */
+/** 注入一次投递的 moment: context / inputs / percepts 各成一条消息, 有哪槽注哪槽, 绝不漏槽. */
 async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown): Promise<void> {
-  const { context, inputs } = moment as MomentPayload
+  const { context, inputs, percepts } = moment as MomentPayload
   const contextBlocks = Array.isArray(context) ? await durableMomentContent(ctx, context) : []
   if (contextBlocks.length > 0) {
     agent.inject(createUserMessage({
@@ -1756,6 +1760,13 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
     agent.inject(createUserMessage({
       content: inputBlocks,
       source: { kind: `${name}:inputs` },
+    }))
+  }
+  const perceptBlocks = Array.isArray(percepts) ? await durableMomentContent(ctx, percepts) : []
+  if (perceptBlocks.length > 0) {
+    agent.inject(createUserMessage({
+      content: perceptBlocks,
+      source: { kind: `${name}:percepts` },
     }))
   }
 }
@@ -1772,7 +1783,7 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
  * pre-step 照样把它插进历史, 绝不丢.
  */
 async function queueMomentPayload(ctx: Context, moment: unknown): Promise<void> {
-  const { context, inputs } = moment as MomentPayload
+  const { context, inputs, percepts } = moment as MomentPayload
   const messages: UserMessage[] = []
   const contextBlocks = Array.isArray(context) ? await durableMomentContent(ctx, context) : []
   if (contextBlocks.length > 0) {
@@ -1786,6 +1797,13 @@ async function queueMomentPayload(ctx: Context, moment: unknown): Promise<void> 
     messages.push(createUserMessage({
       content: inputBlocks,
       source: { kind: `${name}:inputs` },
+    }))
+  }
+  const perceptBlocks = Array.isArray(percepts) ? await durableMomentContent(ctx, percepts) : []
+  if (perceptBlocks.length > 0) {
+    messages.push(createUserMessage({
+      content: perceptBlocks,
+      source: { kind: `${name}:percepts` },
     }))
   }
   if (messages.length > 0) {

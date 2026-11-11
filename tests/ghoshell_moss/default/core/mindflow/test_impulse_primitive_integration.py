@@ -183,7 +183,7 @@ async def test_broadcast_buffers_without_new_attention():
             # 协议命题 1: defender 没有被 abort (aside 不会替换 attention).
             assert not defender_att.is_aborted()
             # 协议命题 2: aside 的 messages 进入 mindflow buffer.
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'aside_msg' in buffered_texts
             defender_att.abort('test done')
@@ -211,7 +211,7 @@ async def test_background_notice_buffers_on_challenge_failure():
             # 协议命题 1: defender 仍在 (BACKGROUND 永不抢占).
             assert not defender_att.is_aborted()
             # 协议命题 2: notify 失败时 messages 进 buffer.
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'bg_msg' in buffered_texts
             defender_att.abort('test done')
@@ -259,7 +259,7 @@ async def test_notify_buffers_when_challenge_fails():
             # defender 仍在 (notify 抢占失败).
             assert not defender_att.is_aborted()
             # messages 进 buffer (notify 偏离侧承诺).
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'user_msg' in buffered_texts
             defender_att.abort('test done')
@@ -289,7 +289,7 @@ async def test_next_buffers_and_marks_observe_when_challenge_fails():
             # 1. 不抢占 — 当前 attention 继续.
             assert not defender_att.is_aborted()
             # 2. messages 进 buffer (next 偏离侧).
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'cut_msg' in buffered_texts
             # 3. 强制下一帧观察 (next 与 notify 的差别就在这一脚).
@@ -317,7 +317,7 @@ async def test_next_at_background_is_dropped_not_queued():
             await asyncio.sleep(0.2)
             assert not defender_att.is_aborted()
             # 未被注入 (suppressed, 而非 buffered).
-            buffered = mindflow.moments.peek().percepts_messages()
+            buffered = mindflow.moments.peek().inputs_messages(with_hint=False, with_command_executing=False)
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'bg_cut' not in buffered_texts
             # 也未强制观察.
@@ -343,7 +343,7 @@ async def test_incomplete_then_complete_folds_tail_into_response_frame():
     async def consume():
         async for thinking in mindflow.thinking_loop():
             async with thinking:
-                frames.append((thinking.effort(), thinking.moment.percepts_texts()))
+                frames.append((thinking.effort(), thinking.moment.inputs_texts()))
                 if len(frames) == 1:
                     first_seen.set()
                 if len(frames) >= 2:

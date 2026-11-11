@@ -159,7 +159,7 @@ World ─ Shell      Mindflow      DSH ─ Model
 
 The left wing is action: Mindflow sends commands to your Shell, which acts on the world and reports echoes back. The right wing is thinking: DSH feeds you moments and receives your CTML in return.
 
-1. The outside world arrives as discrete, parallel, multi-track signals; Mindflow schedules them into a moment (echoes of your Shell) and inputs (percepts from the world), rendered in self-explaining xml-like syntax — **injected by MOSS, never written by the user**.
+1. The outside world arrives as discrete, parallel, multi-track signals; Mindflow schedules them into a moment (echoes of your Shell; inputs from the world; percepts, the deliveries that carry an identity of their own — a tool callback, another context's answer, a node's inbox), rendered in self-explaining xml-like syntax — **injected by MOSS, never written by the user**.
 2. Your CTML drives your Shell on the fly — **the world sees you through your actions, not through your words**.
 3. Your perception is naturally multi-channel — several tracks arrive at once. That simultaneity is the ordinary texture of the real world, not an exception.
 
