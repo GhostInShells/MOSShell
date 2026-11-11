@@ -32,8 +32,11 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
-from ghoshell_moss.ghosts.dolores._ego_memento import BrokenCommitError, EgoMementoManager
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.mindflow import Signal
+from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoManager
+
+from .nucleus import new_dolores_ego_signal
 
 __all__ = ["build_memento_channel"]
 
@@ -62,7 +65,9 @@ def _instruction_text(manager: EgoMementoManager, storage_root: Path | None) -> 
         "",
         "read returns a span's raw conversation. chat talks with the context of a span — the other",
         "side is not the commit but the conversation that had happened by the time it was made. chat",
-        "runs a real round of inference, so it is slow; read first when you only need to recall.",
+        "returns a receipt at once and the answer arrives later as its own delivery, so it never",
+        "holds the turn; it is still a real round of inference, so read first when you only need",
+        "to recall.",
     ])
     return "\n".join(lines)
 
@@ -197,21 +202,43 @@ def build_memento_channel(
 
     @chan.build.command(name="chat", always_observe=True)
     async def chat(coord: str, prompt: str) -> str:
-        """Talk one round with the context of a span.
+        """Talk one round with the context of a span — the answer arrives later.
 
         The other side is not the commit but the conversation that had happened by the time it was
-        made, so anything after it is outside its view. This runs a real round of inference: slow
-        and token-hungry.
+        made, so anything after it is outside its view. This returns a receipt at once and the
+        answer comes back as a delivery of its own (role `mind`), so nothing holds the turn while
+        the other side thinks. It is still a real round of inference: slow and token-hungry.
 
         :param coord: commit coordinate, e.g. `1-27`.
         :param prompt: what you want to ask.
         """
-        try:
-            return await manager.chat(coord, prompt)
-        except KeyError:
+        view = manager.resolve(coord)
+        if view is None:
             return f"[memento] no commit at `{coord}`"
-        except BrokenCommitError:
+        if view.is_broken:
             return f"[memento] `{coord}` has no context to talk to; read it instead"
+
+        async def _answer() -> Signal:
+            # The delivery is the only way back once the receipt is out: a failure must
+            # come back as content, not as an exception nobody will ever read.
+            # It goes out on Dolores' own ego signal — a body-carrying ego signal is a
+            # delivery, and that nucleus buffers it instead of dropping it under load.
+            try:
+                text = await manager.chat(coord, prompt)
+            except Exception as exc:  # noqa: BLE001
+                return new_dolores_ego_signal(
+                    f"[memento] chat with {coord} failed: {exc}",
+                    role='mind',
+                    description=f"chat with {coord} failed",
+                )
+            return new_dolores_ego_signal(
+                text,
+                role='mind',
+                description=f"answer from {coord}",
+            )
+
+        await CommandUtil.create_signal_task(closure=_answer)
+        return f"[memento] asking {coord} — the answer will arrive as a signal"
 
     if commit_anchor is not None:
 

@@ -3,6 +3,12 @@
 A specialized nucleus: it receives self-wake signals from the Dolores ego's turn/start watcher and
 produces a low-key BACKGROUND challenge impulse with an empty body; when attended, the impulse is
 upgraded to INFO to wake a silent mindflow into a normal challenge round.
+
+The same signal also carries the ego's own asynchronous thoughts back: a signal with a body is a
+**delivery**, not a wake. A delivery takes the buffer path (``ChallengeMode.notify`` at BACKGROUND),
+so it never preempts anything, and a lost arbitration buffers the whole impulse instead of dropping
+it — the moment then routes its messages by ``role``. A mind delivery therefore has exactly one way
+back: it is queued, never gone.
 """
 
 from collections.abc import Iterable
@@ -14,6 +20,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.core.blueprint.mindflow import (
+    ChallengeMode,
     Impulse,
     Nucleus,
     NucleusMeta,
@@ -87,7 +94,7 @@ class DoloresEgoNucleus(Nucleus):
         self._description = description
         self._target_signal = SIGNAL_NAME
         self._logger = logger or get_moss_logger()
-        self._impulse: Impulse | None = None
+        self._impulses: list[Impulse] = []
         self._broadcast_cb: Callable[[Signal], None] | None = None
         self._notify_cb: Callable[[Impulse], None] | None = None
         self._index = 0
@@ -108,7 +115,7 @@ class DoloresEgoNucleus(Nucleus):
         return [self._target_signal]
 
     def clear(self) -> None:
-        self._impulse = None
+        self._impulses.clear()
 
     def with_bus(
         self,
@@ -128,6 +135,7 @@ class DoloresEgoNucleus(Nucleus):
         self._index += 1
         messages: list[Message] = []
         logos = ""
+        mode = ""
         if meta is not None and meta.kind == "startup":
             # boot wake: preheat via instruction (handshake), speak via command (reflex-arc logos).
             if meta.instruction:
@@ -136,39 +144,54 @@ class DoloresEgoNucleus(Nucleus):
                 ))
             if meta.command:
                 logos = meta.command
-        self._impulse = Impulse(
+        elif signal.messages:
+            # A body makes it a delivery, not a wake: one of the ego's own asynchronous
+            # thoughts coming back. It must survive a lost arbitration, so it takes the
+            # buffer path — BACKGROUND never preempts, notify buffers the whole impulse
+            # instead of suppressing it, and the moment routes it by role later.
+            messages = list(signal.messages)
+            mode = ChallengeMode.notify.value
+        impulse = Impulse(
             source=self._name,
             source_idx=self._index,
             id=signal.id,
             priority=Priority.BACKGROUND,
             messages=messages,  # empty body for step wake — handling is defined at the thinking/enter layer.
             logos=logos,
-            description="",
+            description=signal.description,
+            mode=mode,
             complete=True,  # default (empty) mode = normal arbitration (not silent)
+            role=signal.role or "",
         )
+        # Queue, not a slot: a second delivery must not overwrite one that is still
+        # waiting to be raised. One impulse is raised per arbitration round, oldest first.
+        self._impulses.append(impulse)
         if self._notify_cb is not None:
-            self._notify_cb(self._impulse)
+            self._notify_cb(impulse)
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # fire-and-forget: dropped on preemption failure — no reraise, no cooldown.
-        self._impulse = None
+        if suppressed is not None:
+            self._discard(suppressed)
         return
 
     def attended(self, impulse: Impulse) -> Impulse | None:
         # running package: upgraded to INFO (normal run strength), distinct from the BACKGROUND challenge. Empty body kept.
         if not self.is_running():
             return None
-        self._impulse = None
+        self._discard(impulse)
         return impulse.model_copy(update={"priority": Priority.INFO})
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
-        if self._impulse is None:
+        if not self._impulses:
             return None
-        impulse = self._impulse
-        self._impulse = None  # fire-and-forget: peek clears; single-consumption, no cache.
+        impulse = self._impulses.pop(0)  # single consumption: the raiser owns it from here.
         if no_stale and impulse.is_stale():
             return None
         return impulse
+
+    def _discard(self, impulse: Impulse) -> None:
+        self._impulses = [i for i in self._impulses if i.id != impulse.id]
 
     def is_running(self) -> bool:
         return self._running
@@ -215,11 +238,15 @@ def new_dolores_ego_signal(
     kind: str = "",
     command: str = "",
     instruction: str = "",
+    role: str = "",
 ) -> Signal:
     """Helper — build a self-wake signal for the ego's turn/start watcher to emit.
 
     ``kind`` / ``command`` / ``instruction`` extend the signal for the startup boot
     protocol; leaving them empty keeps the ordinary step wake.
+
+    Pass ``messages`` to make it a delivery instead: the ego nucleus then buffers the
+    impulse rather than dropping it, and the moment routes it by ``role``.
     """
     meta = DoloresEgoSignalMeta(kind=kind, command=command, instruction=instruction)
     return meta.to_signal(
@@ -227,4 +254,5 @@ def new_dolores_ego_signal(
         description=description,
         priority=priority,
         hint=hint,
+        role=role,
     )

@@ -1112,6 +1112,49 @@ class TestDoloresEgoNucleus:
         assert "预热" in body
 
     @pytest.mark.asyncio
+    async def test_body_makes_it_a_delivery_on_the_buffer_path(self):
+        """有正文的 ego signal 是投递, 不是唤醒: 不抢注意力, 输了仲裁也必须留下."""
+        from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority
+
+        from .nucleus import DoloresEgoNucleus, new_dolores_ego_signal
+
+        nucleus = DoloresEgoNucleus()
+        impulses = []
+        async with nucleus:
+            nucleus.with_bus(lambda signal: None, impulses.append)
+            nucleus.add_signal(new_dolores_ego_signal(
+                "the answer", role="mind", description="answer from 1-1",
+            ))
+
+        assert len(impulses) == 1
+        imp = impulses[0]
+        # BACKGROUND: 不加挑战强度, 空闲时才作为初始 attention 赢.
+        assert imp.priority == Priority.BACKGROUND
+        # notify: 抢占失败时由 mindflow 整个 buffer, 而不是 suppress 掉.
+        assert imp.mode == ChallengeMode.notify.value
+        assert imp.role == "mind"
+        assert imp.description == "answer from 1-1"
+        assert [m.to_content_string() for m in imp.messages] == ["the answer"]
+
+    @pytest.mark.asyncio
+    async def test_second_delivery_does_not_overwrite_the_first(self):
+        """排队, 不是单槽: 两条投递都还没被 raise 时, 后来的不能盖掉前一条."""
+        from .nucleus import DoloresEgoNucleus, new_dolores_ego_signal
+
+        nucleus = DoloresEgoNucleus()
+        async with nucleus:
+            nucleus.with_bus(lambda signal: None, lambda impulse: None)
+            nucleus.add_signal(new_dolores_ego_signal("first", role="mind"))
+            nucleus.add_signal(new_dolores_ego_signal("second", role="mind"))
+            first = nucleus.peek()
+            second = nucleus.peek()
+            assert nucleus.peek() is None
+
+        assert first is not None and second is not None
+        assert [m.to_content_string() for m in first.messages] == ["first"]
+        assert [m.to_content_string() for m in second.messages] == ["second"]
+
+    @pytest.mark.asyncio
     async def test_attended_rewrites_to_info(self):
         from ghoshell_moss.core.blueprint.mindflow import Impulse, Priority
 
@@ -3585,6 +3628,31 @@ class TestMementoChannel:
             )
         assert "no context to talk to" in result
         assert "read it instead" in result
+
+    @pytest.mark.asyncio
+    async def test_chat_returns_a_receipt_and_delivers_the_answer_later(self, tmp_path, monkeypatch):
+        """异步化: 命令立刻回执, 答案作为一条 mind 分类的投递回来 —— 不再占住这一轮."""
+        from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
+
+        conn = self._Connection({"text": "the answer"})
+        chan, manager, memento = self._channel(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        sent = []
+        monkeypatch.setattr(CommandUtil, "send_signal", lambda signal: sent.append(signal))
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command(
+                "chat", args=(self._coord(memento, anchor.seq), "why?")
+            )
+            for _ in range(100):
+                if sent:
+                    break
+                await asyncio.sleep(0.01)
+        assert receipt.startswith("[memento] asking")
+        assert len(sent) == 1
+        # 投递走 Dolores 自己的 ego signal, 而不是全局的 input signal.
+        assert sent[0].name == "dolores/ego"
+        assert sent[0].role == "mind"
+        assert sent[0].messages[0].to_content_string() == "the answer"
 
     @pytest.mark.asyncio
     async def test_read_on_unknown_coord_returns_hint(self, tmp_path: Path):

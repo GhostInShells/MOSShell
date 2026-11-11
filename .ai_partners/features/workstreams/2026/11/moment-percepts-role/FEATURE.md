@@ -7,7 +7,8 @@ milestone: null
 priority: P1
 status: in-progress
 status_note: 'kernel lands: inputs/percepts split, role on signal+impulse with vocabulary
-  and tag-name validation; nodes'' async callbacks still unclassified'
+  and tag-name validation, memento chat now answers asynchronously as role mind; nodes''
+  async callbacks still unclassified'
 title: Moment Percepts Role
 updated: '2026-11-11'
 ---
