@@ -382,6 +382,7 @@ class ListenerNucleus(Nucleus):
             hint=signal.hint,
             messages=self._wrap_messages(signal, meta.source, meta.low_conf, meta.paused, meta.db),
             description=signal.description,
+            role=signal.role or '',
         )
         self._fire(impulse)
 

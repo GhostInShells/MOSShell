@@ -173,11 +173,11 @@ class Moment(BaseModel, WithAdditional):
     percepts: dict[str, dict[str, list[Message]]] = Field(
         default_factory=dict,
         description="This round's deliveries that carry an identity of their own, keyed by "
-                    "role and then by the same identity key as inputs. Role is MOSS's own "
-                    "classification of a delivery (user / assistant / tool / system, or a "
-                    "producer-defined one such as email) — not the LLM chat role. It exists so "
-                    "an instrument's inbox never mixes with a human's sentence: role decides "
-                    "the bucket, the inner key decides dedup and order.",
+                    "role and then by the same identity key as inputs. Role names whose act "
+                    "the delivery represents (see ``DEFAULT_ROLES``); a producer may define "
+                    "its own word. It exists so an instrument's inbox never mixes with a "
+                    "human's sentence: role decides the bucket, the inner key decides dedup "
+                    "and order. Role is classification only — it never changes priority.",
     )
     hint: str = Field(
         default='',

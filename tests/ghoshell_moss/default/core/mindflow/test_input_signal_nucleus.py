@@ -20,6 +20,17 @@ async def test_basic_enqueue_and_peek():
 
 
 @pytest.mark.asyncio
+async def test_role_rides_the_newest_signal_through_materialize():
+    """分类归 nucleus; 这里只沿用最新一条信号给的 role, 随物化后的 impulse 走."""
+    async with InputSignalNucleus() as nuc:
+        nuc.add_signal(Signal.new("input", Message.new().with_content("a"), role="mind"))
+        await asyncio.sleep(0.01)
+        full = nuc.attended(nuc.peek())
+        assert full is not None
+        assert full.role == "mind"
+
+
+@pytest.mark.asyncio
 async def test_status_red_dot():
     """status() 返回红点摘要: pending 计数 + 最新 pending 消息预览, 无消息回退 description."""
     async with InputSignalNucleus() as nuc:

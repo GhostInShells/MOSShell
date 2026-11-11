@@ -309,6 +309,8 @@ class InputSignalNucleus(Nucleus):
             strength=max_strength,
             complete=all(s.complete for s in valid),
             stale_timeout=newest.stale_timeout,
+            # 分类归 nucleus: 这里不判断主体, 只沿用发送侧给的最新一条 (语法糖).
+            role=newest.role or '',
         )
 
     def _materialize(self, stub: Impulse) -> Impulse | None:
@@ -329,6 +331,7 @@ class InputSignalNucleus(Nucleus):
             'messages': all_msgs,
             'description': newest.description,
             'hint': newest.hint or self._default_prompt,
+            'role': newest.role or '',
         })
 
 

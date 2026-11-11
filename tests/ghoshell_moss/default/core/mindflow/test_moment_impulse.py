@@ -11,9 +11,11 @@ Impulse 合并 moment 的数据落地与 attention 解耦. 本文件只保留 mo
 perspectives_func / percepts_func / thinking_effort 卸载等) 已注释, 标记 TODO 迁移,
 迁往 attention 专项测试.
 """
-from ghoshell_moss.core.blueprint.mindflow import Impulse
+from ghoshell_moss.core.blueprint.mindflow import Impulse, Signal
 from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.message import Message
+import pytest
+from pydantic import ValidationError
 
 
 def _text(msg: Message) -> str:
@@ -36,6 +38,31 @@ def test_update_moment_extends_percepts():
     imp = Impulse(messages=[Message.new().with_content('a'), Message.new().with_content('b')])
     imp.update_moment(moment)
     assert _texts(moment.inputs_messages(with_hint=False, with_command_executing=False)) == ['a', 'b']
+
+
+def test_role_classified_impulse_lands_in_its_own_bucket():
+    """role 决定落桶: 非空进 percepts[role], 空仍走默认 inputs."""
+    moment = Moment()
+    Impulse(role='tool', messages=[Message.new().with_content('tool out')]).update_moment(moment)
+    Impulse(messages=[Message.new().with_content('plain')]).update_moment(moment)
+    assert moment.percepts_texts() == ['tool out']
+    assert moment.inputs_texts() == ['plain']
+
+
+def test_signal_role_is_sugar_normalized_on_the_impulse():
+    """Signal.role 只是语法糖: None 与 '' 等价, 最终路由认的是 Impulse.role."""
+    assert Signal(name='input').role is None
+    assert Impulse.from_signal(Signal(name='input'), 'n').role == ''
+    assert Impulse.from_signal(Signal(name='input', role='user'), 'n').role == 'user'
+
+
+def test_role_must_be_renderable_as_a_moment_tag():
+    """role 会变成渲染用的 XML tag, 所以非法名 / 保留前缀 / 容器名在创建时就拒绝."""
+    for bad in ('m-ind', '9lives', 'xmlfoo', 'percepts'):
+        with pytest.raises(ValidationError):
+            Impulse(role=bad)
+        with pytest.raises(ValidationError):
+            Signal(name='input', role=bad)
 
 
 def test_update_moment_sets_hint_and_command_logos():

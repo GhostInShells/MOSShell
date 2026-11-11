@@ -6,8 +6,8 @@ description: 'Split "what came in" from "what came back": rename the Moment''s p
 milestone: null
 priority: P1
 status: in-progress
-status_note: 'kernel lands: inputs/percepts split, role on signal+impulse, buffer_impulse;
-  nodes'' async callbacks still unclassified'
+status_note: 'kernel lands: inputs/percepts split, role on signal+impulse with vocabulary
+  and tag-name validation; nodes'' async callbacks still unclassified'
 title: Moment Percepts Role
 updated: '2026-11-11'
 ---
@@ -70,8 +70,28 @@ sentence.
    `<percepts><role>…</role></percepts>`. The slot is the container; the role is the tag
    inside it. No `role="…"` on the container — the model should read sections, not
    attributes.
-6. **`user` is a priority statement, not just a label.** A delivery whose role is `user`
-   means a human is speaking; it gets a high arbitration floor that no source may lower.
+6. **`role` is classification only.** It decides which bucket a delivery lands in, never
+   its priority. A human's input is high-priority because the input signal carries that
+   tier, not because its role says `user`; keeping the two apart means a producer cannot
+   gain arbitration weight by naming itself.
+7. **The impulse is the only role the moment routes by.** `Signal.role` is syntax sugar
+   (`None` = unclassified, and `None` and `''` are equivalent); the nucleus that builds
+   the impulse owns the classification and may keep, override or drop it. Role conflicts
+   inside an aggregating nucleus are not reconciled — the newest signal's role wins, same
+   as `description`. A producer that needs two roles emits two impulses.
+8. **The vocabulary is `user / tool / mind / agent / host`** — an open convention, not a
+   closed enum. A role names *whose act the delivery represents*, not who physically
+   emitted the bytes: ASR is a capability, but the act is the human's, so it is `user`.
+   `host` names the host that runs the ghost (framework notices, aborts, model changes);
+   it is deliberately not `system`, because `system` and `developer` are LLM chat roles
+   that mean *instruction authority*, and a framework notice must not be read as one.
+   `input` is not a role: the default container already encodes "unclassified".
+9. **The role's spelling is the XML-name rule.** It is rendered as a tag
+   (`<percepts><role>…`), so the name must be renderable: letters, digits and
+   underscores, not starting with a digit, not the reserved `xml` prefix, and not one of
+   the container tags (`inputs`, `percepts`, `echoes`, `moment`, `hint`, `executing`,
+   `dynamic_context`). Validation happens at signal / impulse construction, so a bad
+   name fails where it is written rather than in the rendered frame.
 
 ## Exploration paths
 
@@ -102,8 +122,11 @@ sentence.
   (the hive's off-record answers, the browser/screen callbacks, the calendar reminders, any
   node that reports its own inbox) must set their role, or the classification exists in the
   kernel and changes nothing in practice.
-- The Dolores chat callback is the first caller that will use it (`role="assistant"`), and it
-  is being landed separately, after this commit.
+- The Dolores memento chat is the first caller: it returns a receipt at once and delivers
+  the off-record answer later as a signal with `role="mind"`, so the whole path
+  (signal → nucleus → impulse → `<percepts><mind>`) is exercised in production by it.
+  The earlier plan to call this role `assistant` was dropped — the LLM taxonomy is exactly
+  what this slot exists to escape.
 
 ## Implementation Notes
 

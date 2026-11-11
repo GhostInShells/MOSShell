@@ -162,6 +162,7 @@ class BufferNucleus(Nucleus):
             complete=all([s.complete for s in sorted_signals]),
             stale_timeout=latest.stale_timeout,
             strength_decay_seconds=self._strength_decay_seconds,
+            role=latest.role or '',
         )
 
     async def _impulse_beat_loop(self):

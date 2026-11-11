@@ -3,7 +3,7 @@ from typing import Callable, Iterable, AsyncIterator, Any, Awaitable
 
 from typing_extensions import Self, Literal
 from abc import ABC, abstractmethod
-from pydantic import BaseModel, Field, AwareDatetime, ValidationError
+from pydantic import BaseModel, Field, AwareDatetime, ValidationError, field_validator
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message, ContextType
 from ghoshell_moss.message import unique_id
@@ -14,6 +14,7 @@ import dateutil
 import time
 import asyncio
 import enum
+import re
 
 # 持久化智能体认知行为 三循环:
 # 1. 思考循环: 模型接受信息, 思考并输出.
@@ -35,7 +36,7 @@ import enum
 # 好在实现底层用多进程模型隔离.
 
 __all__ = [
-    'Priority',
+    'Priority', 'DEFAULT_ROLES',
     'SignalName', 'Signal', 'SignalMeta', 'InputSignalMeta', 'SignalSchema',
     'Impulse',
     'Logos', 'Moment', 'Echoes',
@@ -80,6 +81,53 @@ class Priority(int, enum.Enum):
     FATAL = 5  # top tier: always preempts.
 
 
+DEFAULT_ROLES: tuple[str, ...] = ('user', 'tool', 'mind', 'agent', 'host')
+"""The default delivery-role vocabulary — an open convention, not a closed enum.
+
+A role names **whose act a delivery represents**, not who physically emitted the bytes:
+the ASR pipeline is a capability, but the act is the human's, so that delivery is
+``user``.
+
+- ``user``: a human.
+- ``tool``: a capability this ghost owns, speaking for itself — a node's inbox, a
+  command's asynchronous callback.
+- ``mind``: this ghost's own cognition on another timeline or slot — an off-record
+  answer, a note summarizer, a self-review.
+- ``agent``: another agent entity — a sub-agent, another ghost, a driven harness agent.
+- ``host``: the host that runs this ghost — framework notices, aborts, model changes.
+  Named ``host`` rather than ``system`` on purpose: ``system`` and ``developer`` are LLM
+  chat roles that mean *instruction authority*, and a framework notice must not be read
+  as one.
+
+A producer may define its own word (``email``, ``calendar``). The spelling rule is the
+XML-name rule, because the role is rendered as a tag (``<percepts><role>…``): letters,
+digits and underscores, not starting with a digit. Role is a classification only — it
+never changes arbitration priority.
+"""
+
+_ROLE_NAME = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*)?$')
+_RESERVED_ROLE_TAGS = frozenset({
+    'moment', 'echoes', 'dynamic_context', 'percepts', 'inputs', 'executing', 'hint',
+})
+
+
+def _validate_role(value: str | None) -> str | None:
+    """A role must be renderable as the XML tag it becomes, and must not shadow a
+    container tag of the rendered moment. Empty / None mean unclassified."""
+    if not value:
+        return value
+    if not _ROLE_NAME.match(value):
+        raise ValueError(
+            f"role {value!r} is not a valid tag name: use letters, digits and underscores, "
+            f"and do not start with a digit"
+        )
+    if value.lower().startswith('xml'):
+        raise ValueError(f"role {value!r} uses the reserved XML name prefix")
+    if value in _RESERVED_ROLE_TAGS:
+        raise ValueError(f"role {value!r} collides with a container tag of the moment")
+    return value
+
+
 class Signal(BaseModel):
     """
     端侧发送给智能体响应的信号. 可能有以下几个关键特征:
@@ -95,13 +143,13 @@ class Signal(BaseModel):
     name: SignalName = Field(
         description="the signal name, if not match any mind pulse, the signal will be ignore",
     )
-    role: str = Field(
-        default='',
-        description="delivery identity — who this signal speaks as, in MOSS's own vocabulary "
-                    "(user / assistant / tool / system, or a producer-defined one such as email). "
-                    "Not the LLM chat role: it classifies a delivery, not a speaker in a "
-                    "two-party chat. Empty means unclassified, so the delivery lands in the "
-                    "moment's inputs; non-empty routes it to percepts[role].",
+    role: str | None = Field(
+        default=None,
+        description="the delivery identity, or None when the sender does not classify it. "
+                    "A signal's role is syntax sugar: the nucleus that builds the impulse "
+                    "owns the classification and may keep, override or drop it. The impulse "
+                    "is the only role the moment routes by; None and '' both mean "
+                    "unclassified. See ``DEFAULT_ROLES`` for the vocabulary.",
     )
     id: str = Field(
         default_factory=unique_id,
@@ -173,6 +221,11 @@ class Signal(BaseModel):
         default_factory=lambda: datetime.datetime.now(dateutil.tz.gettz()),
     )
 
+    @field_validator('role')
+    @classmethod
+    def _role_is_renderable(cls, value: str | None) -> str | None:
+        return _validate_role(value)
+
     @classmethod
     def new(
             cls,
@@ -184,6 +237,7 @@ class Signal(BaseModel):
             strength: int = 100,
             stale_timeout: float = 0,
             complete: bool = True,
+            role: str | None = None,
     ) -> Self:
         return cls(
             name=name,
@@ -194,6 +248,7 @@ class Signal(BaseModel):
             strength=strength,
             stale_timeout=stale_timeout,
             complete=complete,
+            role=role,
         )
 
     def priority_strength(self) -> int:
@@ -304,10 +359,12 @@ class SignalMeta(BaseModel, ABC):
             priority: int | None = None,
             hint: str = '',
             complete: bool = True,
+            role: str | None = None,
     ) -> Signal:
         """
         快速用 meta 定义一个 signal. 提示两者的使用机制.
         SignalMeta 可以和 Nucleus 对齐逻辑, 并不需要走这个表面.
+        ``role`` 只是语法糖 —— 真正路由的是 Nucleus 产出的 Impulse.
         """
         name = self.signal_name()
         wrapped_messages = []
@@ -326,6 +383,7 @@ class SignalMeta(BaseModel, ABC):
             priority=priority,
             hint=hint,
             complete=complete,
+            role=role,
         )
 
 
@@ -394,12 +452,19 @@ class Impulse(BaseModel):
     )
     role: str = Field(
         default='',
-        description="the delivery identity: inherited from the signal, or set by the nucleus "
-                    "that produced this impulse. Empty means unclassified — the messages land "
-                    "in Moment.inputs, the default delivery slot. Non-empty routes them to "
-                    "Moment.percepts[role], a bucket of their own inside the percepts slot. "
-                    "Two impulses with the same role still stay separate: dedup is by id.",
+        description="the delivery identity — whose act this delivery represents, set by the "
+                    "nucleus that produced this impulse. Empty means unclassified: the "
+                    "messages land in Moment.inputs, the default delivery slot. Non-empty "
+                    "routes them to Moment.percepts[role]. One impulse carries at most one "
+                    "role — a producer that needs two roles emits two impulses. Dedup is by "
+                    "id inside a bucket, so two impulses with the same role stay separate. "
+                    "Classification only: role never changes arbitration priority.",
     )
+
+    @field_validator('role')
+    @classmethod
+    def _role_is_renderable(cls, value: str) -> str:
+        return _validate_role(value) or ''
 
     priority: Priority | int = Field(
         default=Priority.NOTICE,
@@ -512,9 +577,10 @@ class Impulse(BaseModel):
         if stale_timeout > 0:
             stale_timeout = stale_timeout - (time.time() - signal.created_at.timestamp())
         # 从 signal 直接反射 impulse 的做法, signal 相当于原始协议. 所以剥离了 impulse 所有高阶机制.
+        # role 是 signal 侧的语法糖; impulse 只认字符串, 未分类统一成空.
         return Impulse(
             source=source,
-            role=signal.role,
+            role=signal.role or '',
             trace_id=signal.trace_id or signal.id,
             priority=signal.priority,
             strength=signal.strength,

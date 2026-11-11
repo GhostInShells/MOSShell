@@ -11,12 +11,13 @@ Two lifecycle lines:
 - short-lived (per thinking): run_thinking() returns a DoloresRun — an async-with transaction
   boundary plus an event stream; its lifecycle (enter/exit/observe/perStep) lives there.
 
-Moment serialization fills three enter-injected slots, assembled Python-side (the plugin is a dumb
+Moment serialization fills four enter-injected slots, assembled Python-side (the plugin is a dumb
 transport that only receives content blocks):
 
 - context (echoes/dynamic/executing) → <moment>, injected as background;
-- inputs (percepts + optional <hint>) → <inputs>, steered to drive a turn;
-- epoch (on epoch change) → <epoch index=N> recap + baseline, injected as background.
+- inputs (default-slot deliveries + optional <hint>) → <inputs>, steered to drive a turn;
+- percepts (role-classified deliveries, one inner tag per role) → <percepts>, its own message;
+- epoch (on epoch change) → <cognition_epoch index=N> recap + baseline, injected as background.
 """
 
 from __future__ import annotations
