@@ -621,6 +621,8 @@ class TestDoloresEgoCommit:
         assert len(commits) == 1
         ref = commits[0].metadata["ref"]
         assert (ref["start_turn"], ref["end_turn"]) == (0, 1)
+        # 封尾是系统记录: 没有缓存的 final answer 时, 至少 title 说明这是 exit.
+        assert memento.get_branch("main").notes()[commits[0].id].message == "exit: graceful shutdown"
 
     @pytest.mark.asyncio
     async def test_exit_adds_nothing_when_already_ratified(self, tmp_path: Path):
@@ -648,56 +650,145 @@ class TestDoloresEgoCommit:
         assert len(memento.get_branch("main").commits()) == committed
 
     @staticmethod
-    def _assistant_message(turn: int, *, input_tokens: int, cache_read: int = 0):
+    def _assistant_message(turn: int, *, input_tokens: int, cache_read: int = 0, text: str = ""):
         from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
 
+        message: dict = {"role": "assistant"}
+        if text:
+            message["content"] = [{"type": "text", "text": text}]
         return event_from_dict({
             "type": "assistant/message", "seq": turn * 10,
             "data": {
-                "turn": turn, "step": 1, "message": {"role": "assistant"},
+                "turn": turn, "step": 1, "message": message,
                 "usage": {"inputTokens": input_tokens, "cacheReadTokens": cache_read},
             },
         })
 
     @pytest.mark.asyncio
-    async def test_usage_drives_warn_notice_once_per_window(self, tmp_path: Path):
-        """assistant/message 的 usage 刷新窗口 → 达 K 排一次 warn notice (每窗口一次)."""
-        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9, warn_tokens=100)
-        await ego._on_assistant_message(self._assistant_message(1, input_tokens=80, cache_read=70))
-        assert ego._window_size == 150
+    async def test_seed_is_a_baseline_not_uncommitted_conversation(self, tmp_path: Path):
+        """首条 usage 是 seed 基线: 重启后的第一轮不该因 instruction+memory 触发锚点."""
+        ego, memento = self._set_up(tmp_path, force_tokens=100, warn_tokens=50)
+        await ego._on_assistant_message(self._assistant_message(1, input_tokens=10_000))
         await ego._on_turn_end(self._turn_end(1))
 
+        assert ego._growth == 0
+        assert memento.get_branch("main").commits() == []
+        assert ego._notices == []
+
+    @pytest.mark.asyncio
+    async def test_usage_drives_warn_notice_once_per_window(self, tmp_path: Path):
+        """增量达 K 排一次 warn notice (每窗口一次); 首条只建立基线, 不计入增长."""
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9, warn_tokens=100)
+        await ego._on_assistant_message(self._assistant_message(1, input_tokens=80, cache_read=70))
+        assert ego._growth == 0  # seed 基线
+        await ego._on_turn_end(self._turn_end(1))
         assert memento.get_branch("main").commits() == []  # 未到 T, 不落锚点
+        warns = [n for n in ego._notices if n.meta.attributes.get("kind") == "warn"]
+        assert warns == []
+
+        # 窗口 200 → 增量 50, 未到 K.
+        await ego._on_assistant_message(self._assistant_message(2, input_tokens=200))
+        await ego._on_turn_end(self._turn_end(2))
+        assert ego._growth == 50
+        warns = [n for n in ego._notices if n.meta.attributes.get("kind") == "warn"]
+        assert warns == []
+
+        # 窗口 300 → 增量 150 ≥ K → 排一次; 同窗口再涨也只提醒一次.
+        await ego._on_assistant_message(self._assistant_message(3, input_tokens=300))
+        await ego._on_turn_end(self._turn_end(3))
         warns = [n for n in ego._notices if n.meta.attributes.get("kind") == "warn"]
         assert len(warns) == 1
 
-        # 同窗口再涨也只提醒一次.
-        await ego._on_assistant_message(self._assistant_message(2, input_tokens=200))
-        await ego._on_turn_end(self._turn_end(2))
+        await ego._on_assistant_message(self._assistant_message(4, input_tokens=400))
+        await ego._on_turn_end(self._turn_end(4))
         warns = [n for n in ego._notices if n.meta.attributes.get("kind") == "warn"]
         assert len(warns) == 1
 
     @pytest.mark.asyncio
     async def test_usage_drives_force_commit_and_resets_window(self, tmp_path: Path):
-        """达 T 强制落锚点; 提交后窗口基准重置, 增量不足则不再触发."""
+        """增量达 T 强制落锚; 提交后增量归零, 下一笔从零重新预算 (不是按绝对窗口)."""
         ego, memento = self._set_up(tmp_path, force_tokens=200, warn_tokens=100)
         await ego._on_assistant_message(self._assistant_message(1, input_tokens=250))
-        await ego._on_turn_end(self._turn_end(1))
+        assert ego._growth == 0  # 首条 = seed 基线
+
+        # 窗口 500 → 增量 250 ≥ T → turn/end 强制.
+        await ego._on_assistant_message(self._assistant_message(2, input_tokens=500))
+        await ego._on_turn_end(self._turn_end(2))
         commits = memento.get_branch("main").commits()
         assert len(commits) == 1
-        assert commits[0].metadata["ref"]["end_turn"] == 1
+        assert commits[0].metadata["ref"]["end_turn"] == 2
+        assert ego._growth == 0  # 提交后归零
 
-        # 基准已重置到 250: 窗口 300 → 增量 50, 不触发.
-        await ego._on_assistant_message(self._assistant_message(2, input_tokens=300))
-        await ego._on_turn_end(self._turn_end(2))
-        assert len(memento.get_branch("main").commits()) == 1
-
-        # 窗口 500 → 增量 250 ≥ T, 再次强制, 区间接续 (1,3].
-        await ego._on_assistant_message(self._assistant_message(3, input_tokens=500))
+        # 窗口 600 → 增量 100, 不足 T; 预算看增量, 不看"绝对窗口还剩多少".
+        await ego._on_assistant_message(self._assistant_message(3, input_tokens=600))
         await ego._on_turn_end(self._turn_end(3))
+        assert len(memento.get_branch("main").commits()) == 1
+        assert ego._growth == 100
+
+        # 窗口 800 → 增量再 200 ≥ T, 区间接续 (2,4].
+        await ego._on_assistant_message(self._assistant_message(4, input_tokens=800))
+        await ego._on_turn_end(self._turn_end(4))
         commits = memento.get_branch("main").commits()
         assert len(commits) == 2
-        assert (commits[1].metadata["ref"]["start_turn"], commits[1].metadata["ref"]["end_turn"]) == (1, 3)
+        assert (commits[1].metadata["ref"]["start_turn"], commits[1].metadata["ref"]["end_turn"]) == (2, 4)
+
+    @pytest.mark.asyncio
+    async def test_manual_commit_waits_for_the_turn_boundary(self, tmp_path: Path):
+        """轮中登记的手动 commit 不立即落地 —— 等 turn/end, 边界才切得对."""
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9)
+        receipt = ego.commit_anchor("the note")
+        assert "queued" in receipt
+        assert memento.get_branch("main").commits() == []
+
+        await ego._on_turn_end(self._turn_end(1))
+        branch = memento.get_branch("main")
+        commits = branch.commits()
+        assert len(commits) == 1
+        assert (commits[0].metadata["ref"]["start_turn"], commits[0].metadata["ref"]["end_turn"]) == (0, 1)
+        assert branch.notes()[commits[0].id].message == "the note"
+
+    @pytest.mark.asyncio
+    async def test_second_manual_note_updates_the_pending_one(self, tmp_path: Path):
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9)
+        ego.commit_anchor("first")
+        receipt = ego.commit_anchor("second")
+        assert "updated" in receipt
+
+        await ego._on_turn_end(self._turn_end(1))
+        branch = memento.get_branch("main")
+        assert branch.notes()[branch.commits()[0].id].message == "second"
+
+    @pytest.mark.asyncio
+    async def test_exit_note_is_a_system_record(self, tmp_path: Path):
+        """优雅退出: title 是 exit op, body 是运行时缓存的 last final answer."""
+        from ghoshell_moss.memento import CommitMessage
+
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9)
+        await ego._on_assistant_message(
+            self._assistant_message(1, input_tokens=100, text="the last answer")
+        )
+        await ego._on_turn_end(self._turn_end(1))
+        await ego.__aexit__(None, None, None)
+
+        branch = memento.get_branch("main")
+        commits = branch.commits()
+        assert len(commits) == 1
+        message = branch.notes()[commits[0].id].message
+        assert message == "exit: graceful shutdown\n\nthe last answer"
+        parsed = CommitMessage.parse(message)
+        assert (parsed.op, parsed.content, parsed.body) == ("exit", "graceful shutdown", "the last answer")
+
+    @pytest.mark.asyncio
+    async def test_pending_manual_note_lands_at_exit(self, tmp_path: Path):
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9)
+        await ego._on_turn_end(self._turn_end(1))  # no threshold commit; the span stays open
+        ego.commit_anchor("manual note")
+        await ego.__aexit__(None, None, None)
+
+        branch = memento.get_branch("main")
+        commits = branch.commits()
+        assert len(commits) == 1
+        assert branch.notes()[commits[0].id].message == "manual note"
 
     @staticmethod
     def _request_header(turn: int, *, provider: str, model: str, effort: str = ""):

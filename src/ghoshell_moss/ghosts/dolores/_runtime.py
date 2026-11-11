@@ -393,11 +393,11 @@ class Dolores(Ghost):
             return None
         return self._matrix.env.project_path / ".ai_partners" / "frames"
 
-    def _commit_anchor(self, note: str) -> str | None:
-        """memento channel 的落锚后端 —— 封段归 ego (turn span 记账在它手里), 这里只透传.
+    def _commit_anchor(self, note: str) -> str:
+        """memento channel 的落锚后端 —— 排队归 ego (turn span 记账在它手里), 这里只透传.
 
         ``channel()`` 在 ``__aenter__`` 之后才被调用, ego 一定已经在了; 真不在就是装配顺序被
-        改坏了, 直接抛 —— 静默返回 None 会被模型读成"没有新东西可封", 那是谎报.
+        改坏了, 直接抛 —— 静默返回一句假回执会被模型读成"没有新东西可封", 那是谎报.
         """
         if self._ego is None:
             raise RuntimeError("commit_anchor called before the ego session was created")

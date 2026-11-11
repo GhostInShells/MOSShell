@@ -64,24 +64,25 @@ class TestMementoChannel:
 
     @staticmethod
     def _committer(manager, spans=((0, 1),)):
-        """假 ego —— 每次调用封一段, 段用完后返回 None (= 没有新东西可封).
+        """假 ego —— 每次调用封一段, 段用完后返回"没有新东西"的回执.
 
-        与 ego 同形: 落锚之后**照常**排旁路, 让开与否归 ``schedule_note`` 自己判 —— 约定
-        落在那一个判据上, 不落在调用方的小心翼翼上.
+        与 ego 同形: 真实 ego 在 turn/end 落地, 这里在调用时落地 (通道只验透传); 落锚之后
+        **照常**排旁路, 让开与否归 ``schedule_note`` 自己判 —— 约定落在那一个判据上, 不落在
+        调用方的小心翼翼上.
         """
         pending = list(spans)
 
-        def commit_anchor(note: str) -> str | None:
+        def commit_anchor(note: str) -> str:
             if not pending:
-                return None
+                return "[memento] nothing new since the last anchor — not committed"
             start, end = pending.pop(0)
             anchor = manager.commit(
                 session_id="s1", start_turn=start, end_turn=end, message=note
             )
             if anchor is None:
-                return None
+                return "[memento] nothing new since the last anchor — not committed"
             manager.schedule_note(anchor.id)
-            return manager.coord(anchor)
+            return "[memento] commit queued — it takes effect at the end of this turn."
 
         return commit_anchor
 
@@ -238,7 +239,7 @@ class TestMementoChannel:
             result = await runtime.execute_command(
                 "commit", args=("D26 the fix holds\nverified after restart",)
             )
-        assert result == "[memento] committed 1-1"
+        assert result == "[memento] commit queued — it takes effect at the end of this turn."
         branch = memento.get_branch("main")
         note = branch.notes()[branch.commits()[0].id]
         assert note.message == "D26 the fix holds\nverified after restart"
@@ -252,7 +253,7 @@ class TestMementoChannel:
         chan, manager, memento = self._channel(tmp_path, conn, with_commit=True)
         async with chan.bootstrap() as runtime:
             result = await runtime.execute_command("commit", args=("",))
-        assert result == "[memento] committed 1-1"
+        assert result == "[memento] commit queued — it takes effect at the end of this turn."
         await manager.drain_bypass()
         branch = memento.get_branch("main")
         assert branch.notes()[branch.commits()[0].id].message == "auto note"
@@ -263,5 +264,5 @@ class TestMementoChannel:
         async with chan.bootstrap() as runtime:
             first = await runtime.execute_command("commit", args=("one",))
             second = await runtime.execute_command("commit", args=("two",))
-        assert first == "[memento] committed 1-1"
+        assert first == "[memento] commit queued — it takes effect at the end of this turn."
         assert second == "[memento] nothing new since the last anchor — not committed"

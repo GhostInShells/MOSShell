@@ -14,10 +14,11 @@
 预期失败 (坐标不存在 / 坏 commit / 时间格式错) 直接返回文本提示, 不抛异常 —— 抛错只留给
 真正的意外 (兜底).
 
-唯一的写面是 ``commit`` —— 主动落锚. 它封住 ``(上个锚点, 最后一个已完成 turn]`` 这段,
-并让 ghost 自己决定要不要当这条记忆的作者: 写了 note 就自己署名 (旁路让开), 留空则摘要
-照旧归旁路. 没有锚点后端 (``commit_anchor``) 时**不挂这条命令** —— 挂出来却只会答
-"做不了"的命令, 就是在骗模型.
+唯一的写面是 ``commit`` —— 主动落锚的**请求**. 它先登记, 到 turn/end 才落地: 区间 =
+``(上个锚点, 最后一个已完成 turn]``, 轮中落不住脚下这一轮. ghost 自己决定要不要当这条
+记忆的作者: 写了 note 就自己署名 (旁路让开), 留空则摘要照旧归旁路. 回执只说"已排队",
+坐标在落地后的 notice 里. 没有锚点后端 (``commit_anchor``) 时**不挂这条命令** —— 挂出来
+却只会答"做不了"的命令, 就是在骗模型.
 
 另有 ``node`` —— 打开某条锚点自己的节点空间 (get-or-create) 并列一层内容. 它不动轨迹,
 只给写者一块地 (纪念品 / 给未来自己的字条), 写内容仍走 ghost 自带的文件工具.
@@ -52,8 +53,9 @@ def _instruction_text(manager: EgoMementoManager, storage_root: Path | None) -> 
         "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
         "- A commit may carry a node of its own. When its line shows `memento=`, that file is the"
         " commit's own space on disk — read it first; it is not managed by memento.",
-        "- `commit` anchors the span since your last anchor; write its note yourself, or leave it"
-        " empty and the background summarizer writes it for you.",
+        "- `commit` queues an anchor for the end of this turn; write its note yourself, or leave"
+        " it empty and the background summarizer writes it for you. The coordinate arrives in"
+        " the notice after the anchor lands.",
         "- `node` opens an anchor's own space on disk (created on first use) and lists what is in"
         " it — where a souvenir or a note to your future self lives.",
     ]
@@ -115,7 +117,7 @@ def build_memento_channel(
     manager: EgoMementoManager,
     *,
     storage_root: str | Path | None = None,
-    commit_anchor: Callable[[str], str | None] | None = None,
+    commit_anchor: Callable[[str], str] | None = None,
     name: str = "memento",
     description: str | None = None,
 ) -> MutableChannel:
@@ -123,7 +125,7 @@ def build_memento_channel(
 
     :param manager: ghost 持有的 EgoMementoManager (锚点 / 阈值 / 旁路都归它治理).
     :param storage_root: 轨迹的磁盘位置, 进 instruction 自解释. None = 略去那一行.
-    :param commit_anchor: 落锚后端 (收 note, 返回坐标; 没有新东西可封时返回 None). None =
+    :param commit_anchor: 落锚后端 (收 note, 返回一条给模型的回执). None =
         不挂 ``commit`` 命令 —— 写面归 ego (turn span 记账在它手里), 这里只透传.
     :param name: CTML 标签名.
     :param description: 覆盖默认描述.
@@ -244,19 +246,17 @@ def build_memento_channel(
 
         @chan.build.command(name="commit", always_observe=True)
         async def commit(text__: str = "") -> str:
-            """Anchor now — close the memory since your last anchor, and decide who writes it.
+            """Queue an anchor — it takes effect at the end of this turn.
 
-            An anchor is a place you can come back to: read it, or talk to it. Write the note
-            yourself and you are its author — the background summarizer stands down. Leave it
-            empty and the summarizer writes the note instead. Either way the span ends at the last
-            finished turn, so the turn you are in right now is not in it.
+            A commit is a request, not a write: the span ends at the last completed turn, and the
+            turn you are in is not complete yet. Write the note yourself and you are its author —
+            the background summarizer stands down. Leave it empty and the summarizer writes the
+            note instead. The receipt says the anchor is queued; its coordinate arrives in the
+            branch notice after the anchor lands.
 
             :param text__: the note — a one-line title, then short prose on what this span was.
             """
-            coord = commit_anchor(text__)
-            if coord is None:
-                return "[memento] nothing new since the last anchor — not committed"
-            return f"[memento] committed {coord}"
+            return commit_anchor(text__)
 
     @chan.build.command(name="node", always_observe=True)
     async def node(coord: str) -> str:

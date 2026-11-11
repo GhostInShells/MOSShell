@@ -46,7 +46,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     model_from_event,
 )
 from ghoshell_moss.message import Content, Message
-from ghoshell_moss.memento.abcd import CommitRef
+from ghoshell_moss.memento.abcd import CommitMessage, CommitRef
 
 from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
 from ._prompts import dolores_model_notice
@@ -71,6 +71,16 @@ _DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
 # thinking/exit confirmation timeout (fail-safe): degrade instead of hanging the exit if the plugin stalls.
 _EXIT_RPC_TIMEOUT = 5.0
+# 优雅退出的 note body 上限 (字符). 它不是模型生成的 —— 长度由这里保证，不为了一个退出记录
+# 再跑一次摘要.
+_EXIT_NOTE_MAX_CHARS = 1200
+
+
+def _assistant_text(message: Any) -> str:
+    """One assistant message's text blocks, joined; empty for a tool-only or reasoning-only step."""
+    return "".join(
+        block.text or "" for block in message.content if block.type == "text"
+    ).strip()
 
 
 class DoloresEgoConfig(BaseModel):
@@ -212,11 +222,19 @@ class DoloresEgo:
         # 预期模型身份 (provider, model, reasoning_effort) — request/header 观测值与之不符时排一条
         # notice. None = 尚未观测过 (首次观测也算变化: 开局就得知道自己在哪一档).
         self._model_identity: tuple[str, str, str] | None = None
-        # commit 运行时状态 (ego 持有; manager 不托管): 最后一个已完成 turn + 窗口基准 + 每窗口提醒位.
+        # commit 运行时状态 (ego 持有; manager 不托管). 增长用**增量**记账: 首条 usage 只建立
+        # 基线 (seed 不计入), 之后每步累加窗口增量; commit 后归零 —— 这就是"提交后预算重算".
         self._last_turn: int = 0
-        self._window_size: int = 0
-        self._window_base: int = 0
+        self._window_size: int = 0             # 最近一次调用的 prompt 大小 (绝对窗口; compact 读它)
+        self._last_window: int | None = None   # 上一次观测到的窗口; None = 尚未观测 (seed 作基线)
+        self._growth: int = 0                  # 自上次 commit 以来的新增 token
         self._warned: bool = False
+        # 待落锚: commit 是请求, 不是写 —— 轮中登记, turn/end 才落地 (边界不切在脚下).
+        self._pending_commit: bool = False
+        self._pending_note: str = ""
+        # 优雅退出用: 最近一条非空 assistant 文本 (运行时缓存; 退出时作 exit note 的 body;
+        # 某一轮没有文本就保留上一轮的 —— 空文本不该把已有的答案抹掉).
+        self._last_final_answer: str = ""
         # 待执行的 compact (上一有效 run 决定, 下一 run 启动执行) — 只在 run 边界写入/清空.
         self._pending_compact: bool = False
         # compact 已发往 plugin、epoch 尚未开启时的 memory 暂存. 取消可能落在 RPC 中间:
@@ -293,13 +311,22 @@ class DoloresEgo:
         return self._ego_session_id
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Exit: commit on a normal exit (封尾), then close the ego session.
+        """Exit: seal the last unanchored span (封尾), then close the ego session.
 
-        正常退出必 commit; 异常退出不管 —— 异常态的 turn 区间不可信.
+        正常退出必 commit; 异常退出不管 —— 异常态的 turn 区间不可信. 封尾的 note 是
+        **系统记录**: title ``exit: graceful shutdown``, body = 运行时缓存的 last final
+        answer。区间为空 (上一锚点就落在最后一个 turn) 时不落锚点 —— 不造空 commit。
         """
         if exc_type is None:
             try:
-                self._commit()
+                note = (
+                    self._pending_note
+                    if self._pending_commit and self._pending_note.strip()
+                    else self._exit_note()
+                )
+                self._pending_commit = False
+                self._pending_note = ""
+                self._commit(message=note)
             except Exception:
                 self._logger.exception("ego exit commit failed — degraded")
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
@@ -496,12 +523,21 @@ class DoloresEgo:
     # ── commit (锚点; 慢的 message 生产归 manager 的 sidecar) ──────────
 
     async def _on_assistant_message(self, event: SessionEvent) -> None:
-        """assistant/message 回调 — 用 usage 刷新窗口大小 (覆盖, 非累加: 语义是最近一次调用的 prompt 大小)."""
-        if self._memento_manager is None:
-            return
+        """assistant/message 回调 — 缓存最后一轮文本, 并用 usage 累加增量 token.
+
+        窗口大小是**绝对** prompt 大小; 增长是相邻两次观测的增量累加, 首条只建立基线
+        (seed 不算"未提交对话"). commit 后增量归零, 下一笔从零开始重新预算.
+        """
         message = model_from_event(AssistantMessageEvent, event)
         if message is None:
             self._logger.warning("assistant/message did not parse — window size unchanged")
+            return
+        text = _assistant_text(message.message)
+        if text:
+            # 最近一条非空 assistant 文本; 退出时作 exit note 的 body. 中间步骤的文本会被
+            # 后续步骤覆盖 —— 留下的是最后说的那句话; 空文本不覆盖 (别把答案抹成空).
+            self._last_final_answer = text
+        if self._memento_manager is None:
             return
         if message.usage is None:
             # 首帧 (warm-up) 的 usage 是收尾才补的, live 流里常缺一条, 属预期瞬态, 不当故障.
@@ -509,11 +545,19 @@ class DoloresEgo:
             self._usage_missing_count += 1
             if self._usage_missing_count == 2:
                 self._logger.warning(
-                    "assistant/message carried no usage twice in a row — the window size stays 0 "
+                    "assistant/message carried no usage twice in a row — the growth stays 0 "
                     "and the K/T commit thresholds can never fire; automatic anchoring is silently dead"
                 )
             return
-        self._window_size = self._memento_manager.window_size(message.usage)
+        window = self._memento_manager.window_size(message.usage)
+        self._window_size = window
+        if self._last_window is None:
+            # 首条 usage = seed 基线: 它包含 instruction + ground + memory, 不是"未提交对话".
+            self._last_window = window
+        else:
+            # 增量只取正数: compact 会把窗口改小, 那不是"负增长", 是换了一面.
+            self._growth += max(0, window - self._last_window)
+            self._last_window = window
         self._usage_missing_count = 0
 
     async def _on_request_header(self, event: SessionEvent) -> None:
@@ -529,11 +573,20 @@ class DoloresEgo:
         self._set_identity(config.provider, config.model, config.reasoningEffort or "")
 
     async def _on_turn_end(self, event: SessionEvent) -> None:
-        """turn/end 回调 — 推进 last_turn, 再按阈值决定是否强制提交."""
+        """turn/end 回调 — 推进 last_turn; 待落锚优先, 否则按阈值判定.
+
+        commit 只在 turn/end 发生: 轮中登记的手动锚点、阈值强制锚点, 都在这里落地.
+        """
         turn_end = model_from_event(TurnEnd, event)
         if turn_end is None:
             return
         self._last_turn = max(self._last_turn, turn_end.turn)
+        if self._pending_commit:
+            note = self._pending_note
+            self._pending_commit = False
+            self._pending_note = ""
+            self._commit(message=note)
+            return
         self._maybe_commit()
 
     def _maybe_commit(self) -> None:
@@ -541,19 +594,19 @@ class DoloresEgo:
         manager = self._memento_manager
         if manager is None:
             return
-        growth = self._window_size - self._window_base
-        decision = manager.evaluate(growth, self._warned)
+        decision = manager.evaluate(self._growth, self._warned)
         if decision is CommitDecision.FORCE:
             self._commit()
         elif decision is CommitDecision.WARN:
             self._warned = True
-            self._notices.append(manager.warn_notice(growth))
+            self._notices.append(manager.warn_notice(self._growth))
 
     def _commit(self, message: str = "") -> CommitRef | None:
         """落一个锚点并排旁路 note: 区间 = (上个 commit 的 end_turn, 最后一个已完成 turn]. 无 memento 时 no-op.
 
-        message 默认空 (authoritative message 归 sidecar); 提交后重置滑动窗口, notice 排队列.
-        区间为空 (没有新追认的 turn, 如封尾时上一锚点就落在同一个 turn) → 不落锚点, 返回 None.
+        ``message`` 非空 = 这条记忆已有作者 (手动 note / exit 记录), 旁路会让开; 留空 =
+        摘要归 sidecar. 提交后增量归零, notice 排队列. 区间为空 (没有新追认的 turn, 如封尾
+        时上一锚点就落在同一个 turn) → 不落锚点, 返回 None.
         """
         manager = self._memento_manager
         if manager is None:
@@ -574,23 +627,40 @@ class DoloresEgo:
                 self._session_start_turn(), self._last_turn,
             )
             return None
-        self._window_base = self._window_size
+        self._growth = 0
         self._warned = False
         self._notices.append(manager.committed_notice(anchor))
         manager.schedule_note(anchor.id)  # 慢腿: 空 note 归旁路 sidecar (已有 note 时它自己会让开)
         return anchor
 
-    def commit_anchor(self, note: str = "") -> str | None:
-        """主动落锚 (memento channel 的写面后端) —— 封一段, 返回坐标; 空区间返回 None.
+    def _exit_note(self) -> str:
+        """The graceful-exit record: a system note, not a sidecar summary.
 
-        ``note`` 非空 = 这条记忆由 ghost 自己写, 旁路不再代笔 (判据在 ``schedule_note``);
-        留空 = 只封段, 摘要照旧交给旁路. 区间上界是**最后一个已完成的 turn** —— 正在走的
-        这一轮不在里面, 落锚落不住脚下这一步.
+        Title is the op line ``exit: graceful shutdown``; the body is the cached last final
+        answer, truncated so the note stays bounded without another model call.
         """
-        anchor = self._commit(message=note)
-        if anchor is None or self._memento_manager is None:
-            return None
-        return self._memento_manager.coord(anchor)
+        body = self._last_final_answer.strip()
+        if len(body) > _EXIT_NOTE_MAX_CHARS:
+            body = body[:_EXIT_NOTE_MAX_CHARS].rstrip() + "…"
+        return CommitMessage(op="exit", content="graceful shutdown", body=body).to_str()
+
+    def commit_anchor(self, note: str = "") -> str:
+        """Queue an anchor for the end of this turn (memento channel 的写面后端).
+
+        commit 是请求, 不是一次写: 区间 = (上个锚点, 最后一个已完成 turn], 而脚下这一轮
+        还没完成 —— 现在落锚只会封到上一轮. 所以先登记, 等 turn/end 再落地; 手动 commit
+        和阈值 commit 因此走同一个边界.
+        """
+        if self._memento_manager is None:
+            return "[memento] no memento manager is wired — nothing can be anchored"
+        if self._ego_session_id is None:
+            return "[memento] the ego session is not started — nothing can be anchored"
+        if self._pending_commit:
+            self._pending_note = note
+            return "[memento] note updated — the commit still takes effect at the end of this turn."
+        self._pending_commit = True
+        self._pending_note = note
+        return "[memento] commit queued — it takes effect at the end of this turn."
 
     # ── compact (原地 surface replace; 上一有效 run 决定, 下一 run 启动执行) ──
 
