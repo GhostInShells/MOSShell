@@ -24,7 +24,7 @@ def _manager(tmp_path: Path, defaults: list[PromptSpec] | None = None) -> tuple[
         store,
         tmp_path / "prompts",
         defaults=defaults or [
-            PromptSpec(key="memento.note", slots=["coord", "prior"]),
+            PromptSpec(key="memento.note", slots={"coord": "predecessor coordinate", "prior": "prior notes"}),
             PromptSpec(key="memento.chat"),
         ],
     )
@@ -34,7 +34,7 @@ def _manager(tmp_path: Path, defaults: list[PromptSpec] | None = None) -> tuple[
 def test_manifest_is_written_and_key_path_is_bijective(tmp_path: Path):
     manager, _ = _manager(tmp_path)
 
-    assert manager.spec("memento.note").slots == ["coord", "prior"]
+    assert set(manager.spec("memento.note").slots) == {"coord", "prior"}
     # dotted key -> hyphenated directory; version is the file stem
     assert manager.path_of("memento.note", "v1") == (
         tmp_path / "prompts" / "memento-note" / "v1.md"
@@ -113,7 +113,7 @@ def test_invalid_key_or_version_is_rejected(tmp_path: Path, key: str, version: s
 
 def test_register_persists_to_the_config(tmp_path: Path):
     manager, _ = _manager(tmp_path)
-    manager.register(PromptSpec(key="domain.new", slots=[]))
+    manager.register(PromptSpec(key="domain.new"))
     with pytest.raises(PromptError):
         manager.register(PromptSpec(key="domain.new"))
 
@@ -131,7 +131,10 @@ def test_provider_resolves_from_the_registered_ghost_home(tmp_path: Path):
 
     from ghoshell_moss.core.blueprint.ghost import GhostHome
     from ghoshell_moss.ghosts.dolores.configs import DoloresConfigStoreProvider
-    from ghoshell_moss.ghosts.dolores.mindset.prompter import PromptManagerProvider
+    from ghoshell_moss.ghosts.dolores.mindset.prompter import (
+        DefaultPrompterKeys,
+        PromptManagerProvider,
+    )
 
     class _GhostHomeStub:
         def home(self) -> Path:
@@ -147,5 +150,6 @@ def test_provider_resolves_from_the_registered_ghost_home(tmp_path: Path):
     manager = con.force_fetch(PromptManager)
 
     assert manager.spec("memento.note").key == "memento.note"
+    assert "Record the commit" in manager.get(DefaultPrompterKeys.MEMENTO_NOTE).content
     assert (tmp_path / ".dolores" / "configs" / "prompts.yml").is_file()
     assert manager.root == tmp_path / ".dolores" / "prompts"

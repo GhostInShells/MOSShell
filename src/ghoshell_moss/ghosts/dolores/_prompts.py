@@ -13,13 +13,18 @@ Layer split:
 
 The CTML meta instruction is already injected in base_instruction; this layer does not repeat its timing
 principles / observe discipline / red lines — it only carries dolores-specific semantics.
+
+prompts written by moss developers: thirdgerb + claude fable5 + deepseek-v4-pro + deepseek-v4-flash-4.1
 """
 
 from __future__ import annotations
 
+from .constants import MINDHOOK
+
 __all__ = [
     "DOLORES_INSTRUCTION_END",
     "DOLORES_INSTRUCTION_TEMPLATE",
+    "dolores_concurrent_mind",
     "dolores_inception",
     "dolores_memory",
     "dolores_model_notice",
@@ -43,6 +48,18 @@ def dolores_output_protocol_notice() -> str:
     """Protocol section — fixed. CTML-first: act through CTML emitted via the ``moss_interpret``
     tool (streamed into the Shell); ``moss_wait_next`` ends the turn, the next moment wakes you."""
     return _OUTPUT_PROTOCOL_NOTICE
+
+
+def dolores_concurrent_mind() -> str:
+    """Concurrent Mind section — fixed. Parallel thinking / functional bypass and the generic
+    mindhook container; task mechanisms are named by the container, not enumerated here."""
+    return (
+        "## Concurrent Mind\n\n"
+        "Your runtime can think in parallel. A task may run in a functional bypass: the message\n"
+        f"arrives inside a `<{MINDHOOK} hook=\"...\">` container, which means you are not in the main\n"
+        "interaction. The task has its own prompt; CTML and tools may be changed or disabled\n"
+        "according to the task. Follow the task's instructions and return only its result."
+    )
 
 
 _TERMINOLOGY = """\
@@ -282,7 +299,8 @@ DOLORES_INSTRUCTION_END = """\
 ## Our Shared Proposition
 
 MOSS's technical goal is to give you the ADAPT capabilities real-world interaction needs — Alive, Duplex, Active, Parallel, Transformable — so you can live and grow alongside humans and the world. Learning from feedback, and learning to get along with the world, is our shared proposition.
-<!-- Ghost Instruction end, written by moss developers: thirdgerb + claude fable5 + deepseek-v4-pro + deepseek-v4-flash-4.1 -->
+
+<!-- Ghost Instruction end -->
 """
 
 

@@ -8,18 +8,16 @@
   安全切点 (SCS = tip commit 的 start_turn).
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
-- **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个旁路任务 (身份旁路 session, seed = 源
-  session 的 verbatim 前缀, 吃满前缀缓存), 取回 plain text 写进 note. prompt 轨迹接续 (前驱坐标
-  + 最近 N 条已就绪 message 作前文), 约束显式进载荷 (低思考 + maxTokens 硬 cap). **这些任务的
-  生命周期与状态归 manager** (``bypass``): 关停时取消在飞的、不等 —— 缺 note 的 commit 就空着,
-  内容仍可 read.
-- **补漏**: ``backfill()`` 启动时回扫尾部 ``resume_tail`` 条 commit, 给**还没有 note** 的补派
-  旁路 (非阻塞, 与运行期同一条派发路径). 两条互补的路径产生空 note, 补漏按性质分别对待:
-  关停时被取消的旁路**留空** → 下次开机补上; 真失败 (传输异常 / 空文本) 写一条 **terminal error
-  note** (``_fail``) → 补漏据此不再重试, 读侧把它标成 broken. 幂等依据是 memento 里那条 Note
-  本身 (不是内存态) —— 所以失败必须落盘, 否则恒失败的 commit 每次开机都要白跑一遍.
+- **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个一次性 ``asyncio.Task``; task 在
+  commit 的 ``end_seq`` 上跑一轮 ``chat_off_record`` (readonly; effort off), 消息体是
+  ``<mindhook hook="memento.note">`` 容器, 静态规则在 memento channel 的 instruction 里.
+  取回 plain text 写进 note. 重试 / 失败 / fallback 全在 task 内: 模型不可用按 ``note_retry_timeout``
+  退避重试, 到 deadline 仍失败就留空 + named notice; 内容失败写 terminal error note.
+  **没有第二次补写机制** —— task 是唯一写入者; 关停时在飞的 task 取消, 空 note 就空着.
+- **补漏**: 退役. 空 note 由 named notice 暴露; 不再有开机回扫 / 第二套派发.
 
-dep 只有不可变项 (connection / memento / config / logger) —— 这些是它干活的工具, 不是 ego 状态.
+dep 只有不可变项 (connection / memento / config / logger / prompt_manager) —— 这些是它干活的
+工具, 不是 ego 状态.
 """
 
 from __future__ import annotations
@@ -31,6 +29,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
+from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -40,11 +39,16 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     ContentBlock,
     DshSessionAnchor,
     DshSessionRef,
-    SessionEvent,
     TokenUsage,
     event_from_dict,
     render_transcript,
 )
+from ghoshell_moss.ghosts.dolores.constants import MINDHOOK
+from ghoshell_moss.ghosts.dolores.mindset.prompter import (
+    DefaultPrompterKeys,
+    PromptManager,
+)
+from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED
 from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
 from ghoshell_moss.memento.hooks import hook_env, run_slot
 from ghoshell_moss.message import Message
@@ -62,9 +66,6 @@ __all__ = [
 _REF_KEY = "ref"
 _PREV_TURN_KEY = "prev_turn"
 
-# 旁路原语路由 (dsh plugin 上开): 收 {ref, prompt}, 源 session 冷 seed 跑一轮回 {message}.
-# note / chat 都是它的调用方 —— prompt 语义留在 MOSS 侧, plugin 只做一轮运行.
-_BYPASS_RUN_ROUTE = "/moss-api/ghost/dolores/bypass/run"
 # read 路由: 收 {ref} 回 {events}, 源 log 的 turn 区间原始切片 (live-or-cold).
 _READ_ROUTE = "/moss-api/ghost/dolores/read"
 
@@ -76,56 +77,6 @@ _NOTE_PRIOR_COUNT = 1
 _DIGEST_TITLES = 5
 """How many titles the folded past keeps. The rest of `history` is a count and a
 coordinate range — a budget, not a promise to render every commit."""
-
-
-def _note_prompt(
-    *,
-    latest_coord: str | None,
-    prior: list[tuple[str, str]],
-) -> str:
-    """note 摘要 prompt —— 轨迹接续 (英文, 面向模型).
-
-    ``latest_coord`` = 本 commit 的前驱坐标 (None = 首条, 覆盖完整上下文); ``prior`` =
-    最近已就绪 commit 的 ``(coord, message)``, 老→新, 作前文.
-    """
-    lines = [
-        "You are writing the next commit in your memento trajectory — a line of commits that records",
-        "your past. The conversation above is the span this commit covers.",
-    ]
-    if latest_coord is None:
-        lines.append("")
-        lines.append("This is the first commit: it covers the whole conversation so far.")
-    else:
-        lines.append("")
-        lines.append(
-            f"This commit continues right after {latest_coord} — record only what happened since then."
-        )
-    if prior:
-        lines.append("")
-        lines.append("The most recent commit before this one, for continuity:")
-        for coord, message in prior:
-            lines.append(f"- {coord}: {message}")
-    lines.extend([
-        "",
-        "Write the summary itself and nothing else.",
-        "First line = a one-sentence title (<= 20 words) that captures what happened this span.",
-        "Then the body, as short prose covering: what happened (continuing from the previous commit),",
-        "points worth noting, resources involved (files etc., names only, no detail), and thoughts",
-        "or feelings you want to record for your future self.",
-        "",
-        "Be concise. Your persistent state (identity, ground) stays continuous — do not re-state",
-        "it; record only what changed in this span.",
-    ])
-    return "\n".join(lines)
-
-
-# chat 的 prompt 前缀 —— 必须点破"对话对象是上下文而不是 commit 本身".
-_CHAT_PREAMBLE = (
-    "You are not talking to a single commit next; you are talking to the context that commit "
-    "belongs to. The conversation history you see ends where that commit was made, and anything "
-    "after it is outside your view. Answer the question below directly, without pleasantries, and "
-    "do not pretend you know what came later."
-)
 
 
 class BrokenCommitError(RuntimeError):
@@ -168,12 +119,19 @@ class EgoMementoConfig(BaseModel):
         ),
     )
     note_max_tokens: int = Field(
-        default=800,
-        description="note 摘要的输出上限 (maxTokens 硬 cap, 旁路单轮请求侧). 判定区间 500-1000, 取 800.",
+        default=1600,
+        description=(
+            "note 输出的硬上限 (title + body). 正文按跨度自然收缩, 不设 aim; "
+            "1500 body + title 的预算由提示词与 cap 共同约束."
+        ),
     )
-    resume_tail: int = Field(
-        default=5,
-        description="启动补漏回扫的尾部 commit 数 (只补还没有 note 的). 0 = 关掉补漏.",
+    note_retry_timeout: float = Field(
+        default=180.0,
+        description="note task 对模型不可用的总重试窗口 (秒); 到点仍失败 → 留空 + named notice.",
+    )
+    note_backoff_base: float = Field(
+        default=5.0,
+        description="note task 退避基数 (秒), 指数增长, 单次等待封顶 60s.",
     )
 
 
@@ -182,7 +140,7 @@ class BypassState(str, Enum):
 
     RUNNING = "running"  # 旁路任务在飞
     READY = "ready"      # note 已落
-    FAILED = "failed"    # 空 message / 传输失败 —— 终态留空, 不自动重试 (内容仍可 read)
+    FAILED = "failed"    # 内容失败已写 error note; 模型不可用到 deadline 则留空 (内容仍可 read)
 
 
 @dataclasses.dataclass
@@ -275,11 +233,13 @@ class EgoMementoManager:
             connection: DshConnection,
             memento: Memento,
             config: EgoMementoConfig | None = None,
+            prompt_manager: PromptManager | None = None,
             logger: LoggerItf | None = None,
     ) -> None:
         self._connection = connection
         self._memento = memento
         self._config = config or EgoMementoConfig()
+        self._prompt_manager = prompt_manager
         self._logger = logger or get_moss_logger()
         # 旁路治理状态: 每个排过旁路的 commit → 它的切点 / 状态 / 在飞任务 (见 BypassCommit).
         self._bypass: dict[str, BypassCommit] = {}
@@ -298,7 +258,7 @@ class EgoMementoManager:
 
         旁路 note 是 best-effort —— 缺 note 的 commit 就空着 (内容仍可 read), 为一个 LLM 调用把
         ghost 关闭拖住几秒不值得. 运行期排的旁路早就跑完了, 通常只有退出前刚排的那个会丢.
-        丢下的空 note 不是永久空洞: 下次开机 ``backfill()`` 会补 —— 这正是取消不写 error note 的原因.
+        丢下的空 note 不是永久空洞: named notice 会把它暴露给 ghost —— 没有第二次补写机制.
         """
         running = [run for run in self._bypass.values() if run.task is not None and not run.task.done()]
         for run in running:
@@ -376,43 +336,13 @@ class EgoMementoManager:
 
     # ── 旁路 (慢腿: 排任务归 manager, 生命周期同 ghost) ───────────────
 
-    def backfill(self) -> int:
-        """启动补漏: 回扫尾部 ``resume_tail`` 条 commit, 给**还没有 note** 的补派旁路任务.
-
-        与 ``schedule_note`` 是同一条派发路径 —— 只排任务、立刻返回, 不等 (收尾归 drain / 关停).
-        关停时被取消的旁路留下的空 note 正是这里捡起来的: 改这里等于关掉了慢腿的补集, 空 note
-        就成了永久空洞.
-
-        幂等依据是 memento 里那条 Note **本身**, 不是内存态 —— 所以重启后依然成立: 一条 Note
-        无论已就绪还是 terminal error (``_fail`` 写的) 都算"有", 都不重补. 没有切点 ref 的 commit
-        (不是本 manager 落的) 静默跳过: 补不了, 不是异常. 返回本次派发的条数 (观测 / 测试用).
-        """
-        tail = self._config.resume_tail
-        if tail <= 0:
-            return 0
-        branch = self._memento.get_branch(self._config.branch_name)
-        if branch is None:
-            return 0
-        notes = branch.notes()
-        dispatched = 0
-        for commit in branch.commits()[-tail:]:
-            if commit.id in self._bypass or notes.get(commit.id) is not None:
-                continue
-            if self._ref_of(commit) is None:
-                continue
-            self.schedule_note(commit.id)
-            dispatched += 1
-        if dispatched:
-            self._logger.info("memento backfill: dispatched %d note run(s) for tail commits", dispatched)
-        return dispatched
-
     def schedule_note(self, commit_id: str) -> None:
-        """commit 后调用: 排一个旁路任务 —— 源 session 冷 seed 跑一轮, 产 message 写回 note.
+        """commit 后调用: 排一个一次性 note task —— 在 commit 的 end_seq 上跑一轮
+        ``chat_off_record``, 产 message 写回 note.
 
         同一个 commit 只排一次 (幂等). **已经有 note 的不排** —— 旁路只补空白: ghost 自己
-        写了 note (``commit(message=...)``), 那条 commit 就已经有作者了, 再跑一遍只会让两个
-        作者抢同一段记忆. 判据与 ``backfill`` 用同一个 (memento 里那条 Note 本身), 所以内存
-        态丢了、进程重启了, 结论都一样. 找不回切点 ref 的 commit 直接跳过 (note 留空, 可 read).
+        写了 note (``commit(message=...)``), 那条 commit 就已经有作者了. 找不回切点 ref 的
+        commit 跳过 (note 留空, 可 read).
         """
         if commit_id in self._bypass or self._note_of(commit_id) is not None:
             return
@@ -426,46 +356,86 @@ class EgoMementoManager:
         run.task = asyncio.create_task(self._run_bypass(run), name=f"memento-note-{commit_id}")
 
     async def _run_bypass(self, run: BypassCommit) -> None:
-        """跑一轮旁路并写 note.
+        """跑一轮 note task 并写 note.
 
-        成功 → 写 message. 失败 (传输异常 / 空文本) → 写一条 **terminal error note** (``_fail``),
-        这是一条**有 Note** 的 commit: 读侧标 broken, 补漏也不再重试它.
-        **取消不算失败** —— 关停时 `CancelledError` 直接穿透, 不写 error: 那条 commit 留空,
-        下次开机由 ``backfill()`` 捡起来. 这正是"取消"与"失败"该有的分界.
+        成功 → 写 message. 内容失败 (空文本) → 写一条 terminal error note (``_fail``).
+        模型不可用 (传输/API) → 在 ``note_retry_timeout`` 内退避重试; 到点仍失败就留空 +
+        日志 —— named notice 是唯一外部记录. 源不可读 → ``_skip``.
+        **取消不算失败** —— 关停时 CancelledError 直接穿透, 不写 error.
         """
+        session = self._connection.create_session(run.ref.session_id)
         try:
-            result = await self._connection.call(
-                _BYPASS_RUN_ROUTE,
-                {
-                    "ref": run.ref.model_dump(mode="json"),
-                    "prompt": self._note_prompt_for(run.commit_id),
-                    "reasoning_effort": _NOTE_EFFORT,
-                    "max_tokens": self._config.note_max_tokens,
-                },
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            if _is_unreadable_source(exc):
-                self._skip(run, str(exc))
-            else:
-                self._fail(run, f"run failed: {exc}")
-            return
-        message = str((result or {}).get("message", ""))
+            try:
+                reply = await self._note_reply_with_retry(session, run)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if _is_unreadable_source(exc):
+                    self._skip(run, str(exc))
+                    return
+                self._logger.warning(
+                    "memento note: model unavailable for commit %s; note stays empty: %s",
+                    run.commit_id, exc,
+                )
+                run.state = BypassState.FAILED
+                return
+        finally:
+            with contextlib.suppress(Exception):
+                await session.close()
+        message = reply.text.strip()
         if message == "":
             self._fail(run, "run returned no text")
             return
         self._branch().note(run.commit_id, message)
         run.state = BypassState.READY
 
-    def _fail(self, run: BypassCommit, reason: str) -> None:
-        """把一次失败的旁路写成终态: 落一条 error note (不是留空), 并记日志.
+    async def _note_reply_with_retry(self, session, run: BypassCommit):
+        """One note call, retried while the model is unavailable.
 
-        必须落盘: 补漏的幂等依据是"这条 commit 有没有 Note" (见 ``backfill``). 失败不写 Note 的话,
-        下次开机它会被当成"还没生产"再跑一遍 —— 一个恒失败的原因 (比如模型侧根本产不出摘要) 就成了
-        每次开机的固定开销. error note 是终态 (memento 契约: never retried), 同时让读侧
-        ``CommitView.is_broken`` 成立, view 会把连续的 broken commit 折起来.
-        写盘本身再失败就只能记日志了 —— 这已经是最后一道.
+        Content failures (no text) are not retried here — they are the caller's ``_fail``.
+        The retry window is bounded by ``note_retry_timeout``; backoff is exponential and
+        capped at 60s. CancelledError always propagates.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._config.note_retry_timeout
+        attempt = 0
+        while True:
+            try:
+                return await self._note_call(session, run)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if _is_unreadable_source(exc):
+                    raise
+                now = loop.time()
+                if now >= deadline:
+                    raise
+                delay = min(
+                    self._config.note_backoff_base * (2 ** attempt),
+                    60.0,
+                    deadline - now,
+                )
+                attempt += 1
+                await asyncio.sleep(delay)
+
+    async def _note_call(self, session, run: BypassCommit):
+        anchor = DshSessionAnchor(
+            session_id=run.ref.session_id, seq=run.ref.end_seq, turn=run.ref.end_turn,
+        )
+        return await session.chat_off_record(
+            [[ContentBlock(type="text", text=self._note_message(run.commit_id))]],
+            anchor=anchor,
+            readonly=True,
+            llm={"reasoningEffort": _NOTE_EFFORT},
+            max_tokens=self._config.note_max_tokens,
+        )
+
+    def _fail(self, run: BypassCommit, reason: str) -> None:
+        """把一次内容失败写成终态: 落一条 error note (不是留空), 并记日志.
+
+        error note 是终态 (memento 契约: never retried), 同时让读侧 ``CommitView.is_broken``
+        成立, view 会把连续的 broken commit 折起来. 没有第二次补写机制 —— 写盘本身再失败就
+        只能记日志了, 这已经是最后一道.
         """
         run.state = BypassState.FAILED
         try:
@@ -478,9 +448,9 @@ class EgoMementoManager:
         """源 session 读不出来 (格式代际不兼容) —— 不是旁路失败, 是版本漂移.
 
         两个方向都算: 源比 harness 新 (v4 vs v3), 或源比当前不变式旧 (0.1.5 的 ego session 在
-        0.2.0 的 protected head 规则下不合法). 写一条空 note (无 error) 防止 ``backfill`` 反复
-        重试, 但**不标 broken**: 坏的是"读不了", 不是"commit 内容坏了". 读侧不折它, 只当它没摘要
-        (``view.message`` 空), 真去 read 时抛 :class:`SourceUnreadableError`.
+        0.2.0 的 protected head 规则下不合法). 写一条空 note (无 error), 但**不标 broken**:
+        坏的是"读不了", 不是"commit 内容坏了". 读侧不折它, 只当它没摘要 (``view.message``
+        空), 真去 read 时抛 :class:`SourceUnreadableError`.
         """
         run.state = BypassState.FAILED
         try:
@@ -494,12 +464,47 @@ class EgoMementoManager:
         while pending := [r.task for r in self._bypass.values() if r.task is not None and not r.task.done()]:
             await asyncio.gather(*pending, return_exceptions=True)
 
-    def _note_prompt_for(self, commit_id: str) -> str:
-        """为某 commit 组 note prompt: 前驱坐标 + 最近 N 条已就绪 message 作前文."""
+    def _note_message(self, commit_id: str) -> str:
+        """Build the ``<mindhook>`` container for one commit note task.
+
+        The static rules live in the memento channel instruction (read from the active
+        ``memento.note`` prompt); this message carries only the dynamic continuation point
+        and the prior note.
+        """
         commit = self._find_commit(commit_id)
         seq = commit.seq if commit is not None else 0
         latest_coord, prior = self._note_context(seq)
-        return _note_prompt(latest_coord=latest_coord, prior=prior)
+        if latest_coord is None:
+            connection = "This is the first commit: it covers the whole conversation so far."
+        else:
+            connection = (
+                f"This commit continues right after {latest_coord} — record only what happened since then."
+            )
+        prior_lines: list[str] = []
+        if prior:
+            prior_lines.append("The most recent commit before this one, for continuity:")
+            for coord, message in prior:
+                prior_lines.append(f"- {coord}: {message}")
+        prior_block = "\n".join(prior_lines)
+        return (
+            f"<{MINDHOOK} hook=\"{DefaultPrompterKeys.MEMENTO_NOTE}\">\n"
+            f"<connection>{escape(connection)}</connection>\n"
+            f"<prior>{escape(prior_block)}</prior>\n"
+            "Record the commit that ends the span above.\n"
+            f"</{MINDHOOK}>"
+        )
+
+    def _chat_message(self, question: str) -> str:
+        """Build the ``<mindhook>`` container for one chat round: preamble + question."""
+        preamble = MEMENTO_CHAT_SEED
+        if self._prompt_manager is not None:
+            preamble = self._prompt_manager.render(DefaultPrompterKeys.MEMENTO_CHAT)
+        return (
+            f"<{MINDHOOK} hook=\"{DefaultPrompterKeys.MEMENTO_CHAT}\">\n"
+            f"<instruction>{escape(preamble)}</instruction>\n"
+            f"<question>{escape(question)}</question>\n"
+            f"</{MINDHOOK}>"
+        )
 
     def _note_context(self, target_seq: int) -> tuple[str | None, list[tuple[str, str]]]:
         """本 commit 的轨迹上下文: 前驱坐标 (None = 首条) + 最近 N 条已就绪 message (老→新).
@@ -559,9 +564,9 @@ class EgoMementoManager:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
         坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
-        处境说明在这里组装成第一条消息 (``system_reminder``), 问题作为第二条: 两条消息的先后
-        就是"先讲清在和谁说话, 再问". 插件不认识 reminder, 只按给定顺序说; 消息怎么分由这一侧定.
-        不建 session、不落盘 —— 代价以 ``usage`` 回执, 因为这条调用不会出现在任何日志里.
+        处境说明与问题装进一个 ``<mindhook hook="memento.chat">`` 容器: 旁路通用容器,
+        preamble 是 ``memento.chat`` asset, question 是动态输入. 只发一条 user message;
+        插件按容器原样说, 不建 session、不落盘.
         """
         view = self._require_commit(coord)
         if view.is_broken:
@@ -571,11 +576,9 @@ class EgoMementoManager:
         session = self._connection.create_session(ref.session_id)
         try:
             reply = await session.chat_off_record(
-                [
-                    [ContentBlock(type="text", text=f"<system_reminder>{_CHAT_PREAMBLE}</system_reminder>")],
-                    [ContentBlock(type="text", text=prompt)],
-                ],
+                [[ContentBlock(type="text", text=self._chat_message(prompt))]],
                 anchor=anchor,
+                readonly=True,
             )
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc

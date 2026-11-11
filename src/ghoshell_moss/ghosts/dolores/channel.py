@@ -25,6 +25,7 @@ from ghoshell_moss.ground import GroundSet
 
 from ._ego_memento import EgoMementoManager
 from .memento_channel import build_memento_channel
+from .mindset.prompter import PromptManager
 from .model_channel import ModelOrgan, identity_text, new_model_channel
 
 __all__ = ["build_dolores_channel"]
@@ -34,6 +35,7 @@ def build_dolores_channel(
     *,
     groundset: GroundSet,
     memento_manager: EgoMementoManager | None = None,
+    prompt_manager: PromptManager | None = None,
     memento_root: str | Path | None = None,
     commit_anchor: Callable[[str], str] | None = None,
     frame_root: str | Path | None = None,
@@ -48,6 +50,8 @@ def build_dolores_channel(
         (两个 set 压同一目录 = 两个 snapshot owner).
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
+    :param prompt_manager: prompt registry — memento 子 channel 读 ``memento.note``
+        的 active 正文作为 "Commit note" 规则.
     :param memento_root: 轨迹的磁盘位置 (进自解释). None = 不复述路径.
     :param commit_anchor: 主动落锚的后端 (memento 子 channel 的写面透传; 收 note, 返回
         一条给模型的回执). None = 不挂 ``commit`` 命令.
@@ -86,7 +90,10 @@ def build_dolores_channel(
     if memento_manager is not None:
         chan.import_channels(
             build_memento_channel(
-                memento_manager, storage_root=memento_root, commit_anchor=commit_anchor
+                memento_manager,
+                prompt_manager=prompt_manager,
+                storage_root=memento_root,
+                commit_anchor=commit_anchor,
             )
         )
     if frame_root is not None:

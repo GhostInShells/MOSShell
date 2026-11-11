@@ -12,34 +12,49 @@ from pathlib import Path
 import pytest
 
 class TestEgoMementoSidecar:
-    """旁路 note 生产与补漏 — run 路由的 fake.
+    """Note task — one off-record round per commit, with the mindhook container.
 
-    旁路一轮有三种结局, 落在 memento 上是三种不同的状态:
-    - 成功 → 写 message (ready);
-    - 失败 (传输异常 / 空文本) → 写**终态 error note** (broken, 永不重试);
-    - 取消 (关停) → **留空**, 由下次开机的 ``backfill()`` 捡起来.
+    Three outcomes, three memento states:
+    - success → message (ready);
+    - content failure (empty text) → terminal error note (broken, never retried);
+    - model unavailable → leave empty (named notice is the record); no second writer.
     """
 
+    class _Session:
+        def __init__(self, conn, session_id):
+            self.conn = conn
+            self.session_id = session_id
+
+        async def chat_off_record(self, messages, *, anchor=None, **kwargs):
+            self.conn.chats.append((self.session_id, messages, anchor, kwargs))
+            if self.conn.entered is not None:
+                self.conn.entered.set()
+            self.conn.attempts += 1
+            if self.conn.hang:
+                await asyncio.Event().wait()
+            if self.conn.error is not None and self.conn.attempts <= self.conn.fail_until:
+                raise self.conn.error
+            if isinstance(self.conn.response, Exception):
+                raise self.conn.response
+            from ghoshell_dsh.blueprint.agent import ChatReply
+            return ChatReply.model_validate(self.conn.response)
+
+        async def close(self):
+            self.conn.closed += 1
+
     class _FakeConnection:
-        def __init__(self, response):
+        def __init__(self, response, *, hang=False, error=None, fail_until=0):
             self.response = response
-            self.calls: list[tuple[str, dict]] = []
+            self.hang = hang
+            self.error = error
+            self.fail_until = fail_until
+            self.attempts = 0
+            self.chats: list[tuple[str, list, object, dict]] = []
+            self.closed = 0
+            self.entered = asyncio.Event() if hang else None
 
-        async def call(self, path, payload=None, *, timeout=None):
-            self.calls.append((path, payload))
-            if isinstance(self.response, Exception):
-                raise self.response
-            return self.response
-
-    class _StuckConnection:
-        """永不返回 —— 只被取消 (关停路径)."""
-
-        def __init__(self):
-            self.entered = asyncio.Event()
-
-        async def call(self, path, payload=None, *, timeout=None):
-            self.entered.set()
-            await asyncio.Event().wait()
+        def create_session(self, session_id, logger=None):
+            return TestEgoMementoSidecar._Session(self, session_id)
 
     @staticmethod
     def _manager(tmp_path: Path, connection, config=None):
@@ -55,12 +70,15 @@ class TestEgoMementoSidecar:
 
     @staticmethod
     def _state(manager, commit_id: str) -> str:
-        """旁路状态 (取字符串值, 免去在测试里摊开内部枚举)."""
         return manager.bypass[commit_id].state.value
+
+    @staticmethod
+    def _note_text(conn) -> str:
+        return conn.chats[0][1][0][0].text
 
     @pytest.mark.asyncio
     async def test_sidecar_writes_note(self, tmp_path: Path):
-        conn = self._FakeConnection({"message": "title\nbody"})
+        conn = self._FakeConnection({"text": "title\nbody"})
         manager, memento = self._manager(tmp_path, conn)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
@@ -70,29 +88,29 @@ class TestEgoMementoSidecar:
         note = memento.get_branch("main").notes()[anchor.id]
         assert note.message == "title\nbody"
         assert note.error == ""
-        assert conn.calls[0][0].endswith("/bypass/run")
-        assert conn.calls[0][1]["ref"]["session_id"] == "s1"
-        # 旁路约束显式进载荷: 关思考 + 输出硬 cap (不再靠 plugin 身份判定间接降级).
-        assert conn.calls[0][1]["reasoning_effort"] == "off"
-        assert conn.calls[0][1]["max_tokens"] > 0
+        session_id, _, sent_anchor, kwargs = conn.chats[0]
+        assert session_id == "s1"
+        assert sent_anchor.turn == 1 and sent_anchor.seq is None
+        assert kwargs["readonly"] is True
+        assert kwargs["llm"]["reasoningEffort"] == "off"
+        assert kwargs["max_tokens"] > 0
+        assert '<mindhook hook="memento.note">' in self._note_text(conn)
         assert self._state(manager, anchor.id) == "ready"
 
     @pytest.mark.asyncio
-    async def test_note_prompt_first_commit_covers_all(self, tmp_path: Path):
-        """首条 commit: 无前驱, 声明覆盖完整上下文."""
-        conn = self._FakeConnection({"message": "x"})
+    async def test_note_message_first_commit_covers_all(self, tmp_path: Path):
+        conn = self._FakeConnection({"text": "x"})
         manager, _ = self._manager(tmp_path, conn)
         first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
         manager.schedule_note(first.id)
         await manager.drain_bypass()
 
-        assert "This is the first commit" in conn.calls[0][1]["prompt"]
+        assert "This is the first commit" in self._note_text(conn)
 
     @pytest.mark.asyncio
-    async def test_note_prompt_continues_the_trajectory(self, tmp_path: Path):
-        """后续 commit: 注入前驱坐标 + 前文 message (只调度目标 commit, 不覆盖前驱 note)."""
-        conn = self._FakeConnection({"message": "x"})
+    async def test_note_message_continues_the_trajectory(self, tmp_path: Path):
+        conn = self._FakeConnection({"text": "x"})
         manager, memento = self._manager(tmp_path, conn)
         branch = memento.get_branch("main")
         first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
@@ -102,32 +120,30 @@ class TestEgoMementoSidecar:
         manager.schedule_note(second.id)
         await manager.drain_bypass()
 
-        prompt = conn.calls[0][1]["prompt"]
+        message = self._note_text(conn)
         first_coord = branch.get_commit(first.seq).coord
-        assert f"continues right after {first_coord}" in prompt
-        assert "first-note" in prompt
+        assert f"continues right after {first_coord}" in message
+        assert "first-note" in message
 
     @pytest.mark.asyncio
-    async def test_sidecar_failure_writes_terminal_error_note(self, tmp_path: Path):
-        """失败 → 终态 error note (不是留空). 留空会被补漏当成"还没生产"而每次开机重跑."""
+    async def test_model_unavailable_leaves_note_empty(self, tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig
+
         conn = self._FakeConnection(RuntimeError("dsh down"))
-        manager, memento = self._manager(tmp_path, conn)
+        manager, memento = self._manager(
+            tmp_path, conn, config=EgoMementoConfig(note_retry_timeout=0),
+        )
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
         manager.schedule_note(anchor.id)
         await manager.drain_bypass()
 
-        note = memento.get_branch("main").notes()[anchor.id]
-        assert note.message == ""
-        assert "dsh down" in note.error  # 终态标记 + 失败原因
+        assert memento.get_branch("main").notes() == {}
         assert self._state(manager, anchor.id) == "failed"
-        # 读侧据此认它是 broken (chat 不可用, view 会折叠).
-        assert memento.get_branch("main").get_commit(anchor.seq).is_broken
 
     @pytest.mark.asyncio
     async def test_sidecar_empty_text_writes_terminal_error_note(self, tmp_path: Path):
-        """空文本同样算失败 —— 写 error note, 不留空."""
-        conn = self._FakeConnection({"message": ""})
+        conn = self._FakeConnection({"text": ""})
         manager, memento = self._manager(tmp_path, conn)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
@@ -138,8 +154,27 @@ class TestEgoMementoSidecar:
         assert note.message == "" and note.error != ""
 
     @pytest.mark.asyncio
+    async def test_retry_recovers_when_model_returns(self, tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig
+
+        conn = self._FakeConnection(
+            {"text": "recovered"}, error=RuntimeError("transient"), fail_until=2,
+        )
+        manager, memento = self._manager(
+            tmp_path, conn,
+            config=EgoMementoConfig(note_retry_timeout=1.0, note_backoff_base=0.01),
+        )
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        await manager.drain_bypass()
+
+        assert memento.get_branch("main").notes()[anchor.id].message == "recovered"
+        assert conn.attempts == 3
+
+    @pytest.mark.asyncio
     async def test_same_commit_dispatched_once(self, tmp_path: Path):
-        conn = self._FakeConnection({"message": "x"})
+        conn = self._FakeConnection({"text": "x"})
         manager, _ = self._manager(tmp_path, conn)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
@@ -147,143 +182,20 @@ class TestEgoMementoSidecar:
         manager.schedule_note(anchor.id)
         await manager.drain_bypass()
 
-        assert len([call for call in conn.calls if call[0].endswith("/bypass/run")]) == 1
+        assert len(conn.chats) == 1
 
     @pytest.mark.asyncio
     async def test_exit_drops_inflight_note_run(self, tmp_path: Path):
-        conn = self._StuckConnection()
+        conn = self._FakeConnection({"text": "x"}, hang=True)
         manager, memento = self._manager(tmp_path, conn)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
-        async with manager:
-            manager.schedule_note(anchor.id)
-            await conn.entered.wait()  # 旁路确实跑起来了, 再走关停
-
-        assert manager.bypass[anchor.id].task.cancelled()  # 不阻塞关停
-        assert memento.get_branch("main").notes() == {}  # 空 note 留空 (内容仍可 read)
-
-    # ── 启动补漏 (backfill) ──────────────────────────────────────────
-
-    @staticmethod
-    def _restart(tmp_path: Path, connection, config=None):
-        """模拟重启: 重新打开同一个 memento store + 全新 manager (空的旁路治理态)."""
-        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
-        from ghoshell_moss.memento import new_local_memento
-
-        memento = new_local_memento(tmp_path / "owner")
-        manager = EgoMementoManager(
-            connection=connection, memento=memento, config=config or EgoMementoConfig()
-        )
-        return manager, memento
-
-    @pytest.mark.asyncio
-    async def test_backfill_dispatches_notes_for_commits_missing_them(self, tmp_path: Path):
-        conn = self._FakeConnection({"message": "title\nbody"})
-        manager, memento = self._manager(tmp_path, conn)
-        first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        second = manager.commit(session_id="s1", start_turn=1, end_turn=2)
-
-        assert manager.backfill() == 2
-        await manager.drain_bypass()
-
-        notes = memento.get_branch("main").notes()
-        assert notes[first.id].message == "title\nbody"
-        assert notes[second.id].message == "title\nbody"
-
-    @pytest.mark.asyncio
-    async def test_backfill_returns_before_the_runs_finish(self, tmp_path: Path):
-        """非阻塞: 只派发, 立刻返回 —— 不拖慢 boot."""
-        conn = self._FakeConnection({"message": "x"})
-        manager, memento = self._manager(tmp_path, conn)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-
-        assert manager.backfill() == 1
-        assert self._state(manager, anchor.id) == "running"  # 在飞, 没被 await
-        assert memento.get_branch("main").notes() == {}  # 返回时还没落
-
-        await manager.drain_bypass()
-        assert memento.get_branch("main").notes()[anchor.id].message == "x"
-
-    def test_backfill_skips_commits_that_already_have_notes(self, tmp_path: Path):
-        """一条 Note 无论是 ready 还是 terminal error 都算"有" —— 都不重补."""
-        conn = self._FakeConnection({"message": "x"})
-        manager, memento = self._manager(tmp_path, conn)
-        branch = memento.get_branch("main")
-        ready = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        broken = manager.commit(session_id="s1", start_turn=1, end_turn=2)
-        branch.note(ready.id, "already")
-        branch.note(broken.id, message="", error="fatal")
-
-        assert manager.backfill() == 0
-        assert conn.calls == []
-        assert branch.notes()[broken.id].error == "fatal"  # 失败标记不被覆盖
-
-    def test_backfill_skips_commits_without_a_cut_ref(self, tmp_path: Path):
-        """非本 manager 落的 commit (无 ref) 补不了 —— 静默跳过, 不报错也不派发."""
-        conn = self._FakeConnection({"message": "x"})
-        manager, memento = self._manager(tmp_path, conn)
-        memento.get_branch("main").commit(message="", metatype="foreign", metadata={})
-
-        assert manager.backfill() == 0
-        assert conn.calls == []
-
-    @pytest.mark.asyncio
-    async def test_backfill_respects_the_tail_bound(self, tmp_path: Path):
-        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig
-
-        conn = self._FakeConnection({"message": "x"})
-        manager, _ = self._manager(tmp_path, conn, config=EgoMementoConfig(resume_tail=2))
-        for i in range(4):
-            manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
-
-        assert manager.backfill() == 2
-        await manager.drain_bypass()
-        assert {call[1]["ref"]["end_turn"] for call in conn.calls} == {3, 4}
-
-    def test_backfill_disabled_when_tail_is_zero(self, tmp_path: Path):
-        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig
-
-        conn = self._FakeConnection({"message": "x"})
-        manager, _ = self._manager(tmp_path, conn, config=EgoMementoConfig(resume_tail=0))
-        manager.commit(session_id="s1", start_turn=0, end_turn=1)
-
-        assert manager.backfill() == 0
-        assert conn.calls == []
-
-    @pytest.mark.asyncio
-    async def test_backfill_after_restart_does_not_retry_failed_commits(self, tmp_path: Path):
-        """失败是终态: 重启后补漏不再碰它 —— 否则一个恒失败的 commit 每次开机都白跑一轮."""
-        conn = self._FakeConnection(RuntimeError("dsh down"))
-        manager, memento = self._manager(tmp_path, conn)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        manager.schedule_note(anchor.id)
-        await manager.drain_bypass()
-        assert memento.get_branch("main").notes()[anchor.id].error != ""
-
-        conn2 = self._FakeConnection({"message": "x"})
-        restarted, _ = self._restart(tmp_path, conn2)
-
-        assert restarted.backfill() == 0
-        assert conn2.calls == []
-
-    @pytest.mark.asyncio
-    async def test_backfill_recovers_notes_dropped_at_shutdown(self, tmp_path: Path):
-        """关停时被取消的旁路留空 → 下次开机补上. 这是补漏存在的理由."""
-        conn = self._StuckConnection()
-        manager, memento = self._manager(tmp_path, conn)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         async with manager:
             manager.schedule_note(anchor.id)
             await conn.entered.wait()
 
-        assert memento.get_branch("main").notes() == {}  # 取消 ≠ 失败: 不写 error, 留空
-
-        conn2 = self._FakeConnection({"message": "recovered"})
-        restarted, _ = self._restart(tmp_path, conn2)
-
-        assert restarted.backfill() == 1
-        await restarted.drain_bypass()
-        assert memento.get_branch("main").notes()[anchor.id].message == "recovered"
+        assert manager.bypass[anchor.id].task.cancelled()
+        assert memento.get_branch("main").notes() == {}
 
 
 class TestMementoReadSurface:
@@ -477,7 +389,6 @@ class TestMementoReadSurface:
         note = memento.get_branch("main").notes()[anchor.id]
         assert note.message == "" and note.error == ""
         assert manager.resolve(self._coord(memento, anchor.seq)).is_broken is False
-        assert manager.backfill() == 0  # 空 note 也算"有", 不再重试
 
     @pytest.mark.asyncio
     async def test_chat_frames_the_context_not_the_commit(self, tmp_path: Path):
@@ -494,11 +405,14 @@ class TestMementoReadSurface:
         assert conn.calls == []
         session_id, messages, sent_anchor = conn.chats[0]
         assert session_id == "s1"
-        # 两条消息: 处境说明在前, 问题在后 —— 消息怎么分由 Python 侧决定.
-        assert len(messages) == 2
-        assert "talking to the context that commit belongs to" in messages[0][0].text
-        assert "outside your view" in messages[0][0].text
-        assert messages[1][0].text == question
+        # one mindhook container: preamble + question ride together.
+        assert len(messages) == 1
+        container = messages[0][0].text
+        assert '<mindhook hook="memento.chat">' in container
+        assert "talking to the context that commit" in container
+        assert "belongs to" in container
+        assert "outside your view" in container
+        assert question in container
         # 锚点: 只有 turn 时用它定位, seq 缺省.
         assert sent_anchor.turn == 1 and sent_anchor.seq is None
         assert conn.closed == 1

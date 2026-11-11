@@ -142,14 +142,33 @@ the trigger and the score are the hard half.
 - **Evaluation unit**: `commit ref → (session, turn, seq) → fork/seed → replace the key
   component → one round`. A session log is never spliced — a spliced log is a trace that never
   happened. For the commit prompt the run is one off-record round at the ref's `end_seq`
-  (`chat_off_record`), so no real fork is needed; the note bypass should share the same
-  primitive, and that migration is still pending.
+  (`chat_off_record`), so no real fork is needed; the note task and the bench now share that
+  primitive.
 - **Superego**: the benchmark's motivation is a superego trigger task (first trigger deferred);
   the score is an independent judge (D9); promotion is an explicit superego action, never
   automatic. The action surface is a gated `ghost.meta.prompts` channel.
 - **Harness boundary**: exposing the dsh launcher/connection in IoC is fine; the bench gets a
   narrow `AnchorRunner` (`run_at(anchor, messages) -> reply`), with the dsh implementation
   behind an adapter. The registry, the records and the channel verbs stay harness-neutral.
+
+### Implementation (2026-11-12)
+
+- `MINDHOOK` is a global constant; `DefaultPrompterKeys` (in `mindset/prompter.py`) holds the
+  stable prompt keys. `PromptSpec.slots` is `dict[name, description]`; `seed` materializes
+  the default version when a key has none.
+- The system prompt has a Concurrent Mind slot after the output-protocol notice: parallel
+  thinking / functional bypass / CTML and tools may change or be disabled / tasks have their
+  own prompt / `<mindhook>` is the generic container. It names no unbuilt mechanism.
+- The memento channel instruction embeds the active `memento.note` rules; the manual commit
+  and the bypass see the same rules. The bypass message is a `<mindhook>` container with the
+  connection point and the prior note only.
+- The note task is one `chat_off_record` round at the commit's end (`readonly`, effort off,
+  max tokens). Retries live in the task (`note_retry_timeout` / `note_backoff_base` in
+  `EgoMementoConfig`); model-unavailable exhaustion leaves the note empty and the named
+  notice is the record. Content failures write the terminal error note. `backfill` /
+  `resume_tail` are retired — the task is the only writer.
+- `memento.chat` uses a `<mindhook hook="memento.chat">` container carrying the
+  `memento.chat` preamble and the question.
 
 ### Deferred (not this round)
 
@@ -192,15 +211,18 @@ the trigger and the score are the hard half.
 
 ## What exists today
 
-- **bypass commit** — `_ego_memento.py` (a `BypassCommit` state machine, lifecycle owned by the
-  manager) + the dsh plugin route `/moss-api/ghost/dolores/bypass/run`.
-- It **always creates a new dsh session** (`agents.create({sessionId: randomUUID(), seed})`) and
-  only drops tools; the log stays in the home workspace. "Read-only" is a discipline here, not
-  a capability — the same mistake as promising a clone will not write outside its workspace.
-- **no `request` carrier**: `bypass/run` returns one text message; no schema, no retry, no
-  billing unit.
-- **prompt assets are hardcoded** (`_prompts.py`, `_ego_memento.py`); `mindset/prompter.py` and
-  `configs.py` are drafts, not wired. Cut D is the plan to replace them.
+- **commit note task** — `_ego_memento.py`'s `BypassCommit` state machine owns one one-shot
+  `asyncio.Task` per commit; the task runs `chat_off_record` at the commit's `end_seq` with a
+  `<mindhook>` container (`readonly`, effort off, max tokens). The old dsh plugin
+  `bypass/run` route is no longer used by the note task.
+- The note's static rules live in the memento channel instruction, read from the active
+  `memento.note` prompt; the container carries only the connection point and the prior note.
+  `memento.chat` uses the same container with its own preamble.
+- **no `request` carrier** for the bypass: `chat_off_record` returns one `ChatReply` (text +
+  usage); no schema, no billing unit beyond that.
+- **prompt assets are file-based** — `mindset/prompter.py`, the manifest in `.dolores/configs`,
+  version files under `.dolores/prompts`, and the seeds in `mindset/seeds.py`. The note/chat
+  paths consume the registry.
 - **Ghost is in the IoC** (`host/ghost_runtime.py`): `Ghost` / `GhostMeta` / the concrete type
   are set before `__aenter__`; `home()` / `home_meta_dir()` are implemented.
   `DoloresMeta.contracts()` lists the config store + prompt manager, which boot instantiates.

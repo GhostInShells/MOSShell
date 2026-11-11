@@ -249,7 +249,7 @@ class TestMementoChannel:
 
     @pytest.mark.asyncio
     async def test_empty_note_hands_the_summary_to_the_sidecar(self, tmp_path: Path):
-        conn = self._Connection({"message": "auto note"})
+        conn = self._Connection({"text": "auto note"})
         chan, manager, memento = self._channel(tmp_path, conn, with_commit=True)
         async with chan.bootstrap() as runtime:
             result = await runtime.execute_command("commit", args=("",))

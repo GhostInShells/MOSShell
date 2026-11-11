@@ -43,7 +43,8 @@ if TYPE_CHECKING:
 __all__ = ["Dolores"]
 
 from ._prompts import (
-    dolores_inception, dolores_memory, dolores_output_protocol_notice, dolores_terminology,
+    dolores_concurrent_mind, dolores_inception, dolores_memory, dolores_output_protocol_notice,
+    dolores_terminology,
     DOLORES_INSTRUCTION_END,
 )
 
@@ -367,6 +368,7 @@ class Dolores(Ghost):
             parts.append("<!-- current moss mode -->\n" + self._moss_prompter.mode_instruction())
 
         parts.append(dolores_output_protocol_notice())
+        parts.append(dolores_concurrent_mind())
         parts.append(DOLORES_INSTRUCTION_END)
         return "\n---\n".join([part.strip() for part in parts]) + "\n<!-- deepseek harness instruction -->"
 
@@ -465,10 +467,16 @@ class Dolores(Ghost):
             return None
         if self._channel is None:
             from .channel import build_dolores_channel
+            from .mindset.prompter import PromptManager
 
+            prompt_manager = (
+                self._container.force_fetch(PromptManager)
+                if self._container is not None else None
+            )
             self._channel = build_dolores_channel(
                 groundset=self._grounds if self._grounds is not None else self._ground_set,
                 memento_manager=self._memento_manager,
+                prompt_manager=prompt_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
                 commit_anchor=self._commit_anchor,
                 frame_root=self._frame_root(),
@@ -657,18 +665,21 @@ class Dolores(Ghost):
             # 生命周期入 exit stack —— 旁路任务归它治理, ghost 关停时随栈取消.
             if self._memento is not None:
                 from ._ego_memento import EgoMementoManager
+                from .mindset.prompter import PromptManager
 
+                prompt_manager = (
+                    self._container.force_fetch(PromptManager)
+                    if self._container is not None else None
+                )
                 self._memento_manager = await self._exit_stack.enter_async_context(
                     EgoMementoManager(
                         connection=self.dsh_launcher,
                         memento=self._memento,
                         config=self._load_config().memento,
+                        prompt_manager=prompt_manager,
                         logger=self.logger,
                     )
                 )
-                # 启动补漏: 上次运行留下的空 note (关停时被取消的旁路) 在这里补派任务. 只派发不等待,
-                # 与运行期旁路同一条非阻塞路径 —— 不拖慢 boot.
-                self._memento_manager.backfill()
                 # 线自己渲染的那一页（计划 / 开着的 task）由 branch_view 槽位生成 —— 渲染在
                 # 这里, 因为 memories() 是同步读; 它现在真的会进 boot memory, 不再只在 memento:view 里.
                 self._memento_view = await self._memento_manager.aview_message()

@@ -27,13 +27,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from ghoshell_moss.contracts import ConfigType
 from ghoshell_moss.core.blueprint.ghost import GhostHome
 from ghoshell_moss.ghosts.dolores.configs import DoloresConfigStore
-from ghoshell_moss.ghosts.dolores.constants import (
-    DOLORES_PROMPTS_DIRECTORY,
-    PROMPT_MEMENTO_CHAT,
-    PROMPT_MEMENTO_NOTE,
-)
+from ghoshell_moss.ghosts.dolores.constants import DOLORES_PROMPTS_DIRECTORY
+from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED, MEMENTO_NOTE_SEED
 
 __all__ = [
+    "DefaultPrompterKeys",
     "PromptError",
     "PromptManager",
     "PromptManagerProvider",
@@ -71,6 +69,13 @@ class SlotMismatchError(PromptError):
 
 class PromptPathError(PromptError):
     """A key/version would leave the prompts root (or is otherwise unsafe)."""
+
+
+class DefaultPrompterKeys:
+    """The stable prompt keys the prototype ships with — module-owned, not global constants."""
+
+    MEMENTO_NOTE = "memento.note"
+    MEMENTO_CHAT = "memento.chat"
 
 
 def _validate_key(key: str) -> str:
@@ -117,9 +122,13 @@ class PromptSpec(BaseModel):
 
     key: str = Field(description="Dotted key, e.g. `memento.note` (dsh-compatible).")
     description: str = Field(default="", description="What this prompt is for.")
-    slots: list[str] = Field(
-        default_factory=list,
-        description="`{{name}}` placeholders the caller must provide; declared, not inferred.",
+    slots: dict[str, str] = Field(
+        default_factory=dict,
+        description="`{{name}}` -> one-line description; declared here, not inferred.",
+    )
+    seed: str = Field(
+        default="",
+        description="Initial body, materialized into the default version when the key has none.",
     )
     default_version: str = Field(
         default="v1",
@@ -138,14 +147,10 @@ class PromptSpec(BaseModel):
 
     @field_validator("slots")
     @classmethod
-    def _slots_are_unique_names(cls, values: list[str]) -> list[str]:
-        seen: set[str] = set()
-        for value in values:
-            if _SLOT_NAME.fullmatch(value) is None:
-                raise ValueError(f"slot name must match [A-Za-z_][A-Za-z0-9_]*, got {value!r}")
-            if value in seen:
-                raise ValueError(f"duplicate slot {value!r}")
-            seen.add(value)
+    def _slots_are_named(cls, values: dict[str, str]) -> dict[str, str]:
+        for name in values:
+            if _SLOT_NAME.fullmatch(name) is None:
+                raise ValueError(f"slot name must match [A-Za-z_][A-Za-z0-9_]*, got {name!r}")
         return values
 
 
@@ -210,6 +215,16 @@ class PromptManager:
         self._store = store
         self._root = Path(prompts_root)
         self._config = store.get_or_create(PromptsConfig(specs=defaults or []))
+        self._materialize_seeds()
+
+    def _materialize_seeds(self) -> None:
+        """Write each spec's seed to its default version when the key has no versions yet."""
+        for spec in self._config.specs:
+            self._materialize_seed(spec)
+
+    def _materialize_seed(self, spec: PromptSpec) -> None:
+        if spec.seed and not self.versions(spec.key):
+            _atomic_write(self.path_of(spec.key, spec.default_version), spec.seed)
 
     # -- reads --------------------------------------------------------- #
 
@@ -276,7 +291,10 @@ class PromptManager:
         declared = set(spec.slots)
         missing = declared - set(values)
         if missing:
-            raise SlotMismatchError(f"prompt {key!r} is missing slots: {', '.join(sorted(missing))}")
+            details = "; ".join(
+                f"{name} ({spec.slots.get(name, '')})" for name in sorted(missing)
+            )
+            raise SlotMismatchError(f"prompt {key!r} is missing slots: {details}")
         unknown = set(_SLOT.findall(prompt.content)) - declared
         if unknown:
             raise SlotMismatchError(
@@ -293,6 +311,7 @@ class PromptManager:
             raise PromptError(f"prompt key {spec.key!r} is already registered")
         self._config.specs.append(spec)
         self._save()
+        self._materialize_seed(spec)
         return spec
 
     def create_version(self, key: str, content: str, version: str) -> PromptVersion:
@@ -334,17 +353,19 @@ class PromptManager:
 
 
 def default_specs() -> list[PromptSpec]:
-    """The stable mechanism prompts. Bodies ship with the first consumer (memento note/chat)."""
+    """The stable mechanism prompts, seeded with their initial bodies."""
     return [
         PromptSpec(
-            key=PROMPT_MEMENTO_NOTE,
+            key=DefaultPrompterKeys.MEMENTO_NOTE,
             description="Write the next memento commit note from the span's context.",
-            slots=["coord", "prior"],
+            slots={},
+            seed=MEMENTO_NOTE_SEED,
         ),
         PromptSpec(
-            key=PROMPT_MEMENTO_CHAT,
+            key=DefaultPrompterKeys.MEMENTO_CHAT,
             description="Talk one round with a commit's context.",
-            slots=[],
+            slots={},
+            seed=MEMENTO_CHAT_SEED,
         ),
     ]
 

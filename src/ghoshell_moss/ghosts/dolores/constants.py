@@ -1,4 +1,4 @@
-"""Dolores prototype constants — paths and stable prompt keys.
+"""Dolores prototype constants — paths and cross-module protocol names.
 
 Module-level only (no package export): a magic value should be findable here before it is
 used in a chain. The ghost home itself is **not** resolved here — components resolve it from
@@ -14,8 +14,5 @@ DOLORES_PROMPTS_DIRECTORY = "prompts"
 DOLORES_CONFIGS_DIRECTORY = "configs"
 """Typed runtime configs under the meta directory (YAML, one file per ConfigType)."""
 
-PROMPT_MEMENTO_NOTE = "memento.note"
-"""Stable key: write the next commit note from the span's context."""
-
-PROMPT_MEMENTO_CHAT = "memento.chat"
-"""Stable key: talk one round with a commit's context."""
+MINDHOOK = "mindhook"
+"""The generic container for a message from a parallel-thinking bypass task."""

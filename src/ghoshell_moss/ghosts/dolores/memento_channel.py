@@ -36,13 +36,22 @@ from pathlib import Path
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoManager
+from ghoshell_moss.ghosts.dolores.mindset.prompter import (
+    DefaultPrompterKeys,
+    PromptError,
+    PromptManager,
+)
 
 from .nucleus import new_dolores_ego_signal
 
 __all__ = ["build_memento_channel"]
 
 
-def _instruction_text(manager: EgoMementoManager, storage_root: Path | None) -> str:
+def _instruction_text(
+    manager: EgoMementoManager,
+    storage_root: Path | None,
+    prompt_manager: PromptManager | None,
+) -> str:
     """自解释 —— 只讲控制面 (分支 / 坐标 / 两条读路径). memento 概念由系统指令解释, 这里不重复."""
     lines = [
         "## Memento (control)",
@@ -71,6 +80,12 @@ def _instruction_text(manager: EgoMementoManager, storage_root: Path | None) -> 
         "holds the turn; it is still a real round of inference, so read first when you only need",
         "to recall.",
     ])
+    if prompt_manager is not None:
+        try:
+            rules = prompt_manager.get(DefaultPrompterKeys.MEMENTO_NOTE).content
+        except PromptError as exc:
+            rules = f"(commit note rules unavailable: {exc})"
+        lines.extend(["", "## Commit note", "", rules.strip()])
     return "\n".join(lines)
 
 
@@ -116,6 +131,7 @@ def _parse_date(value: str | None, field: str) -> datetime | None:
 def build_memento_channel(
     manager: EgoMementoManager,
     *,
+    prompt_manager: PromptManager | None = None,
     storage_root: str | Path | None = None,
     commit_anchor: Callable[[str], str] | None = None,
     name: str = "memento",
@@ -124,6 +140,8 @@ def build_memento_channel(
     """组装 memento 反身 channel —— ghost 的记忆器官.
 
     :param manager: ghost 持有的 EgoMementoManager (锚点 / 阈值 / 旁路都归它治理).
+    :param prompt_manager: prompt registry; its active ``memento.note`` body becomes the
+        channel's "Commit note" section — the same rules the bypass task uses.
     :param storage_root: 轨迹的磁盘位置, 进 instruction 自解释. None = 略去那一行.
     :param commit_anchor: 落锚后端 (收 note, 返回一条给模型的回执). None =
         不挂 ``commit`` 命令 —— 写面归 ego (turn span 记账在它手里), 这里只透传.
@@ -142,7 +160,7 @@ def build_memento_channel(
 
     @chan.build.instruction
     async def _instruction() -> str:
-        return _instruction_text(manager, root)
+        return _instruction_text(manager, root, prompt_manager)
 
     @chan.build.notice
     async def _branches() -> str:
