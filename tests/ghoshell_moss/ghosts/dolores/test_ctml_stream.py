@@ -10,7 +10,7 @@ import random
 
 import pytest
 
-from ._ctml_stream import CtmlArgumentStream
+from ghoshell_moss.ghosts.dolores._ctml_stream import CtmlArgumentStream
 
 # characters worth throwing at the unescaper: CTML syntax, every single-char escape, BMP and astral
 # code points (the latter become \uXXXX / surrogate pairs under ensure_ascii), plus a lone surrogate.

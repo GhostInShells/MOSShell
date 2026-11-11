@@ -1,6 +1,6 @@
-"""Dolores ghost_home 认知场骨架测试 — 独立于 test_dolores.py.
+"""Dolores ghost_home 认知场骨架测试 — 场装配的协议承诺, 与 ghost 运行时无关.
 
-覆盖 ground 装配的协议承诺:
+被装配的是 Dolores 包里随包分发的 stubs 树; 这里验的是 ground 的机制, 不是 ghost.
 - root 场渐进披露子件类别身份 (frontmatter pin 扫 */GROUND.md), 不穿透进子件内部
 - existence 场 @ 装载 purpose/behaviors (冷层法), file pin 装载 identity (warm 帧)
 - journal 场 exec pin 物化 Y/M/D 占位 + 分层呈现 (years/months 存在性, today 展开)
@@ -11,11 +11,13 @@ import os
 import subprocess
 import sys
 from datetime import date
+from importlib.resources import files
 from pathlib import Path
 
 from ghoshell_moss.ground import DefaultGroundSet
 
-STUBS = Path(__file__).parent / "stubs"
+# 被测的桩树住在 dolores 包里; 测试自己的地址说明不了它在哪.
+STUBS = Path(str(files("ghoshell_moss.ghosts.dolores"))) / "stubs"
 
 
 def run(coro):
