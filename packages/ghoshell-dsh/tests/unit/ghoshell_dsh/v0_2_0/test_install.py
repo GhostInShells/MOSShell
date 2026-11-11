@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from ghoshell_dsh.v0_2_0.install import (
     BUNDLE_STAMP,
+    bundle_changed,
     bundle_fingerprint,
+    install_bundle,
     install_plugin,
     installed_fingerprint,
     installed_root,
@@ -37,3 +39,28 @@ def test_a_stale_stamp_marks_the_bundle_changed_and_refreshes_it(tmp_path):
     assert plugin_changed(tmp_path)
     assert refresh_plugin(home=tmp_path) is True
     assert not plugin_changed(tmp_path)
+
+
+def test_a_transformed_copy_still_reports_the_source_fingerprint(tmp_path):
+    """A bundle may be rewritten on the way in (TypeScript -> JavaScript under node_modules).
+
+    The stamp must describe the *source*, otherwise a transformed copy looks stale on every
+    start and the plugin is reinstalled forever.
+    """
+    source = tmp_path / "bundle"
+    source.mkdir()
+    (source / "package.json").write_text('{"version": "0.0.1"}', encoding="utf-8")
+    (source / "index.ts").write_text("export const answer: number = 42\n", encoding="utf-8")
+
+    def transform(target):
+        typed = target / "index.ts"
+        typed.write_text("export const answer = 42\n", encoding="utf-8")
+        typed.rename(target / "index.js")
+
+    home = tmp_path / "home"
+    install_bundle(source=source, name="@local/x", home=home, transform=transform)
+
+    assert installed_fingerprint(home, "@local/x") == bundle_fingerprint(source)
+    assert not bundle_changed(home, source, "@local/x")
+    assert (installed_root(home, "@local/x") / "index.js").is_file()
+    assert not (installed_root(home, "@local/x") / "index.ts").exists()

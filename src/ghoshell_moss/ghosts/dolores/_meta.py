@@ -23,10 +23,12 @@ class DoloresProviderSpec:
     ghost home owns the file and the Python declaration is no longer the source of truth.
 
     - ``route`` — pi-ai provider route id (``anthropic`` / ``openai`` / ``deepseek`` …).
-    - ``api_key_env`` — process env var that holds the credential at runtime (``apiKeyEnv``).
-    - ``base_url_env`` — process env var holding a base-URL override. At seed time Dolores reads
-      this env var and writes the resolved URL literally into the (gitignored) patch file; the
-      meta carries only the *name*, so repo-visible code never leaks a vendor endpoint.
+    - ``api_key_env`` — the *name* of the process env var holding the credential, written with
+      the reference marker: ``"$ANTHROPIC_API_KEY"``. The marker is stripped at seed time; the
+      patch carries the bare name as a credential reference.
+    - ``base_url_env`` — same marker, an endpoint override: ``"$ANTHROPIC_BASE_URL"``. The seed
+      never resolves it — it writes ``!!js process.env.ANTHROPIC_BASE_URL``, so the home carries
+      the name and the machine carries the value.
     - ``models`` — optional explicit catalog override.
     - ``display_name`` — optional label.
     """
@@ -127,14 +129,14 @@ class DoloresMeta(GhostMeta):
         return Path(__file__).parent / "stubs"
 
     @classmethod
-    def dsh_stubs_dir(cls) -> Path:
-        """Source dir of the dsh-home skeleton."""
-        return Path(__file__).parent / "dsh_stubs"
+    def dsh_plugin_bundle(cls) -> Path:
+        """Source dir of the dsh plugin, packaged as a bundle.
 
-    @classmethod
-    def dsh_plugin_stub(cls) -> Path:
-        """Source file of the dsh ghost plugin (a standalone stub)."""
-        return Path(__file__).parent / "dsh_plugin" / "moss-dolores-ghost-plugin.ts"
+        A bundle, not a file: `package.json` (name + `dsh.bundle.patch`), `cordis.patch.yml`
+        and the entry module. Installing it is a copy into the dsh home's `node_modules`
+        plus a `--patch` at launch — see `ghoshell_dsh.v0_2_0.install`.
+        """
+        return Path(__file__).parent / "dsh_plugin"
 
     # ── factory ─────────────────────────────────────
 

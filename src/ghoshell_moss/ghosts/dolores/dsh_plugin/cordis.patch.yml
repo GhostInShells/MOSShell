@@ -1,0 +1,10 @@
+# Mount the dolores ghost plugin -- this is a dsh bundle's own patch layer, applied by the
+# launcher as `--patch`.
+#
+# `name` is a package name, not a path: the installed copy lives at
+# <DSH_HOME>/profiles/node_modules/@local/moss-dolores-ghost/, which node reaches by walking
+# up from dsh's own packages (see ghoshell_dsh.v0_2_0.install). The entry id is the marker the
+# installer checks for -- seeing it in `--dump-config` means this layer was read.
+- insert:
+    - id: dolores-ghost-plugin
+      name: '@local/moss-dolores-ghost'

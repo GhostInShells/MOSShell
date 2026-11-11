@@ -9,6 +9,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -21,6 +22,20 @@ from ghoshell_container import Container
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.moment import Echoes
 from ghoshell_moss.core.session.mock_session import MockSession
+
+
+class _PatchLoader(yaml.SafeLoader):
+    """dsh patches may carry `!!js` expressions; reading them is not this test's business."""
+
+
+_PatchLoader.add_multi_constructor(
+    "tag:yaml.org,2002:js", lambda loader, suffix, node: loader.construct_scalar(node)
+)
+
+
+def _load_patch(text: str) -> list[dict]:
+    doc = yaml.load(text, Loader=_PatchLoader) or []
+    return [item for item in doc if isinstance(item, dict)]
 
 
 def _dolores_meta(**kwargs):
@@ -89,12 +104,64 @@ class TestDoloresMeta:
         assert ghost._matrix is None
         assert ghost._dsh_launcher is None
 
-    def test_dsh_stubs_and_plugin_stub(self):
-        dsh_stubs = _dolores_meta().dsh_stubs_dir()
-        assert dsh_stubs.is_dir()
-        assert (dsh_stubs / "profiles/web/package.json").exists()
-        # plugin 源在独立 stub, 创建时复制进 dsh profile.
-        assert _dolores_meta().dsh_plugin_stub().is_file()
+    def test_dsh_plugin_bundle_is_a_package(self):
+        bundle = _dolores_meta().dsh_plugin_bundle()
+        assert bundle.is_dir()
+        manifest = json.loads((bundle / "package.json").read_text(encoding="utf-8"))
+        assert manifest["dsh"]["bundle"]["patch"] == "./cordis.patch.yml"
+        assert (bundle / "index.ts").is_file()
+        # the patch must mount the package the manifest declares -- one fact, two files.
+        patch = yaml.safe_load((bundle / "cordis.patch.yml").read_text(encoding="utf-8"))
+        assert patch[0]["insert"][0]["name"] == manifest["name"]
+
+
+class TestProfilePatchMigration:
+    """The profile layer is the ghost's own; migration touches only the trace we planted."""
+
+    LEGACY = (
+        "# mount the ghost plugin\n"
+        "- insert:\n"
+        "    - id: dolores-ghost-plugin\n"
+        "      name: './moss-dolores-ghost-plugin.ts'\n"
+        "\n"
+        "- id: ui-deliverables\n"
+        "  disabled: true\n"
+    )
+
+    def test_the_legacy_entry_is_removed_and_the_rest_survives(self):
+        from ._runtime import _strip_legacy_insert
+
+        stripped = _strip_legacy_insert(self.LEGACY)
+        assert stripped is not None
+        assert "dolores-ghost-plugin" not in stripped
+        assert "moss-dolores-ghost-plugin.ts" not in stripped
+        assert "ui-deliverables" in stripped
+
+    def test_an_item_the_ghost_rewrote_is_left_alone(self):
+        from ._runtime import _strip_legacy_insert
+
+        text = "- id: dolores-ghost-plugin\n  disabled: true\n"
+        assert _strip_legacy_insert(text) is None
+
+    def test_nothing_to_remove_returns_none(self):
+        from ._runtime import _strip_legacy_insert
+
+        assert _strip_legacy_insert("[]\n") is None
+
+    def test_suppressions_replace_the_empty_template(self):
+        from ._runtime import _seed_suppressions
+
+        seeded = _seed_suppressions("# a fresh layer\n[]\n")
+        assert yaml.safe_load(seeded) == [
+            {"id": "ui-deliverables", "disabled": True},
+            {"id": "file-reference-local", "disabled": True},
+        ]
+
+    def test_seeding_is_idempotent(self):
+        from ._runtime import _seed_suppressions
+
+        once = _seed_suppressions("")
+        assert _seed_suppressions(once) == once
 
 
 class TestStubsSync:
@@ -116,10 +183,10 @@ class TestStubsSync:
         assert (tmp_path / "GROUND.md").exists()
         config = yaml.safe_load((tmp_path / ".dolores.yml").read_text())
         assert config["version"] == ghost._meta.VERSION
-        # dirs 物化 + dsh_stubs 同步.
+        # dirs materialized; the dsh home itself is not seeded without a matrix (no dsh to run).
         assert (tmp_path / ".dsh").is_dir()
         assert (tmp_path / "skills").is_dir()
-        assert (tmp_path / ".dsh/profiles/web/moss-dolores-ghost-plugin.ts").exists()
+        assert not (tmp_path / ".dsh" / "profiles").exists()
         # startup 目录 (开机启动文档) 随 stubs 同步.
         assert (tmp_path / "startup" / "default.startup.yml").exists()
         assert (tmp_path / "startup" / "GROUND.md").exists()
@@ -350,9 +417,11 @@ class TestDoloresDefaultModel:
 
 
 class TestDoloresProviders:
-    """``meta.providers`` → ``profiles/web/cordis.patch.yml`` 的 ``id: llm-pi-ai`` 条目, seed-once.
-    base_url_env 在 seed 时从 ``os.environ`` 解析为真值写入 (文件在 gitignored 的 ghost home 内),
-    api_key_env 以名字落下, 运行时由 dsh 解析.
+    """``meta.providers`` -> the profile layer's ``id: llm-pi-ai`` entry, seed-once.
+
+    The declaration names environment facts (``$ANTHROPIC_API_KEY``); the seed drops the
+    marker. A credential becomes a bare reference name, an endpoint becomes a ``!!js``
+    expression -- the home never holds either value.
     """
 
     @staticmethod
@@ -361,55 +430,71 @@ class TestDoloresProviders:
 
     @staticmethod
     def _boot(home: Path, meta) -> None:
+        """Seed the provider block into the profile layer.
+
+        The profile itself belongs to dsh (it provisions it at boot), so the unit surface is
+        the seed: stand the profile dir up by hand and call it directly.
+        """
         ghost = _dolores(meta=meta, home=home, session=MockSession())
+        (home / ".dsh" / "profiles" / "web").mkdir(parents=True, exist_ok=True)
+        ghost._sync_providers(home / ".dsh", "web")
 
-        async def run():
-            async with ghost:
-                pass
-
-        asyncio.run(run())
-
-    def test_seeds_pi_ai_entry_with_resolved_base_url(self, tmp_path: Path, monkeypatch):
+    def test_the_provider_block_lands_under_config(self, tmp_path: Path):
         from ._meta import DoloresProviderSpec
 
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com/anthropic")
         meta = _dolores_meta(providers=[
             DoloresProviderSpec(
                 route="anthropic",
-                api_key_env="ANTHROPIC_API_KEY",
-                base_url_env="ANTHROPIC_BASE_URL",
+                api_key_env="$ANTHROPIC_API_KEY",
+                base_url_env="$ANTHROPIC_BASE_URL",
             ),
         ])
         self._boot(tmp_path, meta=meta)
 
-        docs = list(yaml.safe_load_all(self._patch_path(tmp_path).read_text(encoding="utf-8")))
-        entries = next(d for d in docs if isinstance(d, list))
-        pi_ai = next(e for e in entries if isinstance(e, dict) and e.get("id") == "llm-pi-ai")
-        provider = pi_ai["providers"]["anthropic"]
+        entries = _load_patch(self._patch_path(tmp_path).read_text(encoding="utf-8"))
+        pi_ai = next(e for e in entries if e.get("id") == "llm-pi-ai")
+        # the loader hands a plugin entry.config and ignores anything else on the entry
+        assert "providers" not in pi_ai
+        provider = pi_ai["config"]["providers"]["anthropic"]
         assert provider["apiKeyEnv"] == "ANTHROPIC_API_KEY"
-        assert provider["baseURL"] == "https://proxy.example.com/anthropic"
+
+    def test_base_url_is_an_environment_expression(self, tmp_path: Path):
+        from ._meta import DoloresProviderSpec
+
+        meta = _dolores_meta(providers=[
+            DoloresProviderSpec(route="anthropic", api_key_env="$ANTHROPIC_API_KEY",
+                                base_url_env="$ANTHROPIC_BASE_URL"),
+        ])
+        self._boot(tmp_path, meta=meta)
+        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
+        # the home carries the name, never this machine's endpoint
+        assert "!!js" in text and "process.env.ANTHROPIC_BASE_URL" in text
+        assert "proxy.example.com" not in text
 
     def test_seed_once_does_not_duplicate(self, tmp_path: Path, monkeypatch):
         from ._meta import DoloresProviderSpec
 
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://a.example")
         meta = _dolores_meta(providers=[
-            DoloresProviderSpec(route="anthropic", api_key_env="ANTHROPIC_API_KEY",
-                                base_url_env="ANTHROPIC_BASE_URL"),
+            DoloresProviderSpec(route="anthropic", api_key_env="$ANTHROPIC_API_KEY",
+                                base_url_env="$ANTHROPIC_BASE_URL"),
         ])
         self._boot(tmp_path, meta=meta)
-        # Second boot with a different env URL — must not re-write.
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://b.example")
+        first = self._patch_path(tmp_path).read_text(encoding="utf-8")
+        # Second boot with a different meta — must not re-write.
         self._boot(tmp_path, meta=meta)
-        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
-        assert text.count("id: llm-pi-ai") == 1
-        assert "https://a.example" in text
-        assert "https://b.example" not in text
+        assert self._patch_path(tmp_path).read_text(encoding="utf-8") == first
+        assert first.count("id: llm-pi-ai") == 1
 
-    def test_no_providers_meta_leaves_patch_as_stub(self, tmp_path: Path):
+    def test_a_declaration_without_the_marker_is_refused(self):
+        from ._meta import DoloresProviderSpec
+        from ._runtime import _env_name
+
+        with pytest.raises(ValueError):
+            _env_name("ANTHROPIC_BASE_URL")
+
+    def test_no_providers_meta_writes_nothing(self, tmp_path: Path):
         self._boot(tmp_path, meta=_dolores_meta())
-        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
-        assert "llm-pi-ai" not in text
+        assert not self._patch_path(tmp_path).exists()
 
 
 class TestDolores:

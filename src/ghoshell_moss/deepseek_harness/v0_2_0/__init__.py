@@ -30,12 +30,14 @@ from ghoshell_dsh.blueprint.models.sessions import (
     ModelReasoning,
     ModelReasoningEffort,
 )
+from ghoshell_dsh.v0_2_0.install import install_bundle, installed_patch, refresh_bundle
 from ghoshell_dsh.v0_2_0.launcher import (
     DshConnection,
     DshConnectionConfig,
     DshExit,
     DshLauncher,
     DshLauncherConfig,
+    resolve_dsh_binary,
 )
 from ghoshell_dsh.v0_2_0.session import DshSession
 from ghoshell_dsh.v0_2_0.trajectory import render_transcript
@@ -54,6 +56,11 @@ __all__ = [
     "DshConnection",
     "DshConnectionConfig",
     "DshExit",
+    "resolve_dsh_binary",
+    # installing a plugin bundle into a dsh home
+    "install_bundle",
+    "refresh_bundle",
+    "installed_patch",
     # one session
     "DshSession",
     # what a session hands back

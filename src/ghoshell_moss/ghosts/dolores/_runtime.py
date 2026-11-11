@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -51,11 +52,39 @@ _EGO_MEMENTO_DIR = ".memento/ego"
 # (dsh web Models 面可编辑). 多模态是现代模型默认, 不再做视觉强改.
 _SETTINGS_MODEL_SECTION = "agent-default-model"
 _SETTINGS_FILE = "settings.yaml"
-# cordis patch — 承载 provider 覆盖的声明段. 同样 seed-once.
-_CORDIS_PATCH = "profiles/web/cordis.patch.yml"
 _PI_AI_ID = "llm-pi-ai"
-# 可安全写成 YAML plain scalar 的形状; 其余转成 JSON 双引号串 (合法 YAML 标量).
+# Shape that can be written as a YAML plain scalar; everything else becomes a JSON-quoted
+# string (still a legal YAML scalar).
 _PLAIN_SCALAR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# -- the ghost plugin (a dsh bundle) -------------------------------------------
+# Package name / entry id / install path are three faces of one fact: they correspond to
+# dsh_plugin/{package.json,cordis.patch.yml}, so they move together.
+_DSH_PLUGIN_NAME = "@local/moss-dolores-ghost"
+_DSH_PLUGIN_ENTRY = "dolores-ghost-plugin"
+# The previous generation copied a bare .ts into the profile dir and registered it by
+# relative path in the profile patch. Migration removes exactly those two things.
+_LEGACY_PLUGIN_FILE = "moss-dolores-ghost-plugin.ts"
+
+# Host-plane suppressions (dsh web is not the first citizen). These are the *ghost's*
+# policy, so they stay in the ghost's own profile patch instead of our bundle's patch:
+# the profile layer is applied after every bundle, which is what keeps them revisable.
+_SUPPRESSIONS_NOTE = (
+    "# Suppress host-plane entries (dsh web is not the first citizen):\n"
+    "#   ui-deliverables      -- ui:deliverable-file-references (markdown file refs, conflicts with CTML-first)\n"
+    "#   file-reference-local -- context:file-reference (@path input syntax; ghost input comes from moments)\n"
+    "# web-surface (app:web-surface) is shadowed empty by the plugin in agent scope; harness:source stays.\n"
+)
+_PROFILE_SUPPRESSIONS: tuple[str, ...] = ("ui-deliverables", "file-reference-local")
+
+# Strip types with node's own API -- no toolchain, no dependency. `mode: strip` replaces type
+# syntax with spaces, so byte offsets survive and a runtime stack trace still points at the
+# source line.
+_STRIP_TYPES_SCRIPT = (
+    "const {stripTypeScriptTypes} = require('node:module');"
+    "const fs = require('node:fs');"
+    "process.stdout.write(stripTypeScriptTypes(fs.readFileSync(0, 'utf8'), {mode: 'strip'}));"
+)
 
 
 def _yaml_scalar(value: str) -> str:
@@ -83,27 +112,145 @@ def _seed_model_section(text: str, provider: str, model: str) -> str | None:
     return "\n".join(lines) + "\n"
 
 
-def _render_provider_block(providers: list[DoloresProviderSpec]) -> dict:
-    """Project the meta's provider declarations into the dict shape pi-ai's cordis patch expects.
+class _JsExpression(str):
+    """A YAML `!!js` scalar -- an expression dsh evaluates when it composes the profile."""
 
-    Reads ``base_url_env`` *at seed time* from ``os.environ`` and writes the resolved URL into
-    the patch; ``api_key_env`` is passed through as a name (dsh resolves it at runtime). The
-    patch file lives inside the gitignored ghost home, so a literal URL here never reaches the
-    repo — but the meta itself only carries variable *names*, keeping repo-visible Python clean.
+
+yaml.SafeDumper.add_representer(
+    _JsExpression,
+    lambda dumper, value: dumper.represent_scalar("tag:yaml.org,2002:js", str(value)),
+)
+
+
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _env_name(declared: str) -> str:
+    """Turn a ``$NAME`` declaration into the bare name the patch has to carry.
+
+    The ``$`` is the marker that says "this is the *name* of a process-environment fact, not
+    the fact". The value belongs to the machine, so it is never written down; a declaration
+    without the marker is refused instead of guessed at, because silence here is exactly how
+    a literal endpoint ended up frozen in a file.
+    """
+    text = declared.strip()
+    if not text.startswith("$"):
+        raise ValueError(
+            f"provider env reference {declared!r} must be written as '${declared}': the "
+            f"declaration names the environment variable, it never holds its value"
+        )
+    name = text[1:]
+    if not _ENV_NAME.fullmatch(name):
+        raise ValueError(
+            f"provider env reference {declared!r} is not a valid environment variable name"
+        )
+    return name
+
+
+def _render_provider_block(providers: list[DoloresProviderSpec]) -> dict:
+    """Project the meta's provider declarations into pi-ai's `llm-pi-ai` config shape.
+
+    Only **names** are written down. ``apiKeyEnv`` is a credential reference, and ``baseURL``
+    stays an expression (``!!js process.env.<NAME>``) instead of the URL this process happens
+    to see: a value frozen at seed time goes stale the moment the environment moves, and the
+    home should carry names, not this machine's endpoint. A name that is unset at compose time
+    evaluates to undefined, which is pi-ai's own "use the default endpoint".
     """
     out: dict[str, dict] = {}
     for spec in providers:
-        entry: dict = {"apiKeyEnv": spec.api_key_env}
+        entry: dict = {"apiKeyEnv": _env_name(spec.api_key_env)}
         if spec.base_url_env:
-            resolved = os.environ.get(spec.base_url_env)
-            if resolved:
-                entry["baseURL"] = resolved
+            entry["baseURL"] = _JsExpression(f"process.env.{_env_name(spec.base_url_env)}")
         if spec.models:
             entry["models"] = list(spec.models)
         if spec.display_name:
             entry["displayName"] = spec.display_name
         out[spec.route] = entry
     return {"providers": out}
+
+
+def _patch_has_item(text: str, item_id: str) -> bool:
+    """Whether a patch layer already carries a top-level item with this id."""
+    pattern = r"^\s*-?\s*id:\s*" + re.escape(item_id) + r"\s*$"
+    return re.search(pattern, text, re.MULTILINE) is not None
+
+
+def _seed_suppressions(text: str) -> str:
+    """Append the host-plane suppressions this ghost owns; unchanged text means already seeded.
+
+    A fresh profile layer comes from dsh as a commented `[]`; that placeholder is replaced
+    rather than appended to, because a bare `[]` followed by list items is not a document.
+    """
+    missing = [item for item in _PROFILE_SUPPRESSIONS if not _patch_has_item(text, item)]
+    if not missing:
+        return text
+    lines = [line for line in text.splitlines() if line.strip() != "[]"]
+    body = "\n".join(lines).rstrip("\n")
+    block = "\n\n".join(f"- id: {item}\n  disabled: true" for item in missing)
+    prefix = f"{body}\n\n" if body else ""
+    return f"{prefix}{_SUPPRESSIONS_NOTE}{block}\n"
+
+
+def _strip_legacy_insert(text: str) -> str | None:
+    """Drop the top-level patch item that mounts the previous generation's relative-path plugin.
+
+    Returns None when there is nothing to remove. Only a list item that carries our entry id
+    **and** the legacy file name is removed -- an item the ghost has since rewritten is left
+    alone, because this function's business is our own trace, not the file.
+    """
+    lines = text.splitlines(keepends=True)
+    pattern = r"\s*-?\s*id:\s*" + re.escape(_DSH_PLUGIN_ENTRY) + r"\s*"
+    index = next((i for i, line in enumerate(lines) if re.fullmatch(pattern, line)), None)
+    if index is None:
+        return None
+    start = index
+    while start > 0 and not re.match(r"^-(\s|$)", lines[start]):
+        start -= 1
+    if not re.match(r"^-(\s|$)", lines[start]):
+        return None
+    end = start + 1
+    while end < len(lines) and not re.match(r"^-(\s|$)", lines[end]):
+        end += 1
+    if _LEGACY_PLUGIN_FILE not in "".join(lines[start:end]):
+        return None
+    return "".join(lines[:start] + lines[end:])
+
+
+def _strip_types(target: Path) -> None:
+    """Turn the bundle's typed entry into the JavaScript a `node_modules` entry must be.
+
+    Node refuses to strip TypeScript under `node_modules`, so the installed copy has to be
+    plain JavaScript while the source stays typed. `mode: strip` keeps every byte offset, so
+    a runtime stack trace still points at the source line.
+    """
+    source = target / "index.ts"
+    if not source.is_file():
+        return
+    code = _strip_typescript(source.read_text(encoding="utf-8"))
+    (target / "index.js").write_text(code, encoding="utf-8")
+    source.unlink()
+
+
+def _strip_typescript(text: str) -> str:
+    """Strip TypeScript syntax with node's own API -- no toolchain, no dependency."""
+    node = os.environ.get("MOSS_NODE_BINARY", "").strip() or shutil.which("node")
+    if not node:
+        raise RuntimeError(
+            "node was not found: the dsh plugin ships TypeScript and its installed copy must "
+            "be JavaScript. Put node on PATH, or set MOSS_NODE_BINARY."
+        )
+    result = subprocess.run(
+        [node, "-e", _STRIP_TYPES_SCRIPT],
+        input=text,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "node could not strip the plugin's TypeScript:\n" + result.stderr[-2000:]
+        )
+    return result.stdout
 
 
 class Dolores(Ghost):
@@ -159,6 +306,8 @@ class Dolores(Ghost):
         self._startup_doc: "StartupDoc | None" = None
         # the cognition epoch is opened on the first thinking and again after every compact (see think()).
         self._epoch_opened: bool = False
+        # the plugin bundle's patch, installed in __aenter__ — the launcher applies it with --patch.
+        self._plugin_patch: Path | None = None
 
     # ── Ghost ABC ──────────────────────────────────
 
@@ -403,18 +552,19 @@ class Dolores(Ghost):
         await self._exit_stack.__aenter__()
         # file IO is offloaded to a thread; session.output stays on the main loop (avoid cross-thread).
         action = await asyncio.to_thread(self._sync_stubs)
-        # always override the plugin stub (active dev artifact, not version-gated) so the latest lands in ghost home.
-        await asyncio.to_thread(self._sync_dsh_plugin)
+        # env first: the dsh home below is provisioned and the plugin installed by way of the
+        # dsh binary, which the ghost home's .env is where we learn about.
+        if self._home is not None:
+            self._load_env()
+        # the dsh home and this ghost's plugin bundle — initialized on every start, no parameters.
+        if self._matrix is not None:
+            await asyncio.to_thread(self._prepare_dsh_home)
         if action is not None and self._session is not None:
             self._session.output(
                 "system",
                 f"dolores ghost home {action} (VERSION={self._meta.VERSION})",
                 log=f"dolores stubs {action}",
             )
-        # load the ghost-home .env into the process environment (supplement only, outer env wins) —
-        # the source of startup-time config items (dsh web auto-open, etc.). The ghost owns this file.
-        if self._home is not None:
-            self._load_env()
         # startup doc: read once, cache. channel() and startup() both read this snapshot —
         # so the frame handed to build_dolores_channel and the signal handed to the ego
         # boot come from the same file.
@@ -650,7 +800,9 @@ class Dolores(Ghost):
 
         dsh = self._load_config().dsh
         home = self._resolve_dsh_home(dsh.home)
-        launcher_config = dsh.model_copy(update={"home": home})
+        # the bundle's patch is the whole registration -- dsh composes it after the profile
+        # layer, so the profile's own patch is never edited to mount the plugin.
+        launcher_config = dsh.model_copy(update={"home": home, "plugin_patch": self._plugin_patch})
         return DshLauncher(launcher_config, subprocesses=self._matrix.processes)
 
     @contextlib.asynccontextmanager
@@ -688,14 +840,15 @@ class Dolores(Ghost):
 
         Three-way data contract (see dolores-ghost-home-governance.md):
 
-        - config (``.dolores.yml``) → read-then-rewrite: only ``version`` is sync-owned; every other
-          field is the ghost/user's and survives a version bump.
-        - ground (the rest of ``stubs/``) → seed-once: a file is copied only when absent, so the
+        - config (``.dolores.yml``) -> read-then-rewrite: only ``version`` is sync-owned; every
+          other field is the ghost/user's and survives a version bump.
+        - ground (the rest of ``stubs/``) -> seed-once: a file is copied only when absent, so the
           ghost's own edits (identity / purpose / behaviors / GROUND.md) are never clobbered.
-        - plugin (``dsh_plugin``) → always override, handled separately and not version-gated.
+        - dsh home -> *not* ours to copy any more: dsh provisions its own layout, and the plugin
+          is a bundle installed by ``_prepare_dsh_home``.
 
         The home directory itself is materialized first: a deleted/never-created ghost home is the
-        normal way to reset an instance (delete the dir, restart → re-seed), so every write below
+        normal way to reset an instance (delete the dir, restart -> re-seed), so every write below
         must find its parent in place rather than fail on a missing path.
         """
         if self._home is None:
@@ -709,7 +862,6 @@ class Dolores(Ghost):
         self._write_version(target)   # seeds .dolores.yml on init, then read-rewrite version only
         self._seed_ground()
         self._materialize_dirs()
-        self._sync_dsh_home()
         return action
 
     def _seed_ground(self) -> None:
@@ -779,37 +931,82 @@ class Dolores(Ghost):
         for d in self._load_config().dirs:
             (self._home / d).mkdir(parents=True, exist_ok=True)
 
-    def _sync_dsh_home(self) -> None:
-        """Seed-once the dsh home from stubs — copy each file only when absent.
+    # -- dsh home: provision + plugin bundle -----------------------------------
 
-        Prior behavior (``copytree`` with ``dirs_exist_ok=True``) clobbered ghost-home edits on
-        every boot, defeating the point of letting the ghost own its own dsh profiles. Now any
-        file the ghost (or dsh itself) has written survives; only the gaps are filled.
-        """
-        src_root = self._meta.dsh_stubs_dir()
-        dst_root = self._home / ".dsh"
-        for src in src_root.rglob("*"):
-            if not src.is_file():
-                continue
-            dst = dst_root / src.relative_to(src_root)
-            if dst.exists():
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        # provider block is derived at seed time (reads env), not a static stub — handle it next.
-        self._sync_providers()
+    def _prepare_dsh_home(self) -> None:
+        """Make the dsh home whole at every start -- no parameters, no manual step.
 
-    def _sync_dsh_plugin(self) -> None:
-        """Copy the plugin stub into ghost home — always override, not version-gated.
+        Four idempotent steps, in order:
 
-        The plugin is an active dev artifact (dsh kernel-privilege bridge) that changes far more often
-        than the skeleton files, which are version-gated; the plugin is pulled fresh on every startup.
+        1. **provision**: when the profile has never existed, dsh creates it
+           (``--dump-config`` composes without booting). The layout belongs to dsh, so a dsh
+           upgrade is also a layout upgrade; we no longer copy a home skeleton of our own.
+        2. **install the plugin bundle**: a content-fingerprinted copy under
+           ``profiles/node_modules``, copied only when the shipped bytes changed. That is the
+           whole upgrade story -- replace the package, restart the ghost.
+        3. **retire the previous generation's trace**: a bare ``.ts`` beside the profile and a
+           relative-path entry in the profile's own patch layer.
+        4. **seed what is genuinely ours** into that profile layer: the host-plane
+           suppressions (when absent), then the provider block (when absent).
         """
         if self._home is None:
             return
-        target = self._home / ".dsh" / "profiles" / "web" / "moss-dolores-ghost-plugin.ts"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self._meta.dsh_plugin_stub(), target)
+        from ghoshell_moss.deepseek_harness.v0_2_0 import (
+            installed_patch, refresh_bundle, resolve_dsh_binary,
+        )
+
+        config = self._load_config().dsh
+        home = self._resolve_dsh_home(config.home)
+        profile = config.profile or "web"
+        refresh_bundle(
+            source=self._meta.dsh_plugin_bundle(),
+            name=_DSH_PLUGIN_NAME,
+            home=home,
+            profile=profile,
+            binary=resolve_dsh_binary(),
+            init=True,
+            transform=_strip_types,
+            # verify by package name: the loader entry id is also carried by the legacy layer
+            # that migration has not removed yet, so it would not prove anything on the first
+            # migrated boot.
+            verify_marker=_DSH_PLUGIN_NAME,
+        )
+        self._plugin_patch = installed_patch(home, _DSH_PLUGIN_NAME)
+        self._retire_legacy_plugin(home, profile)
+        self._seed_profile_suppressions(home, profile)
+        self._sync_providers(home, profile)
+
+    def _retire_legacy_plugin(self, home: Path, profile: str) -> None:
+        """Remove the plugin registration an older build planted in the profile's own layer.
+
+        Left in place it would either load the plugin twice or point at a file that no longer
+        exists. Removal is by id, and only for a block that still names the legacy file: the
+        rest of that patch layer belongs to the ghost, so it is never rewritten wholesale.
+        """
+        profile_dir = home / "profiles" / profile
+        legacy = profile_dir / _LEGACY_PLUGIN_FILE
+        if legacy.is_file():
+            legacy.unlink()
+            self.logger.info("dolores: retired the legacy plugin copy at %s", legacy)
+        patch = profile_dir / "cordis.patch.yml"
+        if not patch.is_file():
+            return
+        text = patch.read_text(encoding="utf-8")
+        stripped = _strip_legacy_insert(text)
+        if stripped is None:
+            return
+        patch.write_text(stripped, encoding="utf-8")
+        self.logger.info("dolores: retired the legacy plugin entry from %s", patch)
+
+    def _seed_profile_suppressions(self, home: Path, profile: str) -> None:
+        """Seed the host-plane suppressions once; an already seeded layer is left alone."""
+        patch = home / "profiles" / profile / "cordis.patch.yml"
+        text = patch.read_text(encoding="utf-8") if patch.is_file() else ""
+        seeded = _seed_suppressions(text)
+        if seeded == text:
+            return
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        patch.write_text(seeded, encoding="utf-8")
 
     def _sync_default_model(self) -> tuple[str, str] | None:
         """Seed-once ``agent-default-model`` into dsh settings — only when the section is absent.
@@ -837,19 +1034,19 @@ class Dolores(Ghost):
         self.logger.info("dsh default model seeded as %s/%s", provider, model)
         return provider, model
 
-    def _sync_providers(self) -> None:
-        """Seed-once meta.providers into ``profiles/web/cordis.patch.yml``.
+    def _sync_providers(self, home: Path, profile: str) -> None:
+        """Seed-once meta.providers into the profile's own patch layer.
 
-        The stub ships with its own patch entries; we append (not replace) an ``id: llm-pi-ai``
-        override that carries the declared providers. Seed marker is literal ``id: llm-pi-ai``
-        in the file — once present, we never append again. base_url_env is resolved from the
-        process env *at this moment* and written literally; the patch sits inside the
-        gitignored ghost home, so a literal URL here never reaches the repo.
+        We append (never replace) an ``id: llm-pi-ai`` entry carrying the declared providers;
+        the seed marker is that literal id, so once it is there we never append again. The
+        provider map rides **under `config:`** -- the loader hands a plugin ``entry.config`` and
+        ignores every other key on the entry, so a flat ``providers:`` would seed a file that
+        reads correctly and does nothing.
         """
         providers = self._meta.llm_providers
-        if self._home is None or not providers:
+        if not providers:
             return
-        target = self._home / ".dsh" / _CORDIS_PATCH
+        target = home / "profiles" / profile / "cordis.patch.yml"
         text = target.read_text(encoding="utf-8") if target.exists() else ""
         if re.search(r"^\s*-?\s*id:\s*" + re.escape(_PI_AI_ID) + r"\s*$", text, re.MULTILINE):
             return
@@ -857,11 +1054,11 @@ class Dolores(Ghost):
         if not block["providers"]:
             return
         rendered = yaml.safe_dump(
-            [{"id": _PI_AI_ID, **block}], allow_unicode=True, sort_keys=False,
+            [{"id": _PI_AI_ID, "config": block}], allow_unicode=True, sort_keys=False,
         )
         if text and not text.endswith("\n"):
             text += "\n"
-        combined = text + "\n# llm-pi-ai providers — seeded once from DoloresMeta.providers.\n" + rendered
+        combined = text + "\n# llm-pi-ai providers -- seeded once from DoloresMeta.providers.\n" + rendered
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(combined, encoding="utf-8")
         self.logger.info("dsh providers seeded for routes: %s", list(block["providers"].keys()))

@@ -2,8 +2,9 @@
 title: Ghost Replaceable Agent Driver
 status: in-progress
 status_note: >-
-  2026-11-11 起执行 0.2.0 接缝搬家：dolores 换到 ghoshell_dsh.v0_2_0；插件改 local bundle + 多 patch；
-  旁路改 chatOffRecord；清三类 session；删旧 seam / 旧 node / 旧测试。验证 = ghost 能重启。
+  2026-11-11 起执行 0.2.0 接缝搬家：dolores 换到 ghoshell_dsh.v0_2_0（已落地）；插件改 local bundle
+  （单 patch，安装时剥 TS，dsh home 由 dsh provision）；旁路改 chatOffRecord；清三类 session；
+  删旧 seam / 旧 node / 旧测试。验证 = ghost 能重启。
 priority: P1
 created: 2026-10-28
 updated: 2026-11-11
@@ -227,3 +228,79 @@ dolores ghost prototype 改用 **`ghoshell_dsh.v0_2_0` + `src/ghoshell_moss/deep
 - registry 三处集合都要清（`sessionIds` / `archivedSessionIds` / `pinnedSessionIds`）。
 - 清账前必须备份；dsh 必须停。
 - 本期**不做**：版本 marker、未来 home 命名、concurrent mind、attachments/cache 的完整 GC（只清 session 相关）。
+
+---
+
+# 2026-11-11 15:00 施工记录（第一步：插件与 stubs 复制）
+
+计划里"插件与 patch"那一段执行时发现了三条硬事实，形状随之调整。调整本身比代码重要，记在这里。
+
+## 三条硬事实
+
+1. **`node_modules` 里不能放 `.ts`。** Node 无条件拒绝：`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`。所以计划里 `@local/moss-dolores-ghost` + `index.ts` 装进 `profiles/node_modules` 不能原样成立——`@local/ghoshell-dsh` 能这么干，是因为它本来手写 JS。
+2. **`--dump-config` 只组合、不 import。** 拿一个必然加载失败的 `.ts` 包合成 patch，它照常 exit 0。所以 install.py 里"证明 dsh 会加载"是过誉：它只证明 patch 被读到。真判据只能是一次 boot。
+3. **`install.py._provision` 漏了 `DSH_HOME`。** 只设 cwd 时 dsh 认的是 `~/.dsh`，空目录预置会写进用户的全局 home（旧路径里被后续 boot 掩盖了）。
+
+## 形状（他定，D11 15:01）
+
+- **不装 `@local/ghoshell-dsh`**：它支持 advanced api，ego 自己重新实现需要的功能。因此 `plugin_patch` 保持单数，不改 `plugin_patches`。
+- **`.ts` 走"安装时剥类型"**：`node -e module.stripTypeScriptTypes(mode:'strip')`，源保持 TS，安装副本是 JS。`mode: strip` 保字节偏移，stack trace 仍指向源码行。
+- **三条验收**：用户不需要理解参数（跑 ghost 就完成初始化）、自动完成版本升级、未来分叉单独做（所以不做版本 marker / 多代 home）。
+
+## 落地
+
+- `dsh_plugin/` 成为包：`package.json`（`@local/moss-dolores-ghost`，`dsh.bundle.patch`）+ `cordis.patch.yml` + `index.ts`；`dsh_stubs/` 删除，dsh home 由 `DSH_HOME=<home> dsh --profile <p> --dump-config` 自己 provision。
+- `install.py` 泛化：`install_bundle(source, name, ..., transform, entry_id)` + `refresh_bundle`；stamp 记**源**指纹（有转换时产物指纹会永远"变了"）；stamp 名 `dsh-bundle.json`；`_provision`/`_verify` 补 `DSH_HOME`。
+- `Dolores._prepare_dsh_home()`：provision → 装/刷新 bundle → 摘上一代 trace → seed UI 压制 → seed provider。`.env` 提到它之前（`DSH_BINARY` 从这里来）。
+- 迁移只碰我们种过的东西：profile patch 里 `id: dolores-ghost-plugin` 且仍写着旧相对路径的那个 item，以及 `profiles/<p>/moss-dolores-ghost-plugin.ts`。其余字节不动。
+- **不要在 dsh 运行时迁活体 home**：profile patch 是 hot-reload 的，摘掉 entry 会让正在跑的 ego 桥当场消失。迁移只在 boot、spawn 之前。
+
+## 验证
+
+- 单测：dolores 241 passed，ghoshell-dsh 78 passed。
+- `.playground/probe_ghost_plugin_bundle.py`：临时 home 由 dsh provision（0.26s）→ 安装（strip + stamp）→ boot dsh → `GET /moss-api/ghost/dolores/ego/create` = **405**（路由在 = 插件真挂上）。
+- `.playground/probe_ghost_home_migration.py`：用**活体** profile patch 做 fixture，跑 `_prepare_dsh_home()`：旧 entry 与旧 `.ts` 消失，UI 压制与 provider 块存活，二次运行零变化。
+
+## 追加：claude ghost 的初始化落点（他问，D11 15:19）
+
+他问的是真问题：删掉 dsh stubs 之后，**初始化逻辑的读写落点还在不在**，已定义的 claude ghost
+（`.moss/src/MOSS/ghosts/claude.py`）会不会在新项目从零起不来、重启还能不能活。
+
+**结论：没被破坏，但顺手挖出两个真 bug。**
+
+落点对照（拿 dsh 自己的 provisioning 和旧 stub 逐字节比）：
+
+| 旧 stub 写的 | dsh provisioning 写的 | 差别 |
+|---|---|---|
+| `pnpm-workspace.yaml` | 同 | 无 |
+| `cordis.yml` | 同 | 无 |
+| `package.json` | `name: dsh-profile-web`，无 version/type | 只有 profile 名与元字段，bundle 列表一致 |
+| `cordis.patch.yml` 的 insert | 无（改由 bundle 自己的 patch 承担） | 有替代 |
+| 两条 UI 压制 | 无（`_seed_suppressions` 补） | 有替代 |
+
+provider / default-model 的落点没变：`profiles/<p>/cordis.patch.yml` 与 `<home>/settings.yaml`
+（dsh 开机把 settings.yaml 的 section 导入 profile，然后把文件改名成 `.imported`）。
+
+**两个 bug（自 `226942b8` 起一直存在，是 claude ghost 那笔提交带进来的）：**
+
+1. **provider 块写平了。** 种出来是 `- id: llm-pi-ai` + `providers:` 顶格；cordis 只把
+   `entry.config` 交给插件（`registry.plugin(plugin, this.options.config)`），顶格的键会被
+   原样留在 entry 上、没人读。也就是说 provider 覆盖**从来没生效过**，文件看着对、什么都不做。
+   活体 claude home 里那一条是手改成 `config:` 的——他当时修对了。
+2. **`baseURL` 在 seed 时被解析成字面量。** 环境一变就过期，还把本机端点写进了 home。
+   活体 home 里手写的 `!!js "process.env.ANTHROPIC_BASE_URL"` 才是对的形状：**home 只存名字，
+   环境存值**。现在种出来就是这个样子（自定义 `!!js` representer）。
+
+**验证**（`.playground/probe_claude_ghost_init.py`）：
+- 从零：provision → provider 块（config 嵌套 + `!!js`）→ settings.yaml → 真 boot → 插件 405 挂上
+  → settings 被 dsh 导入成 `agent-default-model: anthropic`。
+- 重启：把**活体 claude profile** 复制进临时 home 再跑 `_prepare_dsh_home()`，旧 entry 与旧 `.ts`
+  消失，`llm-pi-ai` 与 `agent-default-model: claude-opus-4-8` 原样存活。
+
+单测：dolores 242（+1 条「provider 块必须在 config 下」）。
+
+**他定的声明语法**：meta 里写 `$ANTHROPIC_BASE_URL`（带 `$`），seed 层剥掉 `$`，写成
+`!!js 'process.env.ANTHROPIC_BASE_URL'`；凭据同理，剥掉后落成 `apiKeyEnv: ANTHROPIC_API_KEY`
+（dsh 的 credential ref，回落到 process env）。不带 `$` 的声明**直接报错**（"the declaration
+names the environment variable, it never holds its value"）——不猜、不兼容。活体
+`.moss/src/MOSS/ghosts/claude.py` 已按此改写。

@@ -21,8 +21,8 @@ ghost = DoloresMeta(
     providers=[
         DoloresProviderSpec(
             route="anthropic",
-            api_key_env="ANTHROPIC_API_KEY",
-            base_url_env="ANTHROPIC_BASE_URL",
+            api_key_env="$ANTHROPIC_API_KEY",
+            base_url_env="$ANTHROPIC_BASE_URL",
         ),
     ],
     default_model=("anthropic", _DEFAULT_MODEL),
