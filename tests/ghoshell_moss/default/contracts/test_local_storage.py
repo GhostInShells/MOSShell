@@ -82,3 +82,12 @@ def test_abspath_property(storage, tmp_path):
     """验证绝对路径返回是否正确"""
     # resolve() 会处理软链接等，确保一致性
     assert storage.abspath() == tmp_path.resolve()
+
+
+def test_put_replaces_atomically_and_leaves_no_temp_files(storage, tmp_path):
+    """一次完成的 put 只留下目标文件；覆盖写后目录里没有临时残留。"""
+    storage.put("nested/file.txt", b"first")
+    storage.put("nested/file.txt", b"second")
+
+    assert storage.get("nested/file.txt") == b"second"
+    assert sorted(path.name for path in (tmp_path / "nested").iterdir()) == ["file.txt"]

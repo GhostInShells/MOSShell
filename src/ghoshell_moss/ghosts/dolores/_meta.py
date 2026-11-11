@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ghoshell_container import IoCContainer
+from ghoshell_container import Contracts, IoCContainer, Provider
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -138,6 +138,24 @@ class DoloresMeta(GhostMeta):
         """
         return Path(__file__).parent / "dsh_plugin"
 
+    def providers(self) -> list[Provider]:
+        """dolores prototype private providers."""
+
+        from .configs import DoloresConfigStoreProvider
+        from .mindset.prompter import PromptManagerProvider
+
+        return [
+            DoloresConfigStoreProvider(),
+            PromptManagerProvider(),
+        ]
+
+    def contracts(self) -> Contracts:
+        """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""
+        from .configs import DoloresConfigStore
+        from .mindset.prompter import PromptManager
+
+        return Contracts.new(DoloresConfigStore, PromptManager)
+
     # ── factory ─────────────────────────────────────
 
     def factory(self, container: IoCContainer) -> Ghost:
@@ -165,4 +183,5 @@ class DoloresMeta(GhostMeta):
             session=session,
             matrix=matrix,
             shell=shell,
+            container=container,
         )

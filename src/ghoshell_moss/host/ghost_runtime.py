@@ -12,7 +12,7 @@ from ghoshell_moss.core import NucleusMeta
 from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, LoopHealth, LoopStatus, SafeMode
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
-from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostEvent
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostEvent, GhostHome, GhostMeta
 from ghoshell_moss.types.topics.ghost import (
     GHOST_IDLE,
     GHOST_OUTPUT,
@@ -182,9 +182,23 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         # 3. GhostMeta.factory(container) → ghost
         logger.debug("%r step 3/5: building ghost instance", self)
         self._ghost_instance = self._ghost_meta.factory(container)
+
+        # register the ghost instances before running.
+        container.set(Ghost, self._ghost_instance)
+        container.set(GhostMeta, self._ghost_meta)
+        container.set(type(self._ghost_instance), self._ghost_instance)
+        # the narrow home contract: components that persist meta assets resolve this, not Ghost.
+        if isinstance(self._ghost_instance, GhostHome):
+            container.set(GhostHome, self._ghost_instance)
+
         # 注册 ghost 错误观测 (on_error): ghost 内部检测到错误时 fire 回调 → 输出 error 讯息.
         # 先于 ghost.__aenter__ 注册, 使 dsh 启动期 (ghost.__aenter__ 内) 的错误也能被捕获.
         self._ghost_instance.on_error(self._on_ghost_error)
+
+        # 3.5: instantiate every declared non-lifecycle contract now that the ghost exists.
+        # A broken dependency (bad config, missing home) fails the boot here, not at first use.
+        for contract in self._ghost_meta.contracts().contracts:
+            container.force_fetch(contract)
 
         # 4. ghost.__aenter__
         logger.debug("%r step 4/5: entering ghost", self)

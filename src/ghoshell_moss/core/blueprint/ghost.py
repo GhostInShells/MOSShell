@@ -1,6 +1,7 @@
 """Ghost agent blueprint — persistent intelligent agent with continuous memory and reflexivity."""
 
-from typing import AsyncIterable, Callable, Any, Literal
+from pathlib import Path
+from typing import AsyncIterable, Callable, Any, Literal, Protocol, runtime_checkable
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
@@ -9,7 +10,25 @@ from ghoshell_moss.core.blueprint.channel_builder import Channel, ChannelFactory
 from ghoshell_moss.message import Message
 from pydantic import BaseModel, Field
 
-__all__ = ['Ghost', 'GhostMeta', 'GhostEvent']
+__all__ = ['Ghost', 'GhostMeta', 'GhostEvent', 'GhostHome']
+
+
+@runtime_checkable
+class GhostHome(Protocol):
+    """A ghost with a filesystem home.
+
+    Structural, not an ABC: a ghost without a home is still a valid ghost. Components that
+    persist meta assets (configs, prompts) resolve this protocol from the IoC instead of
+    discovering the environment, so the path travels with the instance, not with the process.
+    """
+
+    def home(self) -> Path:
+        """The ghost home — this instance's persistent directory."""
+        ...
+
+    def home_meta_dir(self) -> Path:
+        """The mechanism directory under the home (configs, prompts, ...)."""
+        ...
 
 
 class GhostMeta(ABC):

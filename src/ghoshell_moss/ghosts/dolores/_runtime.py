@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING, AsyncIterator
 import yaml
 
 from ._meta import DoloresProviderSpec
+from .constants import DOLORES_META_DIRECTORY
 from typing_extensions import Self
+
+from ghoshell_container import IoCContainer
 
 from ghoshell_moss.contracts.logger import get_moss_logger
 
@@ -276,6 +279,7 @@ class Dolores(Ghost):
         shell: MOSShell | None = None,
         moss_prompter: "MossSystemPrompter | None" = None,
         base_instruction: str | None = None,
+        container: IoCContainer | None = None,
     ):
         self._moss_prompter: MossSystemPrompter = moss_prompter
         self._meta = meta
@@ -284,6 +288,8 @@ class Dolores(Ghost):
         self._matrix = matrix
         self._shell = shell
         self._base_instruction = base_instruction
+        # the IoC container that registered this ghost's providers (None for embedded tests).
+        self._container = container
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
@@ -319,6 +325,21 @@ class Dolores(Ghost):
     @property
     def meta(self) -> GhostMeta:
         return self._meta
+
+    def home(self) -> Path:
+        """The ghost home — the instance's persistent directory.
+
+        Raises when this ghost was constructed without one (tests / embedded ghosts); a
+        consumer that needs persistence should resolve ``GhostHome`` from the IoC and treat
+        the missing home as a configuration error.
+        """
+        if self._home is None:
+            raise RuntimeError("this ghost was constructed without a home")
+        return self._home
+
+    def home_meta_dir(self) -> Path:
+        """The mechanism directory under the home — prompts, configs, and other meta assets."""
+        return self.home() / DOLORES_META_DIRECTORY
 
     def system_prompt(self) -> str:
         """instruction = baseline + prototype meta + identity + terminology + protocol + dolores layer.

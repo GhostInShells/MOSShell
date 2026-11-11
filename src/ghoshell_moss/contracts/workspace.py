@@ -9,6 +9,7 @@ import re
 import asyncio
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -396,7 +397,20 @@ class LocalStorage(Storage):
         target = self._safe_path(file_path)
         # 自动创建中间目录
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        # 同目录临时文件 + os.replace：读者永远看不到写了一半的文件；失败时清掉临时文件。
+        fd, tmp = tempfile.mkstemp(
+            dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "wb") as file:
+                file.write(content)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     def append(self, file_path: Union[str, Path], content: bytes) -> None:
         target = self._safe_path(file_path)

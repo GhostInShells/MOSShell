@@ -1,0 +1,12 @@
+# .dolores/prompts — prompt versions, one directory per key, one file per version.
+#
+# Key:     a.b.c   (dotted; dsh-compatible)
+# Dir:     a-b-c/  (dots become hyphens; segments never contain hyphens)
+# Version: <version>.md
+# Active:  a pointer in ../configs/prompts.yml, never the filename.
+#
+# The manager (mindset/prompter.py) is the contract; this file only sets the tracking policy.
+# Tracked: *.md. Ignored: drafts and scratch.
+*.tmp
+*.bak
+drafts/

@@ -7,10 +7,12 @@ description: Give the ghost a mind that holds several attentions at the same tim
 milestone: null
 priority: P0
 status: in-progress
-status_note: plan re-produced as the single contradiction-free document; discussions moved
-  into discuss/round1 and discuss/round2; the next vertical cut is undecided
+status_note: >-
+  plan is contradiction-free; the prompt manifest + commit-prompt bench (cut D) is recorded
+  as the superego's evaluation substrate — side-effect-free and buildable first; its trigger
+  and scoring are deferred. System prompter migration is out of scope this round.
 title: Dolores Concurrent Mind — one ghost, several attentions at once
-updated: '2026-11-05'
+updated: '2026-11-12'
 ---
 
 # Dolores Concurrent Mind
@@ -81,17 +83,89 @@ ending. The word names the structure; parallel execution is a scheduling policy 
 ## Plan
 
 **There is no committed build order yet.** This round first settles *what can be built*, not
-in what sequence. Three candidate vertical cuts, each with what it would falsify:
+in what sequence. Four candidate vertical cuts; D is a substrate, not a competing cut:
 
 | # | cut | falsifies | blocked by |
 |---|---|---|---|
 | A | plan store + reply clone | that `split` ever fires; that the return is O(1) | the `request` carrier |
 | B | `signal → impulse` full indexed log | that recording can carry replay + evaluation | schema |
 | C | superego's first job: batch-patch ground from friction points | that batch beats editing in place | seam ⑤ |
+| D | prompt manifest + commit-prompt bench | that a prompt is evaluable from an anchor; that manifest/files/versions are enough for RSI | superego motivation & scoring (deferred); the registry itself is buildable now |
 
 我推: **A first** — it is the only cut that can falsify *this workstream's proposition* (does
 concurrency make the main path cheaper). B is an instrument whose value is later; C needs the
-shape of a friction point first. This is his call.
+shape of a friction point first. D is not on that axis: it is the superego's evaluation
+substrate, side-effect-free on the attention runtime, and can land before A/B/C. The trigger
+and the score are its hard half, recorded below. This is his call.
+
+## Prompt manifest & commit-prompt bench (2026-11-12, cut D)
+
+> Recorded before the code wave. This is the superego's evaluation substrate, not a new
+> attention mechanism; the registry itself has no side effect on the attention runtime.
+
+### Why
+
+RSI needs an evaluation loop, and an evaluation loop needs prompts that are **addressable,
+editable, versioned and reflectable**. Today the mechanism prompts (`memento.note`,
+`memento.chat`, the exit record) live as code constants; there is no manifest, no version,
+no cheap runtime experiment. The first value point is the commit prompt: given a commit ref,
+run a candidate note prompt against the same context and score it.
+
+The motivation cannot come from the ego — the ego is saturated by interaction with the world.
+It belongs to the superego (D5/D12), as a trigger-class task. The registry is the substrate;
+the trigger and the score are the hard half.
+
+### Decisions (this round)
+
+- **Layout**: `.dolores/prompts/` (prompt versions) + `.dolores/configs/` (manifest + active
+  pointers). Prompt versions and the manifest are tracked in git; scratch/drafts are ignored.
+  `.gitignore` carries a short directory convention, but the contract is `PromptManager`.
+- **Key / path bijection**: manifest key is dotted (`a.b.c`, dsh-compatible); the directory is
+  hyphenated (`a-b-c/`); the version is the file stem (`<version>.md`). Segments are
+  `[A-Za-z0-9_]` with no hyphens inside, so `.` ↔ `-` is one-to-one.
+- **Names**: `PromptSpec` (manifest entry), `PromptVersion` (one file), `PromptsConfig`
+  (specs + active pointers), `PromptManager` (service). Errors: `UnknownPromptError`,
+  `PromptVersionNotFoundError`, `SlotMismatchError`, `PromptPathError`.
+- **Surface**: `specs / get / render / versions / create_version / activate / reset`. Paths are
+  computed by the manager; no raw writable path is exposed. Key/version validation and path
+  containment live there; the channel is a thin shell.
+- **Config**: `materialize=True` with a code-default `PromptsConfig`; stable specs are code
+  constants, prompt bodies are stub seeds (never YAML). Runtime `save` + `activate` change the
+  active pointer; `create_version` never activates.
+- **Ghost in IoC**: `host/ghost_runtime.py` now sets `Ghost`, `GhostMeta` and the concrete
+  ghost type before `__aenter__`; the concrete ghost exposes `home()` / `home_meta_dir()`, and
+  the store/prompt providers derive their roots from it instead of a hidden environment lookup.
+  The store and prompt manager are IoC singletons — the ghost does not hold them.
+  `DoloresMeta.contracts()` lists both, and boot instantiates every declared contract after the
+  ghost is registered, so a broken manifest fails startup. Writes (config saves, prompt
+  versions) go through a same-directory temp file + `os.replace`.
+- **Evaluation unit**: `commit ref → (session, turn, seq) → fork/seed → replace the key
+  component → one round`. A session log is never spliced — a spliced log is a trace that never
+  happened. For the commit prompt the run is one off-record round at the ref's `end_seq`
+  (`chat_off_record`), so no real fork is needed; the note bypass should share the same
+  primitive, and that migration is still pending.
+- **Superego**: the benchmark's motivation is a superego trigger task (first trigger deferred);
+  the score is an independent judge (D9); promotion is an explicit superego action, never
+  automatic. The action surface is a gated `ghost.meta.prompts` channel.
+- **Harness boundary**: exposing the dsh launcher/connection in IoC is fine; the bench gets a
+  narrow `AnchorRunner` (`run_at(anchor, messages) -> reply`), with the dsh implementation
+  behind an adapter. The registry, the records and the channel verbs stay harness-neutral.
+
+### Deferred (not this round)
+
+- The superego trigger condition (manual / every N commits / broken note / idle) — pick one
+  when the bench has a consumer.
+- Multi-turn fork (`AnchorRunner` beyond one round).
+- System prompter migration — the `_prompts.py` assembly is not refactored yet.
+- Auto-promote, automatic scoring loop, prompt UI, watchdog.
+
+### What it falsifies
+
+- That a prompt can be evaluated from an anchor without a new session paradigm.
+- That manifest + files + versions + active pointer is enough for RSI (the first bench will
+  tell).
+- That the superego can produce the motivation and an independent judge can score it
+  (deferred; the honest unknown).
 
 ## Open — genuinely undecided
 
@@ -125,6 +199,11 @@ shape of a friction point first. This is his call.
   a capability — the same mistake as promising a clone will not write outside its workspace.
 - **no `request` carrier**: `bypass/run` returns one text message; no schema, no retry, no
   billing unit.
+- **prompt assets are hardcoded** (`_prompts.py`, `_ego_memento.py`); `mindset/prompter.py` and
+  `configs.py` are drafts, not wired. Cut D is the plan to replace them.
+- **Ghost is in the IoC** (`host/ghost_runtime.py`): `Ghost` / `GhostMeta` / the concrete type
+  are set before `__aenter__`; `home()` / `home_meta_dir()` are implemented.
+  `DoloresMeta.contracts()` lists the config store + prompt manager, which boot instantiates.
 - **no plan store, no scheduler, no clone runtime.** `AbsMindflow._current_attention` is still
   singular.
 
