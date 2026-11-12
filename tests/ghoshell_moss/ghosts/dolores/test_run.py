@@ -241,6 +241,51 @@ class TestDoloresRun:
         assert "escalate" not in log
 
     @pytest.mark.asyncio
+    async def test_assistant_message_logs_the_model_call_usage(self, caplog):
+        """主路每次模型调用留下一行 usage —— 缓存账从此看得见, 不靠两笔旁路相减.
+
+        旁路的 ``kind=note`` / ``kind=chat`` 与主路的 ``kind=ego`` 共用同一扁平格式,
+        一个 grep 读两条路; 断言的就是这层操作契约.
+        """
+        import logging
+
+        from ghoshell_moss.ghosts.dolores._run import DoloresRun
+
+        logger = logging.getLogger("pytest.dolores.usage")
+        session = FakeRunSession()
+        run = DoloresRun(
+            ego=FakeRunEgo(session),
+            thinking=FakeRunThinking(),
+            thinking_event=asyncio.Event(),
+            facade=_NoopShellFacade(),
+            logger=logger,
+        )
+        event = dsh_event(
+            "assistant/message",
+            {
+                "turn": 4,
+                "step": 2,
+                "message": {"role": "assistant"},
+                "usage": {
+                    "inputTokens": 8158,
+                    "outputTokens": 1566,
+                    "cacheReadTokens": 82432,
+                    "cacheWriteTokens": 0,
+                    "reasoningTokens": 734,
+                },
+            },
+        )
+        with caplog.at_level(logging.INFO, logger="pytest.dolores.usage"):
+            await run._on_event(event)
+
+        line = next(
+            record.getMessage() for record in caplog.records
+            if "emanation usage" in record.getMessage()
+        )
+        assert "kind=ego turn=4 step=2" in line
+        assert "input=8158" in line and "cache_read=82432" in line and "reasoning=734" in line
+
+    @pytest.mark.asyncio
     async def test_shell_status_reads_facade(self):
         """moss_shell_status 读 shell 状态描述, 不产生 moment."""
         from ghoshell_moss.ghosts.dolores._run import DoloresRun

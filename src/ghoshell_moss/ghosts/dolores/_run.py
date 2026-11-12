@@ -34,6 +34,7 @@ from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.v0_2_0 import (
     AssistantChunk,
+    AssistantMessageEvent,
     SessionEvent,
     ToolCallEvent,
     TurnEnd,
@@ -42,6 +43,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
 )
 
 from ._ctml_stream import CtmlArgumentStream
+from ._ego_memento import log_emanation_usage
 from ._tools import (
     InterpretToolCall,
     ReactToolCall,
@@ -1010,9 +1012,27 @@ class DoloresRun:
 
     async def _on_event(self, event: "SessionEvent") -> None:
         """catch-all callback: 入队前处理, 再入队 (async-wrapped — the on_session_event consumer awaits)."""
+        self._note_usage(event)
         self._predispatch_abort(event)
         self._escalate_on_ghost_event(event)
         self._queue.put_nowait(event)
+
+    def _note_usage(self, event: "SessionEvent") -> None:
+        """主路每次模型调用打一行 usage —— 缓存的账从此看得见, 不靠两笔旁路相减.
+
+        ``assistant/message`` 带 ``usage`` (dsh 侧按 step 记账); 之前它被当作"流量"丢掉了,
+        于是主路到底命中多少缓存, 日志里一次都没出现过. 旁路的 ``kind=note`` / ``kind=chat``
+        走同一格式, 一个 grep 读两条路.
+        """
+        message = model_from_event(AssistantMessageEvent, event)
+        if message is None or message.usage is None:
+            return
+        log_emanation_usage(
+            self._logger,
+            kind="ego",
+            subject=f"turn={message.turn} step={message.step}",
+            usage=message.usage,
+        )
 
     def _escalate_on_ghost_event(self, event: "SessionEvent") -> None:
         """DSH 每签发一个事件, 就是这一轮还在工作的证据 —— 提权一次 (同步, 无 IO).

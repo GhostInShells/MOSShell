@@ -81,12 +81,16 @@ _DIGEST_TITLES = 5
 coordinate range — a budget, not a promise to render every commit."""
 
 
-def _log_emanation_usage(logger: LoggerItf, *, kind: str, subject: str, usage: TokenUsage) -> None:
-    """One INFO line per 應身 call — the bypass's only token accounting.
+def log_emanation_usage(logger: LoggerItf, *, kind: str, subject: str, usage: TokenUsage) -> None:
+    """One INFO line per model call — the ghost's token accounting, both paths.
 
-    An off-record call never enters the session log, so without this line the ghost's own
-    parallel thinking is invisible to any cost statistics. The format stays flat key=value
-    pairs: a future aggregator greps one prefix instead of parsing prose.
+    ``kind=note`` / ``kind=chat`` are the bypass calls: an off-record call never enters the
+    session log, so without this line the ghost's parallel thinking is invisible to cost
+    statistics. ``kind=ego`` is the main path, logged per step by the run loop — without it a
+    cache question could only be answered by subtracting two bypass notes.
+
+    The format stays flat key=value pairs: a future aggregator greps one prefix instead of
+    parsing prose.
     """
     logger.info(
         "emanation usage kind=%s %s input=%s cache_read=%s cache_write=%s output=%s reasoning=%s",
@@ -408,7 +412,7 @@ class EgoMementoManager:
         finally:
             with contextlib.suppress(Exception):
                 await session.close()
-        _log_emanation_usage(
+        log_emanation_usage(
             self._logger, kind="note", subject=f"commit={run.commit_id}", usage=reply.usage,
         )
         message = reply.text.strip()
@@ -624,7 +628,7 @@ class EgoMementoManager:
         finally:
             with contextlib.suppress(Exception):
                 await session.close()
-        _log_emanation_usage(
+        log_emanation_usage(
             self._logger, kind="chat", subject=f"coord={view.coord}", usage=reply.usage,
         )
         text = reply.text
