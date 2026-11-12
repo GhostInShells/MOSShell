@@ -8,13 +8,23 @@
 """
 
 import asyncio
+import json
 import os
 import re
+from decimal import Decimal
 from pathlib import Path
 
 import typer
 
-from ghoshell_moss.contracts.llms import CallSettings, Effort, LLMConfig, LLMFuncs, ModelRef, ResolvedModel
+from ghoshell_moss.contracts.llms import (
+    CallSettings,
+    Effort,
+    LLMConfig,
+    LLMFuncResult,
+    LLMFuncs,
+    ModelRef,
+    ResolvedModel,
+)
 from ghoshell_moss.depends import available
 
 from .utils import (
@@ -72,6 +82,9 @@ def _load_config() -> LLMConfig:
 
 def _load_funcs() -> LLMFuncs:
     """Read the LLMFuncs engine from the project container (decision A provider)."""
+    # pydantic-ai prints a version/observability banner on first agent run — pure
+    # noise for a one-shot CLI call. Suppress it before any agent is constructed.
+    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
     return _project_container().force_fetch(LLMFuncs)
 
 
@@ -103,41 +116,80 @@ def _display_base_url(base_url: str) -> str:
     return base_url
 
 
-def _model_head_rows(resolved: ResolvedModel) -> list[list[str]]:
-    """Key model facts for the head — never includes the api_key."""
+def _model_head_meta(resolved: ResolvedModel) -> dict:
+    """Key model facts as data — never includes the api_key."""
     service = resolved.service
     m = resolved.model
+    meta = {
+        "service": service.name,
+        "protocol": service.protocol,
+        "base_url": service.base_url,
+        "model": m.model,
+        "degraded_from": resolved.degraded_from,
+        "description": m.description,
+        "tags": dict(m.tags),
+        "content_types": list(m.content_types),
+        "converters": dict(m.converters),
+        "max_output_tokens": m.max_output_tokens,
+        "context_window": m.context_window,
+    }
+    if isinstance(service.base_url, str) and service.base_url.startswith("$"):
+        meta["base_url_env_set"] = bool(os.environ.get(service.base_url[1:]))
+    return meta
+
+
+def _model_head_rows(meta: dict) -> list[list[str]]:
     rows = [
-        ["service", service.name],
-        ["protocol", service.protocol],
-        ["base_url", _display_base_url(service.base_url)],
-        ["model", m.model],
+        ["service", meta["service"]],
+        ["protocol", meta["protocol"]],
+        ["base_url", _display_base_url(meta["base_url"])],
+        ["model", meta["model"]],
     ]
-    if resolved.degraded_from:
-        rows.append(["degraded_from", resolved.degraded_from])
+    if meta.get("degraded_from"):
+        rows.append(["degraded_from", meta["degraded_from"]])
     rows += [
-        ["description", m.description or "-"],
-        ["tags", ", ".join(f"{k}={v}" for k, v in m.tags.items()) or "-"],
-        ["content_types", ", ".join(m.content_types) or "-"],
-        ["converters", ", ".join(f"{k}: {v}" for k, v in m.converters.items()) or "-"],
-        ["max_output_tokens", str(m.max_output_tokens)],
-        ["context_window", str(m.context_window)],
+        ["description", meta.get("description") or "-"],
+        ["tags", ", ".join(f"{k}={v}" for k, v in meta["tags"].items()) or "-"],
+        ["content_types", ", ".join(meta["content_types"]) or "-"],
+        ["converters", ", ".join(f"{k}: {v}" for k, v in meta["converters"].items()) or "-"],
+        ["max_output_tokens", str(meta["max_output_tokens"])],
+        ["context_window", str(meta["context_window"])],
     ]
     return rows
 
 
-def _print_model_head(provider: str, model: str, tag: str | None) -> None:
+def _json_default(value):
+    """Encode provider usage values (Decimal) and paths for JSON events."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, Path):
+        return value.as_posix()
+    return str(value)
+
+
+def _emit_event(event: dict) -> None:
+    """Emit one machine-readable JSON event (JSONL) on stdout."""
+    echo(json.dumps(event, ensure_ascii=False, default=_json_default))
+
+
+def _print_model_head(
+        provider: str, model: str, tag: str | None, *, json_output: bool = False,
+) -> None:
     """Print the resolved model head before a call.
 
     Shows exactly which model will run and, when the request fell back to a
     default, what it degraded from (``degraded_from``). ``content_types`` is
     displayed as plain info — no warning: with the head visible, the caller
     can read for themselves whether a model sees images. The api_key is never
-    printed.
+    printed. With ``json_output`` the head becomes a ``model_head`` event.
     """
     resolved = _load_config().get_model(provider=provider, model=model, tag=tag)
+    meta = _model_head_meta(resolved)
+    if json_output:
+        _emit_event({"type": "model_head", **meta})
+        return
     print_simple_table(
-        _model_head_rows(resolved),
+        _model_head_rows(meta),
         headers=["key", "value"],
         title="Model Head",
     )
@@ -205,10 +257,10 @@ def _call(
         settings: CallSettings | None = None,
         effort: Effort | None = None,
         expose_file_meta: bool = False,
-) -> str:
+) -> LLMFuncResult:
     """Plain-text call — 与结构化路径共用 call_prompt, @ 文件协议生效."""
     inst = _read_instruction(instruction) if instruction else ""
-    result = asyncio.run(funcs.call_prompt(
+    return asyncio.run(funcs.call_prompt(
         text=prompt,
         instruction=inst,
         result_type=None,
@@ -219,7 +271,25 @@ def _call(
         effort=effort,
         expose_file_meta=expose_file_meta,
     ))
-    return result.content or ""
+
+
+def _resolve_result_type(path: str):
+    """Resolve ``module:attr`` to a BaseModel subclass — reject other types early.
+
+    pydantic-ai also accepts dataclasses as output types, but the engine's
+    anchor/record path assumes ``model_dump`` — a dataclass would otherwise
+    fail deep inside the call. Validate at the boundary instead.
+    """
+    from pydantic import BaseModel
+    from ghoshell_common.helpers import import_from_path
+
+    obj = import_from_path(path)
+    if not (isinstance(obj, type) and issubclass(obj, BaseModel)):
+        raise TypeError(
+            f"--response-model must point to a pydantic BaseModel subclass, "
+            f"got {path!r} -> {obj!r}"
+        )
+    return obj
 
 
 def _call_structured(
@@ -257,12 +327,9 @@ def _call_structured(
     ``expose_file_meta`` — @ file references render with the file meta layer
     (path/type/size), off by default (bare content).
     """
-    import json as _json
-
-    from ghoshell_common.helpers import import_from_path
     from ghoshell_moss.anchor import Anchor
 
-    result_type = import_from_path(response_model)
+    result_type = _resolve_result_type(response_model)
     inst = _read_instruction(instruction)
     anchor = Anchor.from_file(input_anchor) if input_anchor else None
     thinking_text = _read_instruction(thinking) if thinking else None
@@ -290,18 +357,18 @@ def _call_structured(
                     anchor_paths.append(f"{export_anchor}.anchor.yml")
                 else:
                     anchor_paths.append(f"{r.anchor.meta.name}.anchor.yml")
-            item = r.model_dump(exclude_none=True)
-            item.pop("anchor", None)
-            results.append(item)
+            results.append(_result_payload(r))
         return results, anchor_paths
 
     items, anchor_paths = asyncio.run(_run())
-    if repeat == 1 and not json_output:
+    if json_output:
+        for item in items:
+            _emit_event({"type": "result", **item})
+        for p in anchor_paths:
+            _emit_event({"type": "anchor", "path": p})
+        return
+    if repeat == 1:
         _print_single_result(items[0], verbose)
-    elif repeat == 1 and json_output:
-        echo(_json.dumps(items[0], indent=2, ensure_ascii=False))
-    elif json_output:
-        echo(_json.dumps(items, indent=2, ensure_ascii=False))
     elif verbose:
         for i, item in enumerate(items):
             print_info(f"[{i + 1}/{repeat}]")
@@ -311,6 +378,13 @@ def _call_structured(
             echo(item.get("content", "") or str(item["result"]))
     for p in anchor_paths:
         print_success(f"anchor: {p}")
+
+
+def _result_payload(result: LLMFuncResult) -> dict:
+    """Weak-data view of an LLMFuncResult — the anchor stays out of the output."""
+    item = result.model_dump(exclude_none=True)
+    item.pop("anchor", None)
+    return item
 
 
 def _print_single_result(item: dict, verbose: bool) -> None:
@@ -375,7 +449,10 @@ if available("pydantic_ai", "anthropic"):
             ),
             json_output: bool = typer.Option(
                 False, "--json", "-j",
-                help="Output result as JSON (structured response).",
+                help=(
+                    "Emit machine-readable JSON events on stdout, one per line: "
+                    "model_head, result, anchor, error."
+                ),
             ),
             verbose: bool = typer.Option(
                 False, "--verbose", "-v",
@@ -453,7 +530,7 @@ if available("pydantic_ai", "anthropic"):
         """
         funcs = _load_funcs()
         if not headless:
-            _print_model_head(provider, model, tag)
+            _print_model_head(provider, model, tag, json_output=json_output)
         settings = CallSettings(
             temperature=temperature, max_output_tokens=max_output_tokens,
         ) if (temperature is not None or max_output_tokens is not None) else None
@@ -478,7 +555,7 @@ if available("pydantic_ai", "anthropic"):
                     expose_file_meta=expose_file_meta,
                 )
             else:
-                output = _call(
+                result = _call(
                     funcs, prompt,
                     instruction=instruction,
                     provider=provider,
@@ -488,9 +565,16 @@ if available("pydantic_ai", "anthropic"):
                     effort=effort,
                     expose_file_meta=expose_file_meta,
                 )
-                echo(output)
+                if json_output:
+                    _emit_event({"type": "result", **_result_payload(result)})
+                else:
+                    echo(result.content)
         except Exception as e:
-            print_error(f"call failed: {_error_summary(e)}")
+            message = _error_summary(e)
+            if json_output:
+                _emit_event({"type": "error", "message": message})
+            else:
+                print_error(f"call failed: {message}")
             raise typer.Exit(code=1)
 
     @llms_app.command(
@@ -508,7 +592,7 @@ if available("pydantic_ai", "anthropic"):
             output = _call(
                 funcs, "Reply with exactly: pong",
                 provider=provider, model=model, tag=tag,
-            )
+            ).content
         except Exception as e:
             print_error(f"llms test FAILED: {_error_summary(e)}")
             raise typer.Exit(code=1)
