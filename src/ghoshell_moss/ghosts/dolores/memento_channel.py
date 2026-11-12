@@ -86,6 +86,11 @@ def _instruction_text(
         except PromptError as exc:
             rules = f"(commit note rules unavailable: {exc})"
         lines.extend(["", "## Commit note", "", rules.strip()])
+        # 字数预算归配置, 不写死在提示词资产里 —— 提示词讲格式, 配置讲尺度.
+        lines.append("")
+        lines.append(
+            f"Body budget: {manager.config.note_body_tokens} tokens; the title line is extra."
+        )
     return "\n".join(lines)
 
 

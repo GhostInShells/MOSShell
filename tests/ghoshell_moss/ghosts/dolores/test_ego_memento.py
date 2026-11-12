@@ -96,13 +96,28 @@ class TestEgoMementoSidecar:
         assert sent_anchor.turn == 1 and sent_anchor.seq is None
         # No `readonly`: emptying the tools menu starts a new prefix family and loses the cache.
         assert "readonly" not in kwargs
-        assert kwargs["llm"]["reasoningEffort"] == "off"
+        assert kwargs["llm"]["reasoningEffort"] == "low"
         assert kwargs["max_tokens"] > 0
         text = self._note_text(conn)
         assert '<mindfork task="memento.note">' in text
         assert "concurrent 應身 of yourself above" in text
         assert "Your final output is the note itself" in text
         assert self._state(manager, anchor.id) == "ready"
+
+    @pytest.mark.asyncio
+    async def test_note_states_the_configured_body_budget(self, tmp_path: Path):
+        """The body limit in the request comes from config, not from a literal in the prompt."""
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig
+
+        conn = self._FakeConnection({"text": "title\nbody"})
+        manager, _ = self._manager(
+            tmp_path, conn, config=EgoMementoConfig(note_body_tokens=1234)
+        )
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        manager.schedule_note(anchor.id)
+        await manager.drain_bypass()
+
+        assert "1234 tokens" in self._note_text(conn)
 
     @pytest.mark.asyncio
     async def test_note_reports_its_token_usage(self, tmp_path: Path, caplog):

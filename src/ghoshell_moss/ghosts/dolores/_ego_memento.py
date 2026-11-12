@@ -70,9 +70,10 @@ _PREV_TURN_KEY = "prev_turn"
 # read 路由: 收 {ref} 回 {events}, 源 log 的 turn 区间原始切片 (live-or-cold).
 _READ_ROUTE = "/moss-api/ghost/dolores/read"
 
-# note 旁路的固定约束 (强制, 不可调): 摘要关思考 —— max_tokens 只封回答不封 CoT, 只有 off 才让
-# note_max_tokens 成为真硬 cap (压缩不该深想, 省 token 不阻塞主路).
-_NOTE_EFFORT = "off"
+# 旁路的思考强度. 不是"越省越好": `off` 会把 reasoning 块从 prompt 里拿掉, 请求因此换一条前缀
+# 缓存族 (实测同一会话: 179k → 141k, 主回合的热一点吃不到). `low` 与主回合 (max) 同族, 又只付
+# 少量思考 token —— 在 deepseek 家族上, 这是唯一"快、且命中"的档.
+_BYPASS_EFFORT = "low"
 # 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
 _NOTE_PRIOR_COUNT = 1
 _DIGEST_TITLES = 5
@@ -135,10 +136,17 @@ class EgoMementoConfig(BaseModel):
         ),
     )
     note_max_tokens: int = Field(
-        default=1600,
+        default=4096,
         description=(
-            "note 输出的硬上限 (title + body). 正文按跨度自然收缩, 不设 aim; "
-            "1500 body + title 的预算由提示词与 cap 共同约束."
+            "note 请求的输出上限 (thinking + title + body). low 档下思考与正文共享这个天花板; "
+            "正文预算另见 note_body_tokens."
+        ),
+    )
+    note_body_tokens: int = Field(
+        default=1500,
+        description=(
+            "note 正文的预算 —— 写进 commit note 规则 (channel instruction 与旁路请求共用). "
+            "title 另计. 与 note_max_tokens 分开: 前者是给模型看的约束, 后者是请求的硬天花板."
         ),
     )
     note_retry_timeout: float = Field(
@@ -451,7 +459,7 @@ class EgoMementoManager:
         return await session.chat_off_record(
             [[ContentBlock(type="text", text=self._note_message(run.commit_id))]],
             anchor=anchor,
-            llm={"reasoningEffort": _NOTE_EFFORT},
+            llm={"reasoningEffort": _BYPASS_EFFORT},
             max_tokens=self._config.note_max_tokens,
         )
 
@@ -519,6 +527,7 @@ class EgoMementoManager:
             f"You are a concurrent {NIRMANAKAYA} of yourself above. This is a one-shot task: write\n"
             "the note for the commit that ends this span. Your final output is the note itself:\n"
             "first line the title, then the body. Nothing you write is executed; do not call tools.\n"
+            f"The body budget is {self._config.note_body_tokens} tokens; the title line is extra.\n"
             f"</{MINDFORK}>"
         )
 
@@ -608,6 +617,7 @@ class EgoMementoManager:
             reply = await session.chat_off_record(
                 [[ContentBlock(type="text", text=self._chat_message(prompt))]],
                 anchor=anchor,
+                llm={"reasoningEffort": _BYPASS_EFFORT},
             )
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc

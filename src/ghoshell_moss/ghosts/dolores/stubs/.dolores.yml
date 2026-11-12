@@ -20,6 +20,7 @@ memento:
   # 启动前原地 compact (surface replace 成 memory 视图), 保留最新一个 commit 的 span 作原文 tail.
   # deepseek-flash 窗口 1M, 取 ~60% 留输出/思维余量. 0 = 关闭自动 compact.
   compact_tokens: 600000
-  # 启动补漏: 回扫尾部 N 条 commit, 给上次运行没产出 note 的补跑旁路 (主要是关停时被取消的那些).
-  # 0 = 关掉补漏.
-  resume_tail: 5
+  # note 请求的输出上限 (thinking + title + body). 旁路用 low 思考档 — off 会换一条前缀缓存族.
+  note_max_tokens: 4096
+  # note 正文预算 —— 写进 commit note 规则, 给模型看的约束. title 另计.
+  note_body_tokens: 1500
