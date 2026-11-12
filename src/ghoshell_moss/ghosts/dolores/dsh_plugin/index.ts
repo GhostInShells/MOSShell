@@ -32,8 +32,9 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort, 阻塞执行完.
  * 3. thinking/exit    — 反转 thinking 状态; agent 非 idle 则显式 cancel (interrupt).
  * 4. perStep 锁       — ego session 非 thinking → 阻塞等 thinking/enter 反转;
- *                       非主 ego (旁路) → 降级 (sandbox read-only) + 插入旁路
- *                       instruction 跑单轮, tools 全拒, turn/end 折叠 (旁路无残留).
+ *                       非主 ego (旁路) → 每步重申只读沙箱 + approval never, 剥掉 shell 组
+ *                       tools, 首次注入一段说明机制的文字. 不折叠、不单轮: 旁路保留自己的
+ *                       历史 (人类 fork 出来的那个会话本来就在跟人对话).
  * 5. moment/epoch 映射 — python 侧组装, plugin 只收现成 content blocks (dumb transport,
  *                       不 parse xml-like). context (echoes/dynamic/executing → <moment>,
  *                       inject) + inputs (percepts + hint → <inputs>, steer) + epoch
@@ -172,7 +173,7 @@ const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
 // memory 由新 epoch 的 recap 交付 (头是 protected head, 不可折叠).
 const DOLORES_COMPACT = `${DOLORES_API_ROOT}/compact`
 // 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
-// doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠), 不走 subagent,
+// doloresEgoSessionId → pre-step 降级: 只读 + 剥 shell tools + 一次性说明), 不走 subagent,
 // 不 attach ego workspace (attach 到 ghost_home 上的 home workspace 归组). 必须复用 ego
 // preset 而非另建瘦 preset: 旁路 prompt 要与主路逐字节同前缀, 才能吃到 LLM 前缀缓存
 // (见 plugin 顶注 / memento-plan #7).
@@ -223,14 +224,33 @@ let pendingMemory: string[] = []
 let activeTurn: number | null = null
 let cancelTurn: number | null = null
 
-// ── 旁路 (bypass): 非主 ego session 的记账与注入 ─────────────────────
-// 旁路 = ego-class (dolores-ego preset) 但 id ≠ doloresEgoSessionId 的 session. 它不跑
-// thinking 事务、不消费 pendingMoments、工具全拒; 每次只跑一轮. bypassTurns 记每个旁路
-// session 当前开的 turn 号 — 下一轮 pre-step 时据此折叠上一轮的 surface (前置清理).
-const bypassTurns = new Map<SessionId, number>()
+// ── 旁路 (bypass): 与主 ego 平级的旁支会话 ───────────────────────────
+// 判据只有一条: ego-class (dolores-ego preset) 且 id ≠ doloresEgoSessionId. subagent 继承父
+// preset, 人类在 UI 上从某个 Ψ fork, 以及我们自己的 off-record 调用 — 都落在这里. 它们与主路
+// 共享上下文, 但不在主路的时序与写边界里: 不跑 thinking 事务, 不消费 pendingMoments, 只读.
+// 未来 python 侧登记的可写旁路 (clone / superego) 不走这条分支 — 它们要与主路决策绑定, 那是
+// 另一层的机制, 不是这里的宽松.
+//
+// bypassInstructed 记已注入过说明的旁路 session (仅进程内). 说明只注入一次: 它一旦进了
+// surface 就留在历史里, 每步重注只会把同一段话叠很多遍.
+const bypassInstructed = new Set<SessionId>()
 
-// 旁路 instruction 正文 — pre-step 前置注入, 让模型知道这是降级后的单轮旁路会话.
-const BYPASS_INSTRUCTION = 'You are in a bypass (non-primary) ego session. This session has been superseded and is read-only: tools are disabled, so answer in a single turn without taking any action. Respond to the input below directly.'
+// 旁路 instruction 正文 — 只陈述机制, 不给行为指令: 里面跑的是同一个模型, 它知道怎么回事.
+const BYPASS_INSTRUCTION = 'This session is a bypass session — a sidecar of the ghost\'s primary session, running beside it rather than as it. MOSS keeps exactly one primary ego session: turn timing, the CTML channel to the world, and the write boundary are all its. This session shares that context but sits outside that boundary — its sandbox is read-only, its CTML tools are not mounted, and a write here would be a write nothing accounts for.'
+
+// shell 工具 = 主 ego 对世界的手: 它们的 execute 走 awaitToolResult, 等的是 python 侧针对主 ego
+// 的 /tool-result. 旁路调它们不会得到拒绝, 而是永远等下去 (租不到那头), 所以必须剥掉, 不是收权.
+// moss_channel_facade 是纯读、不走那条线, 留着.
+const BYPASS_TOOL_DENY = new Set([
+  'moss_interpret',
+  'moss_reply_first',
+  'moss_react',
+  'moss_wait_next',
+  'moss_observe',
+  'moss_reasoning',
+  'moss_shell_clear',
+  'moss_shell_status',
+])
 
 // ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
 // TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
@@ -745,11 +765,12 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
   for (const tool of egoTools) {
     agentCtx.tools.register(tool)
   }
-  // 旁路 tools 全拒 (动态判定): agent 一旦不再是主 (id ≠ doloresEgoSessionId), 其工具调用在
-  // dispatch 前被 guard 拒掉 (guard 经 agent.ctx 注册只对该 agent 生效). 主路 agent 不受影响.
+  // 旁路 tools: 只剥 shell 那几只 (黑名单), 其余按 dsh 默认. agent 一旦不再是主
+  // (id ≠ doloresEgoSessionId), 这些调用在 dispatch 前被 guard 拒掉 (guard 经 agent.ctx 注册,
+  // 只对该 agent 生效). 主路 agent 不受影响.
   agentCtx.tools.guard((exec) => {
-    if (exec.agent !== undefined && exec.agent.id !== doloresEgoSessionId) {
-      return 'This is a bypass session; tools are unavailable. Answer in a single turn only.'
+    if (exec.agent !== undefined && exec.agent.id !== doloresEgoSessionId && BYPASS_TOOL_DENY.has(exec.name)) {
+      return 'This session is a bypass session: the CTML tools belong to the primary ego session and are not mounted here.'
     }
     return undefined
   })
@@ -758,25 +779,17 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
   agentCtx.on('agent/pre-step', async ({ agent: stepAgent, turn, signal }, next) => {
     // 旁路分支 (纯身份判定, 不看 gate/token): 非主 ego session.
     if (stepAgent.id !== doloresEgoSessionId) {
-      // 前置清理 (map 思路): 下一轮 pre-step 时折叠上一轮旁路的 surface, 取代 session/event
-      // 后置清理 — 后者经 session carrier 的 scope 分发, plugin ctx 收不到事件. 上一轮的
-      // instruction + 回答在下轮 pre-step 被 replace 掉, 模型看不到上一轮副作用.
-      const prevTurn = bypassTurns.get(stepAgent.id)
-      if (prevTurn !== undefined && prevTurn !== turn) {
-        try {
-          collapseTurn(stepAgent.session, prevTurn)
-          ctx.logger.info('dolores: collapsed bypass turn %d in session %s', prevTurn, stepAgent.id)
-        } catch (error) {
-          ctx.logger.warn('dolores: bypass turn collapse failed: %s', String(error))
-        }
-      }
-      bypassTurns.set(stepAgent.id, turn)
-      // 降级 (先降级再放行): sandbox 改 read-only (sandbox/mode 是 last-wins, 追加即切换). 旁路只读、单轮.
-      // effort 不再硬编码 low — 归 UI/约定驱动 (note 旁路走 bypass/run 显式注入).
+      // 降级 (先降级再放行): 只读沙箱 + 审批永不为 ask. 两步都是 last-wins 的 log-only 事件,
+      // 每步重申是有意的 —— 人在 UI 里把这个会话改回可写, 或改成 ask, 下一步会被按回去.
+      // 不是覆盖他的操作: 这个会话本来就不该写, 也不该把任何人挂在审批上.
       stepAgent.session.append('sandbox/mode', { mode: 'read-only' })
+      stepAgent.session.append('approval/policy', { policy: 'never' })
+      // 说明只注入一次 (进程内): 进了 surface 就留在历史里, 每步重注只会把同一段话叠很多遍.
+      const firstVisit = !bypassInstructed.has(stepAgent.id)
+      if (firstVisit) bypassInstructed.add(stepAgent.id)
       const decision = await next()
       if (decision.kind === 'reject') return decision
-      // 前置旁路 instruction → 成为该 turn 的 surface 节点, 下轮 pre-step 时被 collapseTurn 折叠.
+      if (!firstVisit) return decision
       return { kind: 'enter', messages: [bypassInstruction(), ...decision.messages] }
     }
     // cancel_turn: 本 turn 的某个 tool 结果已带 cancel (moss_wait_next / moss_react / moss_reasoning), 直接 cut.
@@ -1343,7 +1356,7 @@ export function apply(ctx: Context) {
 
   // ── 旁路原语 (单轮) — note / chat / 任何"用某段上下文跑一轮"的调用方 ─────────
   // 入参 {ref, prompt}. 冷读源 session 的 log → 尾部截断成 verbatim seed → 新建一个
-  // 身份旁路 agent (tools 全拒 + turn/end 折叠) → 跑一轮 → 读最后一条 assistant text → dispose.
+  // 身份旁路 agent (只读 + 剥 shell tools) → 跑一轮 → 读最后一条 assistant text → dispose.
   // 不走 subagent (child 结果回流会驱动父 turn = 红线); 不 attach workspace (不污染工作区).
   ctx.webServer.register({
     kind: 'exact',
@@ -1848,9 +1861,9 @@ function flushPendingMoments(agent: Agent): void {
   }
 }
 
-// ── helper: 旁路 instruction + turn 折叠 ────────────────────────────────
+// ── helper: 旁路 instruction ───────────────────────────────────────────
 
-/** 旁路 instruction — 作为旁路 turn 的第一条 user/message 注入 (pre-step 前置). */
+/** 旁路 instruction — 该会话的第一条 user/message, 只注入一次 (见 bypassInstructed). */
 function bypassInstruction(): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: BYPASS_INSTRUCTION }],
@@ -1859,45 +1872,11 @@ function bypassInstruction(): UserMessage {
 }
 
 /**
- * collapseTurn — 把旁路 turn 的 surface 节点折叠成一条空 user/message.
- *
- * 取该 turn 的 turn/start~turn/end seq 窗口内、当前仍挂在 surface 上的节点, 用一条空 content
- * 的 user/message replace 掉整段 (compaction 同款 replace 语义). 为何不是空 assistant/message:
- * deriveEventMessage 对空 assistant 返 null 才是"真零残迹", 但 session invariant 要求
- * assistant/message 命名当前 open step — 折叠发生在下一轮 pre-step (openStep 尚为 null, 未发
- * step/start), 空 assistant 仍过不了 requireOpenStep. 唯一合法的 replace 节点是 user/message
- * (invariant 对 user/message 无约束, 见 dsh-session/invariant).
- * 在 pre-step 前置清理路径里执行, 调用方已 try/catch.
- */
-function collapseTurn(session: Session, turn: number): void {
-  let startSeq: number | undefined
-  let endSeq: number | undefined
-  // 0.1.5: log 走 session.snapshotEvents() (Session 无 `events` 访问器).
-  for (const event of session.snapshotEvents()) {
-    if (event.type === 'turn/start' && event.data.turn === turn && startSeq === undefined) {
-      startSeq = event.seq
-    }
-    if (event.type === 'turn/end' && event.data.turn === turn) {
-      endSeq = event.seq
-    }
-  }
-  const start = startSeq
-  const end = endSeq
-  if (start === undefined || end === undefined) return
-  const shadowed = session.surface.nodes.filter(seq => seq >= start && seq <= end)
-  if (shadowed.length === 0) return
-  appendReplace(session, shadowed, createUserMessage({
-    content: [],
-    source: { kind: name },
-  }))
-}
-
-/**
  * appendReplace — 原地用一条 user/message replace 掉 shadowed 序列上的 surface 节点.
  *
  * replace 字段名跨版本漂移 (0.1.5-rc.1 要 ``{op,startSeq,endSeq}``, 0.1.5-rc.2 用 ``{op,start,end}``)；
  * ``session.append`` 在 shape 不符时**同步抛** (push 前校验, 不留半写), 于是退回另一种形状即可 ——
- * 不查版本号, 机制自适应 (唯一合法的 replace 节点是 user/message, 见 collapseTurn 注释)。
+ * 不查版本号, 机制自适应 (唯一合法的 replace 节点是 user/message, 见 compact 的调用方)。
  */
 function appendReplace(session: Session, shadowed: readonly number[], message: UserMessage): void {
   const first = shadowed[0]
