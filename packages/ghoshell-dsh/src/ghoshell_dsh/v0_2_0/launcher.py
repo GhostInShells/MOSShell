@@ -103,6 +103,7 @@ from .client import DshClient
 from .session import DshSession
 from .types.nouns import WorkspaceView
 from .types.session_events import SessionEvent, SessionEventMeta
+from .types.sessions import SessionSummary
 
 __all__ = [
     "DshConnection",
@@ -868,6 +869,30 @@ class DshConnection:
             "ghoshell/archiveSession", {"sessionId": session_id, "stop": stop}
         )
         self._archived_sessions.add(session_id)
+
+    async def list_sessions(self) -> list[SessionSummary]:
+        """Every session this dsh holds — id, title, activity time, running.
+
+        ``session/list`` is a typert route: its request rides under ``_request``. The host
+        returns the list ordered by ``updatedAt`` descending; re-sorting here would hide that
+        contract, so the order is passed through untouched.
+
+        A title is a projection value (``projections.values.title``), not a top-level field —
+        a session that was never renamed simply has no title.
+        """
+        value = await self.client.typert("session/list", {})
+        return [SessionSummary.model_validate(item) for item in value.get("items") or []]
+
+    async def rename_session(self, session_id: str, title: str) -> None:
+        """Set one session's title by id — no handle, no attach stream.
+
+        Renaming is a pure roster edit: it loads the session's title projection, not the
+        conversation. That is why closing old sessions can afford to rename a bounded K of
+        them and archive the rest as-is (see the ghost's boot rule).
+        """
+        await self.client.typert(
+            "session/rename", {"sessionId": session_id, "title": title}, args_key="request"
+        )
 
     async def wait_workspace(
         self,

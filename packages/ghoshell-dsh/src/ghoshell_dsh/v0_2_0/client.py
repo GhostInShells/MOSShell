@@ -174,6 +174,22 @@ class DshClient:
         args: dict[str, Any] = {} if request is None else {"request": request}
         return await self._invoke(method, args, timeout)
 
+    async def typert(
+        self,
+        method: str,
+        request: dict[str, Any] | None = None,
+        *,
+        args_key: str = "_request",
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Unary typert route: the request rides under the key its descriptor declares.
+
+        The key is per-route, not a grand convention: ``session/list`` takes ``_request``,
+        ``session/rename`` takes ``request``. Sending the wrong one is answered with
+        ``gateway/arguments-invalid`` ("missing X; unexpected Y"), so it is passed in explicitly.
+        """
+        return await self._invoke(method, {args_key: request or {}}, timeout)
+
     def set_cookies(self, cookies: dict[str, str]) -> None:
         """注入 dsh web 鉴权 cookie 到后续 /api 调用 (requestRejection 要求)."""
         self._http_client.cookies.update(cookies)

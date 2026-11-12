@@ -31,6 +31,7 @@ from ghoshell_dsh.blueprint.models.sessions import (
     ModelProviderGroup,
     ModelReasoning,
     ModelReasoningEffort,
+    SessionSummary,
 )
 from ghoshell_dsh.v0_2_0.install import bundle_dir, install_bundle, installed_patch, refresh_bundle
 from ghoshell_dsh.v0_2_0.launcher import (
@@ -90,4 +91,5 @@ __all__ = [
     "ModelProviderGroup",
     "ModelReasoning",
     "ModelReasoningEffort",
+    "SessionSummary",
 ]

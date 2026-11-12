@@ -914,3 +914,120 @@ class TestTurnEndClassification:
         assert _turn_end_abort_reason(
             self._end("error", cause=self._cause("hook"))
         ) == "turn/end error (hook)"
+
+
+class TestDoloresEgoClosePreviousSessions:
+    """close_previous_sessions — 一个活着的 Ψ, 其余归档; 最近 K 个先改成 Ω."""
+
+    class _Launcher:
+        def __init__(self, sessions, *, archived=(), fail_list=False):
+            self.sessions = sessions
+            self.archived = set(archived)
+            self.fail_list = fail_list
+            self.renamed: list[tuple[str, str]] = []
+            self.archived_calls: list[str] = []
+
+        async def list_sessions(self):
+            if self.fail_list:
+                raise RuntimeError("dsh down")
+            return self.sessions
+
+        async def archived_session_ids(self):
+            return set(self.archived)
+
+        async def rename_session(self, session_id: str, title: str) -> None:
+            self.renamed.append((session_id, title))
+
+        async def archive_session(self, session_id: str) -> None:
+            self.archived_calls.append(session_id)
+
+    @staticmethod
+    def _ego(launcher, *, k: int = 10):
+        from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoConfig, DoloresEgoContext
+
+        return DoloresEgo(
+            launcher=launcher,
+            ctx=DoloresEgoContext(
+                project_home=Path("/proj"),
+                project_name="pytest",
+                name="dolores",
+                mode="pytest",
+                instruction="i",
+                facade=None,
+            ),
+            config=DoloresEgoConfig(session_archive_rename_k=k),
+        )
+
+    @staticmethod
+    def _summary(sid: str, title: str | None, updated_at: int, *, cwd: str = "/proj"):
+        from ghoshell_moss.deepseek_harness.v0_2_0 import SessionSummary
+
+        return SessionSummary(
+            sessionId=sid,
+            updatedAt=updated_at,
+            cwd=cwd,
+            projections=None if title is None else {"values": {"title": title}},
+        )
+
+    def test_closes_only_the_psi_sessions_of_this_project(self):
+        launcher = self._Launcher(
+            [
+                self._summary("s1", "Ψ · 26-11-12 16:56:52", 300),
+                self._summary("s2", "Ψ · 26-11-12 15:57:56", 200),
+                self._summary("s3", "some hand-named session", 100),
+                self._summary("s4", "Ψ · 26-11-11 10:00:00", 50, cwd="/elsewhere"),
+                self._summary("s5", "Ω · 26-11-10 09:00–10:00", 10),
+            ],
+            archived={"s5"},
+        )
+        asyncio.run(self._ego(launcher).close_previous_sessions())
+
+        assert launcher.archived_calls == ["s1", "s2"]
+        assert [sid for sid, _ in launcher.renamed] == ["s1", "s2"]
+        assert all(title.startswith("Ω · ") for _, title in launcher.renamed)
+        assert launcher.renamed[0][1].startswith("Ω · 26-11-12 16:56")
+
+    def test_only_the_freshest_k_get_an_omega_title(self):
+        launcher = self._Launcher(
+            [
+                self._summary("s1", "Ψ · 26-11-12 16:56:52", 300),
+                self._summary("s2", "Ψ · 26-11-12 15:57:56", 200),
+                self._summary("s3", "Ψ · 26-11-12 11:51:19", 100),
+            ]
+        )
+        asyncio.run(self._ego(launcher, k=1).close_previous_sessions())
+
+        assert [sid for sid, _ in launcher.renamed] == ["s1"]
+        assert launcher.archived_calls == ["s1", "s2", "s3"]
+
+    def test_an_unreachable_dsh_does_not_block_boot(self):
+        launcher = self._Launcher([], fail_list=True)
+        asyncio.run(self._ego(launcher).close_previous_sessions())
+        assert launcher.archived_calls == []
+
+    def test_omega_title_keeps_one_day_and_two_days_apart(self):
+        from datetime import datetime
+
+        from ghoshell_moss.ghosts.dolores._ego import _closed_session_title
+
+        def ms(y, mo, d, h, mi):
+            return int(datetime(y, mo, d, h, mi).timestamp() * 1000)
+
+        assert (
+            _closed_session_title("Ψ · 26-11-12 16:27:05", ms(2026, 11, 12, 16, 56))
+            == "Ω · 26-11-12 16:27–16:56"
+        )
+        assert (
+            _closed_session_title("Ψ · 26-11-11 22:43:32", ms(2026, 11, 12, 3, 35))
+            == "Ω · 26-11-11 22:43–26-11-12 03:35"
+        )
+
+    def test_a_failed_rename_does_not_skip_the_archive(self):
+        class FlakyRename(self._Launcher):
+            async def rename_session(self, session_id: str, title: str) -> None:
+                raise RuntimeError("v3 session cannot be loaded for rename")
+
+        launcher = FlakyRename([self._summary("s1", "Ψ · 26-11-12 16:56:52", 300)])
+        asyncio.run(self._ego(launcher).close_previous_sessions())
+
+        assert launcher.archived_calls == ["s1"]

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -42,6 +43,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     DshSession,
     RequestHeader,
     SessionEvent,
+    SessionSummary,
     TurnEnd,
     model_from_event,
 )
@@ -50,6 +52,7 @@ from ghoshell_moss.memento.abcd import CommitMessage, CommitRef
 
 from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
 from ._prompts import dolores_model_notice
+from .constants import SESSION_ALIVE, SESSION_CLOSED
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -83,6 +86,25 @@ def _assistant_text(message: Any) -> str:
     ).strip()
 
 
+# The stamp the session-title template writes: `Ψ · 26-11-12 16:56:52`.
+_SESSION_STAMP = re.compile(r"(\d{2}-\d{2}-\d{2} \d{2}:\d{2})")
+
+
+def _closed_session_title(title: str, updated_at_ms: int) -> str:
+    """Ω title for one closed ego session: start from the Ψ title, end from the last activity.
+
+    A span inside one day keeps only the end clock (`16:27–16:56`); a span across days keeps both
+    stamps, because the date is then part of what the title has to say.
+    """
+    end = datetime.fromtimestamp(updated_at_ms / 1000).strftime("%y-%m-%d %H:%M")
+    match = _SESSION_STAMP.search(title)
+    start = match.group(1) if match is not None else ""
+    if start and start != end:
+        same_day = start[:8] == end[:8]
+        return f"{SESSION_CLOSED} · {start}–{end[9:] if same_day else end}"
+    return f"{SESSION_CLOSED} · {end}"
+
+
 class DoloresEgoConfig(BaseModel):
     """Ego session config, loaded from the ``ego:`` section of .dolores.yml.
 
@@ -92,6 +114,14 @@ class DoloresEgoConfig(BaseModel):
     session_title: str = Field(
         default="Ψ · {timestamp}",
         description="session title template ({timestamp} placeholder), the human-readable session name.",
+    )
+    session_archive_rename_k: int = Field(
+        default=10,
+        description=(
+            "how many of the most recent previous sessions get an Ω title before archiving; the "
+            "rest are archived as-is. Renaming loads a cold session, so the budget is deliberate — "
+            "the archive is the collection, the Ω title is a convenience for the freshest history."
+        ),
     )
     permission: str = Field(
         default="workspace-write",
@@ -259,6 +289,64 @@ class DoloresEgo:
         await self.create_session()
         return self
 
+    async def close_previous_sessions(self) -> None:
+        """Close the ego sessions this boot replaces — one live Ψ, everything else archived.
+
+        Every boot starts a new ego session, so any Ψ/Ω-titled session still in the active set is
+        history. The K most recently used get a human-readable ``Ω · start–end`` title before
+        being archived (renaming loads the session, hence the bound); the rest are archived as-is
+        — the archive is the collection, the title is a convenience for the freshest history.
+
+        The invariant is "exactly one live Ψ". Best-effort by design: a slow or unavailable dsh
+        must never keep the ego from booting.
+        """
+        try:
+            sessions = await self._launcher.list_sessions()
+            archived = await self._launcher.archived_session_ids()
+        except Exception:
+            self._logger.warning("cannot read the session roster before boot", exc_info=True)
+            return
+        project = str(self._ctx.project_home)
+        pending: list[tuple[SessionSummary, str]] = []
+        for summary in sessions:
+            if summary.sessionId in archived or summary.sessionId == self._ego_session_id:
+                continue
+            if summary.cwd != project:
+                continue
+            title = ""
+            if summary.projections is not None:
+                raw = summary.projections.values.get("title")
+                if isinstance(raw, str):
+                    title = raw
+            if not title.startswith((SESSION_ALIVE, SESSION_CLOSED)):
+                continue
+            pending.append((summary, title))
+        pending.sort(key=lambda item: item[0].updatedAt, reverse=True)
+        for index, (summary, title) in enumerate(pending):
+            # Rename and archive fail independently: a v3 session cannot be renamed (the title
+            # service loads it) but must still be archived — otherwise it holds a seat forever.
+            if index < self._config.session_archive_rename_k:
+                try:
+                    await self._launcher.rename_session(
+                        summary.sessionId, _closed_session_title(title, summary.updatedAt)
+                    )
+                except Exception:
+                    self._logger.warning(
+                        "cannot retitle previous session %s", summary.sessionId, exc_info=True
+                    )
+            try:
+                await self._launcher.archive_session(summary.sessionId)
+            except Exception:
+                self._logger.warning(
+                    "cannot archive previous session %s", summary.sessionId, exc_info=True
+                )
+        if pending:
+            renamed = min(len(pending), self._config.session_archive_rename_k)
+            self._logger.info(
+                "closed %d previous ego session(s): %d retitled to Ω, %d archived as-is",
+                len(pending), renamed, len(pending) - renamed,
+            )
+
     async def create_session(self) -> str:
         """Create the ego session (reusable — clones share the same memories closure).
 
@@ -270,6 +358,9 @@ class DoloresEgo:
         历史消息协议再变，启动都不碰（防「升级后 ghost 永远起不来」）。跨重启的连续性由 memento
         视图 + read/chat 承担。
         """
+        # Close the sessions this boot replaces before opening the new one; the roster stays at
+        # exactly one live Ψ even after a crash of the previous process.
+        await self.close_previous_sessions()
         payload = {
             "project_home": str(self._ctx.project_home),
             "project_name": self._ctx.project_name,

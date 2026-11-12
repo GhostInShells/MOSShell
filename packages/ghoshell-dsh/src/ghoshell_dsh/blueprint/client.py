@@ -71,6 +71,23 @@ class Client(ABC):
         """Call a method whose result has no declared shape — raw in, raw out."""
 
     @abstractmethod
+    async def typert(
+        self,
+        method: str,
+        request: dict[str, Any] | None = None,
+        *,
+        args_key: str = "_request",
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Call a typert-wrapped unary route: the request rides under its descriptor's key.
+
+        Newer dsh generations describe their routes with typert, and the gateway validates the
+        request against that descriptor — the key is part of the route's shape, not a convention
+        (``session/list`` takes ``_request``, ``session/rename`` takes ``request``). ``args_key``
+        states it at the call site so one door serves them all.
+        """
+
+    @abstractmethod
     async def plugin_call(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Reach a route a **plugin** registered — where our own patches live.
 

@@ -17,6 +17,21 @@ DOLORES_CONFIGS_DIRECTORY = "configs"
 MINDFORK = "mindfork"
 """The generic container for a message from a parallel-thinking bypass task."""
 
+SESSION_ALIVE = "Ψ"
+"""The title of the one live ego session — the current breathing span, and only that one.
+
+The title template (``DoloresEgoConfig.session_title``) prefixes every new ego session with it;
+the boot rule archives every other Ψ/Ω-titled session, so "exactly one live Ψ" stays true.
+"""
+
+SESSION_CLOSED = "Ω"
+"""The title prefix of a closed ego session — the span that has ended.
+
+Omega is the letter after psi and the last of the alphabet: Ψ → Ω reads as one life span. It is
+also the marker the boot rule greps for, so a crash that left an already-closed session
+unarchived is still collected on the next boot.
+"""
+
 NIRMANAKAYA = "應身"
 """A concurrent self: the same mind, cut from the conversation at one point, running one task.
 

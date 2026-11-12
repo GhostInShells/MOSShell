@@ -56,6 +56,18 @@ class Connection(SessionSource, ABC):
     async def workspace_for_path(self, path: str) -> WorkspaceView | None:
         """The workspace a host path belongs to — `None` when it belongs to none."""
 
+    # ---- session roster: the titles a human reads ---- #
+
+    @abstractmethod
+    async def rename_session(self, session_id: str, title: str) -> None:
+        """Set one session's title by id — the human-readable handle.
+
+        Paired with ``SessionSource.list_sessions``: the list carries the titles, this writes
+        one. Both are declared here on purpose, so every generation that can hold a session can
+        also keep its roster readable; a caller that closes old sessions must not have to attach
+        them or know a version's private route.
+        """
+
     # ---- models: what this dsh can be asked as ---- #
 
     @abstractmethod
