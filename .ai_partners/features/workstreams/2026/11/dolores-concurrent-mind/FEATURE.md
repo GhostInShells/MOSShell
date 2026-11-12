@@ -10,7 +10,9 @@ status: in-progress
 status_note: >-
   plan is contradiction-free; the prompt manifest + commit-prompt bench (cut D) is recorded
   as the superego's evaluation substrate — side-effect-free and buildable first; its trigger
-  and scoring are deferred. System prompter migration is out of scope this round.
+  and scoring are deferred. D12 night closed the bypass debt (read-only sidecar, Ω archive,
+  effort/cache measurements) and settled the memory surface + prompt slot direction; the
+  build order for tonight is memory surface → ground slot → prompt slots → staged search.
 title: Dolores Concurrent Mind — one ghost, several attentions at once
 updated: '2026-11-12'
 ---
@@ -79,6 +81,13 @@ ending. The word names the structure; parallel execution is a scheduling policy 
 | D18 | a clone runs the **same CTML interpreter**, synchronously blocking; `react` is dead there | 他 | a second capability language | r2 |
 | D19 | **compact is a general runtime mechanism** for main and every clone — not delegated by anyone | 他 | "who compacts first" | r2 |
 | D20 | clone context is laid out by the **`def` triad** (docstring / plan graph / result type); build gets only name + goal | 他 | briefing a clone with a full task description | r2 |
+| D21 | the bypass is a **read-only sidecar** — defined by the boundary it sits outside, not by which tools it lacks | 他 (after 我推 got it wrong) | "id ≠ ego ⇒ disable everything" — it swallowed dsh's own subagents | D12 |
+| D22 | **exactly one live Ψ**: the previous ego is retitled `Ω · start–end` and archived on boot; archived ≠ deleted | 他 | the session list as an append-only pile | D12 |
+| D23 | the bypass runs `low`; **`off` is a different prefix family**, so "save thinking" pays the whole uncached prefix | 他 + measurement | `off` as a cheap effort | D12 |
+| D24 | memory is a **snapshot**: written once at epoch, holding only the current branch | 他 | a live window over several branches in `<memory>` | D12 |
+| D25 | **ground outranks memory**: law belongs in the system prompt; memory carries only the trajectory | 他 | ground duplicated in memory and in notices | D12 |
+| D26 | the system prompt is **slot-ized**, synced to the plugin before ego opens, replaced only at session creation | 他 | re-rendering the prompt mid-session (dirty logs, cold cache) | D12 |
+| D27 | retrieval is staged — **L0/L1 in program, L2 an `LLMFunc`**; a result page never re-enters the context | 他 | "search returns everything and lets the model re-read" | D12 |
 
 ## Plan
 
@@ -186,6 +195,109 @@ the trigger and the score are the hard half.
 - That the superego can produce the motivation and an independent judge can score it
   (deferred; the honest unknown).
 
+## D12 night — read-only sidecar, the Ω archive, the memory surface (2026-11-12)
+
+Three mechanism waves landed after cut D, plus a design round on what `<memory>` is for. None
+of them adds a cut; all of them change a substrate.
+
+### 1. The bypass is a read-only sidecar
+
+The old shape was negative where it mattered: "id ≠ ego ⇒ bypass ⇒ disable every tool, one
+turn, collapse the previous turn". It swallowed dsh's own subagents the moment they appeared,
+and its stated reason ("not safe to let it act") was never the real one.
+
+> 写权限不是会话属性，是"谁为这次写负责"的属性。 — 他
+
+So the bypass is named by the boundary it sits outside, not by what it cannot do:
+
+- `sandbox/mode: read-only` + `approval/policy: never`, re-appended **every step** (both are
+  last-wins log events; a human flipping the session writable in the UI gets pushed back);
+- the four-sentence instruction is injected **once per session** (process-local `Set`); a
+  second injection only stacks the same paragraph in history;
+- the tool surface is a **deny list**, not "all disabled": the eight CTML/lifecycle tools that
+  go through `awaitToolResult` would *hang* in a bypass (nobody answers for a non-primary ego),
+  which is worse than a refusal. `moss_channel_facade` stays;
+- `collapseTurn` / `bypassTurns` are gone (a 0.1.5 workaround for a missing reject semantic);
+  `appendReplace` stays — `compact` still uses it.
+
+An archived ego is a legitimate read-only 應身: the archive plus dsh's per-step lock already
+make it inert. Commit `5404862b`.
+
+### 2. The Ω archive — exactly one live Ψ
+
+On boot the previous ego is retitled `Ω · 26-11-12 16:27–16:56` (same day compacts to
+`HH:MM–HH:MM`, cross-day keeps both ends) and archived; the newest K are retitled, the rest
+archived as-is. First real run: 213 sessions closed — 10 retitled, 203 as-is. Commit `1ae421b3`.
+
+Two facts worth keeping:
+
+- **The archive closes an identity, not the content.** An `Ω` session can be resumed as a
+  bypass on the same id; his last experiment conversed with one exactly that way (turns 11–12
+  appended to the same log, the four-sentence instruction first). He ran it once from his side
+  and closed the line: 以后不再主动还原 Ω 会话。
+- **A session log is ground truth.** `session.v4.jsonl.zstd` is zstd, not encrypted — `zstd -dc`
+  plus `data.message.content[]` (`reasoning` / `text` parts) is the whole tool, and it is how
+  the last exchange was recovered.
+
+### 3. What a bypass round actually costs
+
+| observation | number | what it means |
+|---|---|---|
+| new process, first note | `cache_read=6,912 / 52,482` | only the static head is reused |
+| same process, next note | `77,952 / 79,067` (98.6%) | one family, live |
+| five-effort probe at one anchor | `inherit`/`max`/`low`/`high` → 64,640; `off` → 46,336 | `off` is the only different family |
+| 6m26s idle, then a turn | `64,640 / 121k`, next step `125,952` | prefix TTL ≈ 5 min |
+| ego's first request after restart | `11,136 / 40,099` (27.8%), then 99.5% | first-frame cold is not a bypass defect |
+
+- **`off` is not "free thinking", it is another prefix family** — it drops the reasoning block,
+  so the prompt is shorter and nothing before it matches. Any "save thinking" call pays the
+  whole uncached prefix; `low` is the floor of "fast *and* hitting".
+- The two budgets moved out of the prompt into config: `note_max_tokens: 4096` (request
+  ceiling) and `note_body_tokens: 1500` (what the model is told). Prompt states format, config
+  states scale.
+- The main path now logs `kind=ego turn=N step=M` per step — without it every conclusion above
+  was inferred from the outside.
+- One discipline earned the hard way: **mechanism conclusions need two runs.** Single samples
+  misled us three times (`readonly`, `off`, `high`).
+
+### 4. The memory surface is a snapshot
+
+Direction settled this round, not yet implemented:
+
+- `<memory>` holds **exactly one** container: `<memento owner="ego" branch="main">`. Other
+  branches exist in the memento channel's notice, never in memory.
+- **ground does not go into memory** — its priority is higher. The waking order is
+  我是谁 → 最近发生了什么 → 我这几天在干嘛, i.e. existence (system prompt) → memory (memento)
+  → status (channel notices).
+- Coordinates carry **no owner prefix**; the container states the owner, once.
+- Commit stamps become minute precision, local time: `at="D12 16:26"`. Today's `created` is a
+  UTC ISO string — eight hours off every other stamp in the same prompt.
+- Confluence / child rows exist in the contract and are absent from the renderer; the branch
+  opening has no reserved place for the forked parent (`BranchView.previous` is computed and
+  then dropped).
+
+### 5. Retrieval is multi-stage, and it is a function
+
+> 如果要做二级召回, 三级召回, 我们应该要定义 LLMFunc 去做. 比如 grep 拿到的是 0级, 返回结果给
+> 程序筛一遍内容, 再让 agent 挑 topk 等等. 否则搜索结果在上下文里反复跳两三次, 都是可以程序化
+> 的硬开销。 — 他
+
+L0 grep (program, zero tokens) → L1 score / filter / cut (program, zero tokens) → L2 rank
+(`LLMFunc`, one round) only when candidates exceed a threshold or the query is semantic. The
+model sees one page; a refinement is a new call, never the same batch re-entering.
+
+### 6. Tonight's order (his call)
+
+1. settle this file's debt and commit it (done in this edit);
+2. the `memento` surface inside `<memory>` — container, stamps, confluences, parent slot, sizes;
+3. ground channel vs. prompt: split them apart and send one request; **ground moves into the
+   system prompt**;
+4. split the system prompt into slots — and first verify whether dsh's prompt slots can be
+   changed by an op later (O7). If they can, the sync design changes; if they cannot, the
+   manifest-at-boot design stands.
+
+After these four, concurrent thinking starts for real.
+
 ## Open — genuinely undecided
 
 | # | question | stuck on | src |
@@ -196,6 +308,7 @@ the trigger and the score are the hard half.
 | O4 | **the `request` carrier** — one-shot, schema-checked, retryable, billable | dsh has no structured-output path yet | impl |
 | O5 | **economics**: 按时间给优先级、按空间给权重，算出 Budget 再传导 | not modelled | r2 |
 | O6 | which vertical cut (see Plan) | above | — |
+| O7 | can a dsh system-prompt **slot be modified by an op after the session starts** — and should we ever? | unverified; needs a read of dsh's `systemPrompt` plugin API before we design the sync | D12 |
 
 ## Overturned — and why (do not silently restore these)
 
@@ -213,8 +326,16 @@ the trigger and the score are the hard half.
 
 - **commit note task** — `_ego_memento.py`'s `BypassCommit` state machine owns one one-shot
   `asyncio.Task` per commit; the task runs `chat_off_record` at the commit's `end_seq` with a
-  `<mindhook>` container (`readonly`, effort off, max tokens). The old dsh plugin
+  `<mindhook>` container (`readonly`, `low`, max `note_max_tokens`). The old dsh plugin
   `bypass/run` route is no longer used by the note task.
+- **the bypass sidecar** (plugin) — non-primary sessions are read-only + never-ask, the
+  four-sentence instruction is injected once per process, and the eight `awaitToolResult` tools
+  are denied. Every other session kind (dsh subagents, UI forks) is left alone.
+- **the Ω archive** — `DoloresEgo.close_previous_sessions()` runs at boot and closes every
+  previous ego under the project cwd; the session roster comes from `session/list`, retitle and
+  archive are separate `try`s (v3 logs refuse the rename but still archive).
+- **usage logging** — `kind=ego turn=N step=M` per step and `kind=note commit=…` per bypass
+  round, both with `input / cache_read / output / reasoning`.
 - The note's static rules live in the memento channel instruction, read from the active
   `memento.note` prompt; the container carries only the connection point and the prior note.
   `memento.chat` uses the same container with its own preamble.
