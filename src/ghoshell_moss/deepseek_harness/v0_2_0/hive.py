@@ -406,7 +406,7 @@ class DshAgents(Agents):
         workspace_id: str = "",
         bumped: bool = False,
     ) -> DshAgentSession:
-        session = self._hive.connection.create_session(session_id, self._hive.logger)
+        session = self._hive.connection.attach_session(session_id, self._hive.logger)
         # The session is a lifecycle object: `__aenter__` starts the consume loop that turns
         # follow frames into dispatched events. Without it the stream is alive and silent.
         await session.__aenter__()

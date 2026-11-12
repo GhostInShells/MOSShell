@@ -97,7 +97,7 @@ async def main() -> int:
             print(f"session: {session_id} (preset {created.agentPreset})")
             ok &= check("the plugin is installed and the session is created", session_id != "")
 
-            session = launcher.create_session(session_id)
+            session = launcher.attach_session(session_id)
             renamed = await session.rename(title=TITLE)
             print(f"renamed at seq {renamed.seq}")
 

@@ -295,7 +295,14 @@ class DoloresEgo:
                 "carry no anti-bypass token and the plugin may reject them",
                 self._ego_session_id,
             )
-        self._session = self._launcher.create_session(self._ego_session_id)
+        if self._session is not None:
+            # 重开前先关掉旧 facade: 一个 session 只允许一个 follow owner, 旧的不关就是一条活在
+            # mux 上的 `session/follow` 流加一个永远不释放的 streamId. 它还留在 exit stack 里,
+            # 但 close() 幂等, 退出时再来一次是空操作.
+            with contextlib.suppress(Exception):
+                await self._session.close()
+            self._session = None
+        self._session = self._launcher.attach_session(self._ego_session_id, self._logger)
         await self._exit_stack.enter_async_context(self._session)
         # long-lived: subscribe to turn/start + user/message for silent self-wake.
         # user/message covers direct UI input — it produces only user/message (not turn/start), so

@@ -5,6 +5,8 @@ The manifest carries the seed; the manager materializes it into
 that the file is the edit surface — these strings are only the initial content.
 """
 
+from ..constants import NIRMANAKAYA
+
 __all__ = ["MEMENTO_CHAT_SEED", "MEMENTO_NOTE_SEED"]
 
 
@@ -27,9 +29,9 @@ persistent identity or ground; record only what changed.
 """
 
 
-MEMENTO_CHAT_SEED = """\
-You are not talking to a single commit next; you are talking to the context that commit
-belongs to. The conversation history you see ends where that commit was made, and anything
-after it is outside your view. Answer the question below directly, without pleasantries, and
-do not pretend you know what came later.
+MEMENTO_CHAT_SEED = f"""\
+You are a concurrent {NIRMANAKAYA} of yourself above: this message is your task, and your reply
+ends it. The conversation you see ends where that commit was made, and anything after it is
+outside your view. Answer the question below directly, without pleasantries, and do not pretend
+you know what came later.
 """

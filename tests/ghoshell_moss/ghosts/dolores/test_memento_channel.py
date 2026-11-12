@@ -25,7 +25,7 @@ class TestMementoChannel:
                 raise self.response
             return self.response
 
-        def create_session(self, session_id, logger=None):
+        def attach_session(self, session_id, logger=None, *, follow=True):
             return self._Session(self, session_id)
 
         class _Session:

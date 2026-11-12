@@ -791,7 +791,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
                 f"case {case.name!r}: session {session_ref} is archived — "
                 "call `bind` to define a new carrier"
             )
-        session = connection.create_session(session_ref, self._hive.logger)
+        session = connection.attach_session(session_ref, self._hive.logger)
         await session.__aenter__()
         if not await session.wait_follow_snapshot(timeout=_SNAPSHOT_WAIT):
             await session.close()
@@ -873,7 +873,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
         value = await self._hive.connection.client.session_create(create)
         session_id = str(value.sessionId)
 
-        session = self._hive.connection.create_session(session_id, self._hive.logger)
+        session = self._hive.connection.attach_session(session_id, self._hive.logger)
         await session.__aenter__()
         await session.wait_follow_snapshot(timeout=_SNAPSHOT_WAIT)
         cwd = await session.cwd() or place.path
@@ -1214,7 +1214,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
                     prompt, anchor=anchor, readonly=True
                 )
             else:
-                session = self._hive.connection.create_session(session_ref, self._hive.logger)
+                session = self._hive.connection.attach_session(session_ref, self._hive.logger)
                 try:
                     reply = await session.chat_off_record(
                         prompt, anchor=anchor, readonly=True

@@ -8,7 +8,9 @@ session/follow 摄取面:
 """
 
 import asyncio
+import contextlib
 import json
+import logging
 import time
 
 import pytest
@@ -58,6 +60,9 @@ def _workspace_baseline(items: list[dict]) -> dict:
 
 class _DummyClient:
     """create_session 构造 DshSession 不触碰 client — 哑元即可."""
+
+    async def close(self) -> None:
+        """连接退出时会收 client; 哑元到这里什么也不用做."""
 
     pass
 
@@ -199,7 +204,7 @@ async def test_follow_event_frame_feeds_session():
     """`event` 帧 → SessionEvent.from_dict → session.accept_session_event, 事件名/载荷保真."""
     launcher = _make_launcher()
     launcher.client = _DummyClient()
-    session = launcher.create_session("s1")
+    session = launcher.attach_session("s1")
     seen: list[tuple[str, dict]] = []
 
     async def on_event(event) -> None:
@@ -222,7 +227,7 @@ async def test_follow_assistant_stream_synthesizes_chunk():
     """assistant-stream chunk 帧 → 合成 assistant/chunk (turn/step 由 start 补帧), 喂给 session."""
     launcher = _make_launcher()
     launcher.client = _DummyClient()
-    session = launcher.create_session("s1")
+    session = launcher.attach_session("s1")
     seen: list[dict] = []
 
     async def on_chunk(event) -> None:
@@ -249,7 +254,7 @@ async def test_follow_snapshot_and_end_feed_no_events():
     """snapshot (仅记 cursor/header) 与 end (终止标记) 不喂 session 事件 — live 流程只消费 event/assistant-stream."""
     launcher = _make_launcher()
     launcher.client = _DummyClient()
-    session = launcher.create_session("s1")
+    session = launcher.attach_session("s1")
     seen: list[str] = []
 
     async def on_any(event) -> None:
@@ -265,6 +270,173 @@ async def test_follow_snapshot_and_end_feed_no_events():
         await _drain(session)
 
     assert seen == []
+
+
+# ---- follow 流的独占 / 去重 (2026-11-12 1008 回归) ---- #
+# 宿主对**同一连接上重复的 streamId** 的反应不是拒绝这一帧, 而是关掉整条 mux (1008). 于是一次
+# 旁路 note 打电话给 ego 自己已经 follow 着的 session, 就把 ghost 的整条下行传输带走了. 三条
+# 行为把这类事故钉死在连接层: follow=False 不开流 / 一个 session 只有一个 follow owner /
+# 同一连接上同一 streamId 只发一次 open.
+
+
+@pytest.mark.asyncio
+async def test_create_session_without_follow_opens_no_stream():
+    """follow=False 是纯把手: 不开流、不登记、不发任何帧 —— 它不该有能力影响 mux."""
+    launcher = _make_launcher()
+    launcher.client = _DummyClient()
+    ws = _FakeWs()
+    launcher._ws = ws
+    session = launcher.attach_session("s1", follow=False)
+    await asyncio.sleep(0)
+    assert ws.sent == []
+    await session.close()
+    await asyncio.sleep(0)
+    assert ws.sent == []
+    # 它没有占用这个 session 的 follow 权: 之后照常 follow 不会撞车, 也只开一条流.
+    launcher.attach_session("s1")
+    await _wait_until(lambda: ws.sent)
+    await asyncio.sleep(0)
+    assert [m["streamId"] for m in ws.sent] == ["moss-follow-s1"]
+
+
+@pytest.mark.asyncio
+async def test_second_follow_of_the_same_session_is_refused():
+    """一个 session 只允许一个 follow owner: 第二条会重复 streamId, 这里直接报错而不是发帧."""
+    launcher = _make_launcher()
+    launcher.client = _DummyClient()
+    launcher.attach_session("s1")
+    with pytest.raises(RuntimeError) as ei:
+        launcher.attach_session("s1")
+    assert "1008" in str(ei.value)
+    assert "follow=False" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_closing_a_followed_session_releases_its_stream():
+    """关掉 follow 的 session: 给宿主发 cancel, 之后可以重新 follow —— 且换一个 streamId."""
+    launcher = _make_launcher()
+    launcher.client = _DummyClient()
+    ws = _FakeWs()
+    launcher._ws = ws
+    session = launcher.attach_session("s1")
+    await _wait_until(lambda: ws.sent)
+    await session.close()
+    await _wait_until(lambda: [m for m in ws.sent if m["type"] == "cancel"])
+    # 重开不再报"already followed" = 登记确实释放了. 老 id 在宿主侧可能还没回收, 所以换一个.
+    launcher.attach_session("s1")
+    await _wait_until(lambda: len(ws.sent) == 3)
+    assert [m["streamId"] for m in ws.sent] == [
+        "moss-follow-s1", "moss-follow-s1", "moss-follow-s1-1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_open_follow_stream_is_deduplicated_per_connection():
+    """同一连接上同一个 streamId 只发一次 open; 换连接必须重开 (宿主随旧 socket 停掉了流)."""
+    launcher = _make_launcher()
+    ws = _FakeWs()
+    await launcher._open_follow_stream(ws, "s1")
+    await launcher._open_follow_stream(ws, "s1")
+    assert len(ws.sent) == 1
+    other = _FakeWs()
+    await launcher._open_follow_stream(other, "s1")
+    assert len(other.sent) == 1
+
+
+class _StrictMux:
+    """宿主 mux 的最小替身: 一条连接, 重复 streamId 就是 1008 关整条 socket.
+
+    照抄 ``stream-server.js`` 的语义: ``receive()`` 见到重复 id 抛错, 抛在整条 socket 的接收
+    循环里 —— 关掉的是连接, 不是那一条流. 真机上的 1008 就是这一条规则打出来的.
+    """
+
+    def __init__(self) -> None:
+        self.opened: list[str] = []
+        self.violations: list[str] = []
+
+    async def handle(self, ws) -> None:
+        with contextlib.suppress(websockets.exceptions.ConnectionClosed):
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict) or msg.get("type") != "open":
+                    continue
+                stream_id = str(msg.get("streamId"))
+                if stream_id in self.opened:
+                    self.violations.append(stream_id)
+                    await ws.close(code=1008, reason="invalid Remote stream request")
+                    return
+                self.opened.append(stream_id)
+
+
+@pytest.mark.asyncio
+async def test_a_unary_handle_next_to_a_followed_session_does_not_kill_the_mux(monkeypatch):
+    """真机形态的一条连接: ego 的 follow 流 + 旁路 note 的一次性把手.
+
+    旁路借的是 ego **自己** 的 session id, 所以它必须是纯把手 (follow=False): 再发一帧同
+    streamId 的 open, 宿主就会把整条 mux 关掉 (1008), ghost 从此听不见任何下行事件.
+    """
+    monkeypatch.delenv("DSH_WEB_TOKEN", raising=False)
+    host = _StrictMux()
+    server = await websockets.serve(host.handle, "127.0.0.1", 0)
+    try:
+        port = server.sockets[0].getsockname()[1]
+        conn = DshConnection(DshConnectionConfig(host="127.0.0.1", port=port))
+        conn.client = _DummyClient()
+        async with conn:
+            await _wait_until(lambda: "moss-events" in host.opened)
+            conn.attach_session("s1")                      # ego: 长期 follow
+            await _wait_until(lambda: "moss-follow-s1" in host.opened)
+            note = conn.attach_session("s1", follow=False)  # 旁路 note: 一次性把手
+            await asyncio.sleep(0.05)  # 给"假如它要开流"留出发帧的机会
+            await note.close()
+            await asyncio.sleep(0.05)
+
+        assert host.violations == []
+        assert host.opened.count("moss-follow-s1") == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_mux_faults_reach_the_injected_logger(monkeypatch):
+    """断链是 WARNING 级事件, 它必须落在注入的 logger 上.
+
+    没有 logger 时 launcher 走 ``logging.getLogger("ghoshell_dsh...")`` —— root 没有 handler,
+    WARNING 只能经由 Python 的 lastResort 打到终端. 于是故障真的发生了, 主日志却一片空白,
+    运维看到的是"ghost 突然听不见了" (2026-11-12: ``mux connection closed`` 只在终端上).
+    """
+    monkeypatch.delenv("DSH_WEB_TOKEN", raising=False)
+
+    async def handler(ws) -> None:
+        """假 mux: 一上来就按宿主的违规关闭方式断掉."""
+        await ws.close(code=1008, reason="invalid Remote stream request")
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    collector = _Collect()
+    logger = logging.getLogger("moss.test.launcher")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(collector)
+    try:
+        port = server.sockets[0].getsockname()[1]
+        conn = DshConnection(DshConnectionConfig(host="127.0.0.1", port=port), logger=logger)
+        async with conn:
+            await _wait_until(
+                lambda: any("mux connection closed" in r.getMessage() for r in records)
+            )
+    finally:
+        logger.removeHandler(collector)
+        server.close()
+        await server.wait_closed()
 
 
 # ---- mux 入站上限 (2026-10-15 CTML 静默失效回归) ---- #

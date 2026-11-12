@@ -113,7 +113,7 @@ async def run(args: argparse.Namespace) -> int:
                 sessions.SessionCreateParams(cwd=str(home), agentPreset=args.preset or "minimal")
             )
             session_id = created.sessionId
-            session = conn.create_session(session_id)
+            session = conn.attach_session(session_id)
             await asyncio.sleep(1.2)
             state = await session.session_state()
             verdict(
@@ -241,7 +241,7 @@ async def run(args: argparse.Namespace) -> int:
                 forked = None
             else:
                 forked = await session.fork_into(str(others))
-                child = conn.create_session(forked.sessionId)
+                child = conn.attach_session(forked.sessionId)
                 await asyncio.sleep(1.2)
                 child_policy = await child.policy()
                 child_anchor = await child.anchor()
@@ -255,7 +255,7 @@ async def run(args: argparse.Namespace) -> int:
                 # ---- TC-015: the fork inherits its parent's permission --------------
                 await session.set_policy(approval="never")
                 second = await session.fork_into(str(others))
-                grandchild = conn.create_session(second.sessionId)
+                grandchild = conn.attach_session(second.sessionId)
                 await asyncio.sleep(1.2)
                 inherited = await grandchild.policy()
                 verdict(

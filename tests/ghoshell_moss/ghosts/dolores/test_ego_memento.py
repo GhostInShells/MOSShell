@@ -6,13 +6,14 @@ hands back. All of it runs outside dsh, on a fake connection.
 """
 
 import asyncio
+import logging
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 class TestEgoMementoSidecar:
-    """Note task — one off-record round per commit, with the mindhook container.
+    """Note task — one off-record round per commit, with the mindfork container.
 
     Three outcomes, three memento states:
     - success → message (ready);
@@ -52,8 +53,10 @@ class TestEgoMementoSidecar:
             self.chats: list[tuple[str, list, object, dict]] = []
             self.closed = 0
             self.entered = asyncio.Event() if hang else None
+            self.follows: list[tuple[str, bool]] = []
 
-        def create_session(self, session_id, logger=None):
+        def attach_session(self, session_id, logger=None, *, follow=True):
+            self.follows.append((session_id, follow))
             return TestEgoMementoSidecar._Session(self, session_id)
 
     @staticmethod
@@ -91,11 +94,49 @@ class TestEgoMementoSidecar:
         session_id, _, sent_anchor, kwargs = conn.chats[0]
         assert session_id == "s1"
         assert sent_anchor.turn == 1 and sent_anchor.seq is None
-        assert kwargs["readonly"] is True
+        # No `readonly`: emptying the tools menu starts a new prefix family and loses the cache.
+        assert "readonly" not in kwargs
         assert kwargs["llm"]["reasoningEffort"] == "off"
         assert kwargs["max_tokens"] > 0
-        assert '<mindhook hook="memento.note">' in self._note_text(conn)
+        text = self._note_text(conn)
+        assert '<mindfork task="memento.note">' in text
+        assert "concurrent 應身 of yourself above" in text
+        assert "Your final output is the note itself" in text
         assert self._state(manager, anchor.id) == "ready"
+
+    @pytest.mark.asyncio
+    async def test_note_reports_its_token_usage(self, tmp_path: Path, caplog):
+        """An off-record call never enters the session log — this INFO line is its accounting."""
+        conn = self._FakeConnection({
+            "text": "x",
+            "usage": {"inputTokens": 12, "outputTokens": 3, "cacheReadTokens": 4000},
+        })
+        manager, _ = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        with caplog.at_level(logging.INFO, logger="moss"):
+            manager.schedule_note(anchor.id)
+            await manager.drain_bypass()
+
+        lines = [r.getMessage() for r in caplog.records if "emanation usage" in r.getMessage()]
+        assert lines and "kind=note" in lines[0]
+        assert "cache_read=4000" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_note_borrows_the_context_without_following_the_session(self, tmp_path: Path):
+        """旁路只用一次性把手.
+
+        这个 ref 常常就是 ego 自己的会话, 而 ego 早已 follow 着它. 再开一条同 streamId 的
+        ``session/follow``, 宿主判重复并关掉整条 mux (1008) —— 局部功能不该有能力杀死全局传输.
+        """
+        conn = self._FakeConnection({"text": "x"})
+        manager, _ = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        await manager.drain_bypass()
+
+        assert conn.follows == [("s1", False)]
 
     @pytest.mark.asyncio
     async def test_note_message_first_commit_covers_all(self, tmp_path: Path):
@@ -206,6 +247,7 @@ class TestMementoReadSurface:
             self.response = response
             self.calls: list[tuple[str, dict]] = []
             self.chats: list[tuple[str, list, object]] = []
+            self.follows: list[tuple[str, bool]] = []
             self.closed = 0
 
         async def call(self, path, payload=None, *, timeout=None):
@@ -214,7 +256,8 @@ class TestMementoReadSurface:
                 raise self.response
             return self.response
 
-        def create_session(self, session_id, logger=None):
+        def attach_session(self, session_id, logger=None, *, follow=True):
+            self.follows.append((session_id, follow))
             return self._Session(self, session_id)
 
         class _Session:
@@ -403,14 +446,16 @@ class TestMementoReadSurface:
         assert text == "reply"
         # 走 chat off record: 一条未发布的 detached session, 不碰旁路路由.
         assert conn.calls == []
+        # 一次性把手: 目标会话可能正被 ego follow 着, 这里不再开第二条 follow 流.
+        assert conn.follows == [("s1", False)]
         session_id, messages, sent_anchor = conn.chats[0]
         assert session_id == "s1"
-        # one mindhook container: preamble + question ride together.
+        # one mindfork container: instruction + question ride together.
         assert len(messages) == 1
         container = messages[0][0].text
-        assert '<mindhook hook="memento.chat">' in container
-        assert "talking to the context that commit" in container
-        assert "belongs to" in container
+        assert '<mindfork task="memento.chat">' in container
+        assert "concurrent 應身 of yourself above" in container
+        assert "this message is your task" in container
         assert "outside your view" in container
         assert question in container
         # 锚点: 只有 turn 时用它定位, seq 缺省.

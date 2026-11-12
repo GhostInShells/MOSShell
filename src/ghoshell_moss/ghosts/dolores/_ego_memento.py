@@ -9,8 +9,9 @@
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
 - **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个一次性 ``asyncio.Task``; task 在
-  commit 的 ``end_seq`` 上跑一轮 ``chat_off_record`` (readonly; effort off), 消息体是
-  ``<mindhook hook="memento.note">`` 容器, 静态规则在 memento channel 的 instruction 里.
+  commit 的 ``end_seq`` 上跑一轮 ``chat_off_record`` (effort off; 保留会话自己的 tools —— 清空
+  tools 会另起一条前缀缓存族, 整段上下文重读), 消息体是 ``<mindfork task="memento.note">``
+  容器: 静态格式规则在 memento channel 的 instruction 里, 应身身份与输出契约在容器里.
   取回 plain text 写进 note. 重试 / 失败 / fallback 全在 task 内: 模型不可用按 ``note_retry_timeout``
   退避重试, 到 deadline 仍失败就留空 + named notice; 内容失败写 terminal error note.
   **没有第二次补写机制** —— task 是唯一写入者; 关停时在飞的 task 取消, 空 note 就空着.
@@ -43,7 +44,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     event_from_dict,
     render_transcript,
 )
-from ghoshell_moss.ghosts.dolores.constants import MINDHOOK
+from ghoshell_moss.ghosts.dolores.constants import MINDFORK, NIRMANAKAYA
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
     PromptManager,
@@ -77,6 +78,21 @@ _NOTE_PRIOR_COUNT = 1
 _DIGEST_TITLES = 5
 """How many titles the folded past keeps. The rest of `history` is a count and a
 coordinate range — a budget, not a promise to render every commit."""
+
+
+def _log_emanation_usage(logger: LoggerItf, *, kind: str, subject: str, usage: TokenUsage) -> None:
+    """One INFO line per 應身 call — the bypass's only token accounting.
+
+    An off-record call never enters the session log, so without this line the ghost's own
+    parallel thinking is invisible to any cost statistics. The format stays flat key=value
+    pairs: a future aggregator greps one prefix instead of parsing prose.
+    """
+    logger.info(
+        "emanation usage kind=%s %s input=%s cache_read=%s cache_write=%s output=%s reasoning=%s",
+        kind, subject,
+        usage.inputTokens, usage.cacheReadTokens, usage.cacheWriteTokens,
+        usage.outputTokens, usage.reasoningTokens,
+    )
 
 
 class BrokenCommitError(RuntimeError):
@@ -363,7 +379,9 @@ class EgoMementoManager:
         日志 —— named notice 是唯一外部记录. 源不可读 → ``_skip``.
         **取消不算失败** —— 关停时 CancelledError 直接穿透, 不写 error.
         """
-        session = self._connection.create_session(run.ref.session_id)
+        # follow=False: 这是一次性把手, 不开 `session/follow`. 这个 ref 常常就是 ego 自己的会话,
+        # 而 ego 早已 follow 着它 —— 再开一条同 streamId 的流, 宿主判违规并关掉整条 mux (1008).
+        session = self._connection.attach_session(run.ref.session_id, self._logger, follow=False)
         try:
             try:
                 reply = await self._note_reply_with_retry(session, run)
@@ -382,6 +400,9 @@ class EgoMementoManager:
         finally:
             with contextlib.suppress(Exception):
                 await session.close()
+        _log_emanation_usage(
+            self._logger, kind="note", subject=f"commit={run.commit_id}", usage=reply.usage,
+        )
         message = reply.text.strip()
         if message == "":
             self._fail(run, "run returned no text")
@@ -422,10 +443,14 @@ class EgoMementoManager:
         anchor = DshSessionAnchor(
             session_id=run.ref.session_id, seq=run.ref.end_seq, turn=run.ref.end_turn,
         )
+        # No `readonly`: the flag empties the tools menu, which starts a *new* prefix family and
+        # costs the whole conversation cache (measured: 34,432 → 6,912 cacheReadTokens on the
+        # same session) — and a model without its tool declarations emits tool-call syntax as
+        # plain text. An off-record call cannot execute a tool anyway (the plugin's one-shot is
+        # a bare llm.stream), so keeping the session's tools costs nothing and keeps the cache.
         return await session.chat_off_record(
             [[ContentBlock(type="text", text=self._note_message(run.commit_id))]],
             anchor=anchor,
-            readonly=True,
             llm={"reasoningEffort": _NOTE_EFFORT},
             max_tokens=self._config.note_max_tokens,
         )
@@ -465,11 +490,12 @@ class EgoMementoManager:
             await asyncio.gather(*pending, return_exceptions=True)
 
     def _note_message(self, commit_id: str) -> str:
-        """Build the ``<mindhook>`` container for one commit note task.
+        """Build the ``<mindfork>`` container for one commit note task.
 
         The static rules live in the memento channel instruction (read from the active
-        ``memento.note`` prompt); this message carries only the dynamic continuation point
-        and the prior note.
+        ``memento.note`` prompt); this message carries what only the request knows: that the
+        reader is a 應身 (the same mind, forked for one task), which span to record, and that the
+        reply *is* the note — nothing is executed, so a tool call would be an empty answer.
         """
         commit = self._find_commit(commit_id)
         seq = commit.seq if commit is not None else 0
@@ -487,23 +513,25 @@ class EgoMementoManager:
                 prior_lines.append(f"- {coord}: {message}")
         prior_block = "\n".join(prior_lines)
         return (
-            f"<{MINDHOOK} hook=\"{DefaultPrompterKeys.MEMENTO_NOTE}\">\n"
+            f"<{MINDFORK} task=\"{DefaultPrompterKeys.MEMENTO_NOTE}\">\n"
             f"<connection>{escape(connection)}</connection>\n"
             f"<prior>{escape(prior_block)}</prior>\n"
-            "Record the commit that ends the span above.\n"
-            f"</{MINDHOOK}>"
+            f"You are a concurrent {NIRMANAKAYA} of yourself above. This is a one-shot task: write\n"
+            "the note for the commit that ends this span. Your final output is the note itself:\n"
+            "first line the title, then the body. Nothing you write is executed; do not call tools.\n"
+            f"</{MINDFORK}>"
         )
 
     def _chat_message(self, question: str) -> str:
-        """Build the ``<mindhook>`` container for one chat round: preamble + question."""
+        """Build the ``<mindfork>`` container for one chat round: instruction + question."""
         preamble = MEMENTO_CHAT_SEED
         if self._prompt_manager is not None:
             preamble = self._prompt_manager.render(DefaultPrompterKeys.MEMENTO_CHAT)
         return (
-            f"<{MINDHOOK} hook=\"{DefaultPrompterKeys.MEMENTO_CHAT}\">\n"
+            f"<{MINDFORK} task=\"{DefaultPrompterKeys.MEMENTO_CHAT}\">\n"
             f"<instruction>{escape(preamble)}</instruction>\n"
             f"<question>{escape(question)}</question>\n"
-            f"</{MINDHOOK}>"
+            f"</{MINDFORK}>"
         )
 
     def _note_context(self, target_seq: int) -> tuple[str | None, list[tuple[str, str]]]:
@@ -564,27 +592,31 @@ class EgoMementoManager:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
         坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
-        处境说明与问题装进一个 ``<mindhook hook="memento.chat">`` 容器: 旁路通用容器,
-        preamble 是 ``memento.chat`` asset, question 是动态输入. 只发一条 user message;
-        插件按容器原样说, 不建 session、不落盘.
+        处境说明与问题装进一个 ``<mindfork task="memento.chat">`` 容器: 同一个 mindfork
+        容器, instruction 是 ``memento.chat`` asset, question 是动态输入. 只发一条 user
+        message; 插件按容器原样说, 不建 session、不落盘.
         """
         view = self._require_commit(coord)
         if view.is_broken:
             raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
         anchor = DshSessionAnchor(session_id=ref.session_id, seq=ref.end_seq, turn=ref.end_turn)
-        session = self._connection.create_session(ref.session_id)
+        # follow=False: chat 只借上下文, 不参与这个会话的运行态; 目标会话可能正被 ego follow 着.
+        session = self._connection.attach_session(ref.session_id, self._logger, follow=False)
         try:
+            # No `readonly`: see ``_note_call`` — emptying the tools menu costs the prefix cache.
             reply = await session.chat_off_record(
                 [[ContentBlock(type="text", text=self._chat_message(prompt))]],
                 anchor=anchor,
-                readonly=True,
             )
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc
         finally:
             with contextlib.suppress(Exception):
                 await session.close()
+        _log_emanation_usage(
+            self._logger, kind="chat", subject=f"coord={view.coord}", usage=reply.usage,
+        )
         text = reply.text
         if text == "":
             if reply.tool_calls:

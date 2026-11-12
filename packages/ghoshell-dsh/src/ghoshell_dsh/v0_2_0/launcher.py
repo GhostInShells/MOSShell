@@ -4,7 +4,7 @@ dsh 连接的协议层与进程层, 分两个类:
 DshConnection — 基类, 连接层. 持有 dsh web 表面的传输与协议原语:
 WS 下行 (`/api/remote.mux` 重连循环 + `$events` 逻辑流分派) + HTTP 上行 (call /
 协议 facade DshClient) + 帧处理器注册 (on_remote_emit / on_remote_waterfall) +
-session 接线 (create_session). 不携带进程生命周期 — 不 spawn, 不 kill.
+session 接线 (attach_session). 不携带进程生命周期 — 不 spawn, 不 kill.
 
 DshLauncher(DshConnection) — 子类, 进程层. 在连接层之上增加 dsh web-profile
 子进程的持有与治理 (经 MOSS Subprocesses 契约构造注入, 控制反转): spawn /
@@ -15,7 +15,7 @@ exit / stdout+stderr 消费 / stop, 以及就绪等待 (push 式: ws 连上 → 
 不用官方 SDK. 0.1.5 起 WS upgrade 与 /api 都需 token→cookie 鉴权 (见 `_authorize`).
 下行帧按逻辑流分派: `$events` 的 emit/waterfall/cancel/ready (见 on_remote_emit /
 on_remote_waterfall); session 事件流 `session/follow` 收 durable 事件 + live assistant-stream
-(经 create_session 接线, 合成 assistant/chunk 喂 DshSession.accept_session_event).
+(经 attach_session 接线, 合成 assistant/chunk 喂 DshSession.accept_session_event).
 MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 
 Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 自己的配置
@@ -46,7 +46,7 @@ spawn 时惰性解析). 可用它把单个 ghost 钉到特定 dsh 安装 (如本
 # 6. token 落线: config.token → DSH_WEB_TOKEN 兜底 → launcher stdout 发现 (拿不到即故障).
 # 7. cookie 鉴权 + remote.mux + $events 逻辑流: _authorize (token→cookie) → ws 带 Cookie
 #    → _open_events_stream → emit/waterfall/cancel/ready 分派 (on_remote_emit/on_remote_waterfall).
-# 8. session/follow (per-session 事件流): create_session 接线, 开流 + durable event 喂
+# 8. session/follow (per-session 事件流): attach_session 接线, 开流 + durable event 喂
 #    accept_session_event + live assistant-stream 合成 assistant/chunk — 见
 #    dsh-0.1.5-remote-stream-transport.md.
 
@@ -232,8 +232,9 @@ class DshConnection:
     - 鉴权: `_authorize()` token→cookie, 注入 http client 与 DshClient; WS upgrade 带 Cookie.
     - inbound notify: `on_remote_emit` / `on_remote_waterfall` 双注册 (返回 Disposer),
       `_ws_loop` 下行重连 + `_dispatch_raw_frame` 按 `$events` 帧 type 分派.
-    - session 接线: `create_session()` 把 DshSession 的 accept_host_event 挂到 emit 流,
-      退出时 on_exit 解绑. (session/follow 事件流属后续增量.)
+    - session 接线: `attach_session()` 把 DshSession 的 accept_host_event 挂到 emit 流
+      (follow=True), 并在当前 mux 上开一条 `session/follow` 逻辑流; 退出时 on_exit 解绑.
+      follow=False 只造一个一次性把手 (会话级 RPC 用), 不开流、不登记.
     - host 级 workspace: `workspaces()` / `workspace_for_path()` 走 workspace/follow 流 baseline
       (0.1.5 起 workspace.list 动词已移除).
 
@@ -275,6 +276,16 @@ class DshConnection:
         self._follow_sessions: dict[str, DshSession] = {}
         self._stream_to_session: dict[str, str] = {}  # streamId → sessionId (dispatch 用).
         self._follow_turn_step: dict[str, tuple[int, int]] = {}  # sessionId → (turn, step), 供 chunk 帧补帧.
+        # 已经在**当前连接**上开过的流: streamId → 那条 ws. 换连接后老记录自然失效 (宿主随旧
+        # socket 一起停掉了全部流), 所以按 ws 身份判定, 断开时整体清空.
+        # 宿主对同一连接上重复的 streamId 不是拒绝这一帧, 而是关掉整条 mux (1008) ——
+        # 「一个 streamId 只发一次 open」必须在这里保证, 不能指望调用方记得.
+        self._open_streams: dict[str, Any] = {}
+        # session 关了再开时换一个 streamId: 老 id 在宿主侧可能还没被回收, 复用就是又一次
+        # duplicate open. 生成号只增不减, 单个 session 的重开次数是它的大小.
+        self._follow_generation: dict[str, int] = {}
+        # fire-and-forget 协程的引用集: 不持有的话任务可能在跑完前被 GC 掉.
+        self._background_tasks: set[asyncio.Task] = set()
         self._logger: logging.Logger = logger or logging.getLogger(__name__)
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
@@ -346,6 +357,8 @@ class DshConnection:
                             await self._dispatch_raw_frame(raw)
                     finally:
                         self._ws = None
+                        # 断开时宿主已停掉这条连接上的全部流; 新连接上每个 streamId 都要重开.
+                        self._open_streams.clear()
             except asyncio.CancelledError:
                 raise
             except ConnectionRefusedError as exc:
@@ -400,26 +413,51 @@ class DshConnection:
         self.client.set_cookies(self._cookies)
         self._logger.info("%sweb auth cookie acquired", self._log_prefix)
 
+    async def _open_stream(self, ws: Any, stream_id: str, endpoint: str, args: dict[str, Any]) -> None:
+        """在一条连接上开一条逻辑流 —— 同一连接上同一个 streamId 只发一次.
+
+        去重不是优化而是正确性: 宿主的 ``openStream`` 见到重复 id 会抛错, 而那个错误是在
+        整条 socket 的接收循环里抛的 —— 它关掉的是**整个 mux**, 不是这一条流. 于是一个局部
+        功能的重复开流, 会把宿主的全局传输一起带走 (2026-11-12 的 1008).
+        """
+        if self._open_streams.get(stream_id) is ws:
+            return
+        self._open_streams[stream_id] = ws
+        try:
+            await ws.send(json.dumps({
+                "type": "open",
+                "streamId": stream_id,
+                "endpoint": endpoint,
+                "payload": {"args": args},
+            }))
+        except Exception:
+            # 发送失败 = 这条连接已经不能用了; 清掉标记, 让重连后的新 ws 能重新开.
+            self._open_streams.pop(stream_id, None)
+            raise
+
+    async def _cancel_stream(self, ws: Any, stream_id: str) -> None:
+        """让宿主回收一条逻辑流 (宿主对未知 streamId 的帧静默丢弃, 所以可以放心发)."""
+        try:
+            await ws.send(json.dumps({"type": "cancel", "streamId": stream_id}))
+        except Exception as exc:
+            self._logger.debug("%scancel stream %s failed: %s", self._log_prefix, stream_id, exc)
+        finally:
+            if self._open_streams.get(stream_id) is ws:
+                self._open_streams.pop(stream_id, None)
+
     async def _open_events_stream(self, ws: Any) -> None:
         """在已连上的 mux 上开 `$events` 逻辑流 (应用级转发事件)."""
-        await ws.send(json.dumps({
-            "type": "open",
-            "streamId": self._events_stream_id,
-            "endpoint": "$events",
-            "payload": {"args": {}},
-        }))
+        await self._open_stream(ws, self._events_stream_id, "$events", {})
 
     async def _open_workspace_stream(self, ws: Any) -> None:
         """在已连 mux 上开 `workspace/follow` 逻辑流 (baseline 载 workspace 列表)."""
-        await ws.send(json.dumps({
-            "type": "open",
-            "streamId": self._workspace_stream_id,
-            "endpoint": "workspace/follow",
-            "payload": {"args": {}},
-        }))
+        await self._open_stream(ws, self._workspace_stream_id, "workspace/follow", {})
 
     def _follow_stream_id(self, session_id: str) -> str:
-        return f"moss-follow-{session_id}"
+        generation = self._follow_generation.get(session_id, 0)
+        if generation == 0:
+            return f"moss-follow-{session_id}"
+        return f"moss-follow-{session_id}-{generation}"
 
     async def _open_follow_stream(self, ws: Any, session_id: str) -> None:
         """在已连 mux 上开 `session/follow` 逻辑流 (durable 事件 + live assistant-stream).
@@ -430,12 +468,9 @@ class DshConnection:
         """
         stream_id = self._follow_stream_id(session_id)
         self._stream_to_session[stream_id] = session_id
-        await ws.send(json.dumps({
-            "type": "open",
-            "streamId": stream_id,
-            "endpoint": "session/follow",
-            "payload": {"args": {"request": {"address": {"kind": "session", "sessionId": session_id}, "assistantStream": True}}},
-        }))
+        await self._open_stream(ws, stream_id, "session/follow", {
+            "request": {"address": {"kind": "session", "sessionId": session_id}, "assistantStream": True},
+        })
 
     async def _dispatch_raw_frame(self, raw: str) -> None:
         """解析 mux 下行帧 (`item`/`error`/`end`), 按 streamId 分派 `item.value`.
@@ -936,27 +971,59 @@ class DshConnection:
                 return workspace
         return None
 
-    def create_session(self, session_id: str, logger: logging.Logger | None = None) -> DshSession:
-        """创建并接线一个 session facade: 挂 $events (host 运行态) + session/follow (session 事件) 两流.
+    def attach_session(
+            self,
+            session_id: str,
+            logger: logging.Logger | None = None,
+            *,
+            follow: bool = True,
+    ) -> DshSession:
+        """创建并接线一个 session facade.
 
-        $events 流收 host 级运行态 (api-session/status·added·…), 经 accept_host_event.
-        session/follow 流收 durable session 事件 + live assistant-stream, 经 accept_session_event.
-        session 关闭时 on_exit 解绑断链; follow 流在 WS 重连时由 _ws_loop 重开.
+        ``follow=True`` (默认) 是**长期持有**的会话: 挂 $events (host 运行态), 并在当前 mux 上开
+        `session/follow` 流 (durable session 事件 + live assistant-stream), 关掉时解绑断链;
+        重连时由 `_ws_loop` 重开. 一个 session 同时只允许一个 follow owner —— 第二条 follow
+        会重复同一个 streamId, 宿主判违规并关掉整条 mux (1008), 所以这里直接报错, 不做第二次接线.
+
+        ``follow=False`` 是**一次性把手**: 不订阅 $events、不开流、不在连接上登记任何东西.
+        它只提供 session 级 RPC (``chat_off_record`` / ``read`` / ``anchor`` …). 旁路 note 与
+        memento chat 就是这种用法 —— 它们借的是会话的上下文, 不是会话的运行态.
         """
         session = DshSession(session_id=session_id, client=self.client, logger=logger)
+        if not follow:
+            return session
+        if session_id in self._follow_sessions:
+            raise RuntimeError(
+                f"session {session_id} is already followed on this connection; a second "
+                f"session/follow stream would reuse streamId {self._follow_stream_id(session_id)!r} "
+                f"and the host closes the whole mux on a duplicate (1008). Use follow=False for "
+                f"one-shot calls, or close the existing session first."
+            )
         session.on_exit(self.on_remote_emit(session.accept_host_event))
         stream_id = self._follow_stream_id(session_id)
         self._follow_sessions[session_id] = session
         self._stream_to_session[stream_id] = session_id
-
-        def _cleanup() -> None:
-            self._follow_sessions.pop(session_id, None)
-            self._stream_to_session.pop(stream_id, None)
-            self._follow_turn_step.pop(session_id, None)
-
-        session.on_exit(_cleanup)
         # 已连 WS 就直接在当前连接开流 (捕获连接竞态, 断链由 _ws_loop 重连补开).
         ws = self._ws
+
+        def _cleanup() -> None:
+            # 身份判定: 只有当前 owner 才拆得动这组登记 —— 关一个已经被替换掉的旧 facade,
+            # 不该把新 owner 的流与补帧状态一起剪掉.
+            if self._follow_sessions.get(session_id) is session:
+                self._follow_sessions.pop(session_id, None)
+                self._follow_turn_step.pop(session_id, None)
+                # 下次 follow 换一个 streamId: 老 id 在宿主侧可能还没回收, 复用就是 duplicate.
+                self._follow_generation[session_id] = self._follow_generation.get(session_id, 0) + 1
+            if self._stream_to_session.get(stream_id) == session_id:
+                self._stream_to_session.pop(stream_id, None)
+            if ws is not None:
+                # 让宿主把这条流收回去 (不然 streamId 一直占着); 发不出去也只是留着, 不用救.
+                try:
+                    self._spawn(self._cancel_stream(ws, stream_id))
+                except RuntimeError:
+                    pass
+
+        session.on_exit(_cleanup)
         if ws is not None:
 
             async def _open_now() -> None:
@@ -967,8 +1034,14 @@ class DshConnection:
                         "%sopen session/follow stream failed for %s", self._log_prefix, session_id
                     )
 
-            asyncio.create_task(_open_now())
+            self._spawn(_open_now())
         return session
+
+    def _spawn(self, coro: Any) -> None:
+        """跑一个 fire-and-forget 协程, 并在它结束前持有引用 (不持有会被 GC 掉)."""
+        task = asyncio.get_running_loop().create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
 
 def _workspace_from(item: Any) -> WorkspaceView:

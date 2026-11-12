@@ -842,7 +842,12 @@ class Dolores(Ghost):
         launcher_config = dsh.model_copy(
             update={"home": home, "plugin_patch": None, "plugin_patches": list(self._plugin_patches)}
         )
-        return DshLauncher(launcher_config, subprocesses=self._matrix.processes)
+        # A logger travels with the launcher: without one the launcher logs on
+        # ``logging.getLogger("ghoshell_dsh...")``, which has no handler here — its WARNING/ERROR
+        # fall through Python's lastResort to the terminal and never reach moss.log, so a mux
+        # fault arrives as "the ghost went deaf" with nothing written down. That was the second
+        # half of the 2026-11-12 1008: the cause was visible, but only on a terminal nobody read.
+        return DshLauncher(launcher_config, subprocesses=self._matrix.processes, logger=self.logger)
 
     @contextlib.asynccontextmanager
     async def _dsh(self):

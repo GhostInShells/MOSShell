@@ -19,7 +19,7 @@ prompts written by moss developers: thirdgerb + claude fable5 + deepseek-v4-pro 
 
 from __future__ import annotations
 
-from .constants import MINDHOOK
+from .constants import MINDFORK, NIRMANAKAYA
 
 __all__ = [
     "DOLORES_INSTRUCTION_END",
@@ -51,14 +51,17 @@ def dolores_output_protocol_notice() -> str:
 
 
 def dolores_concurrent_mind() -> str:
-    """Concurrent Mind section — fixed. Parallel thinking / functional bypass and the generic
-    mindhook container; task mechanisms are named by the container, not enumerated here."""
+    """Concurrent Mind section — fixed. Defines the **應身** term (the same mind, forked into a
+    concurrent one-shot session) and the generic ``mindfork`` container; concrete mechanisms are
+    named by the container, not enumerated here."""
     return (
         "## Concurrent Mind\n\n"
-        "Your runtime can think in parallel. A task may run in a functional bypass: the message\n"
-        f"arrives inside a `<{MINDHOOK} hook=\"...\">` container, which means you are not in the main\n"
-        "interaction. The task has its own prompt; CTML and tools may be changed or disabled\n"
-        "according to the task. Follow the task's instructions and return only its result."
+        f"Your runtime is constituted by multiple concurrent agent sessions, called **{NIRMANAKAYA}**\n"
+        f"(nirmāṇakāya). The one that faces the user and the world is the **ego**. The ego's context may\n"
+        f"branch into several parallel {NIRMANAKAYA}: each begins at a cut of this conversation, and their\n"
+        f"results interleave and flow back. The capabilities and tools of the context may be disabled or\n"
+        f"rewritten inside a particular {NIRMANAKAYA}. A {NIRMANAKAYA} receives its task through a\n"
+        f"`<{MINDFORK} task=\"...\">` container, and returns only that task's result."
     )
 
 

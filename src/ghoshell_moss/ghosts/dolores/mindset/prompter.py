@@ -214,17 +214,46 @@ class PromptManager:
     ) -> None:
         self._store = store
         self._root = Path(prompts_root)
-        self._config = store.get_or_create(PromptsConfig(specs=defaults or []))
+        self._defaults = list(defaults or [])
+        self._config = store.get_or_create(PromptsConfig(specs=self._defaults))
+        self._adopt_code_seeds()
         self._materialize_seeds()
 
+    def _adopt_code_seeds(self) -> None:
+        """Take every seed from the code, not from the stored dump.
+
+        ``prompts.yml`` is a dump of the manifest; its ``seed`` goes stale the moment the code
+        changes. The body's origin is the code — everything else in a spec (description / slots
+        / default_version) stays local state. A local customization is a *new version*, never an
+        edit to the default version file.
+        """
+        seeds = {spec.key: spec.seed for spec in self._defaults if spec.seed}
+        changed = False
+        for spec in self._config.specs:
+            seed = seeds.get(spec.key)
+            if seed is not None and spec.seed != seed:
+                spec.seed = seed
+                changed = True
+        if changed:
+            self._save()
+
     def _materialize_seeds(self) -> None:
-        """Write each spec's seed to its default version when the key has no versions yet."""
         for spec in self._config.specs:
             self._materialize_seed(spec)
 
     def _materialize_seed(self, spec: PromptSpec) -> None:
-        if spec.seed and not self.versions(spec.key):
-            _atomic_write(self.path_of(spec.key, spec.default_version), spec.seed)
+        """Keep the default version file in sync with the seed — the same file, every start.
+
+        Rewriting the default version is what makes a seed edit take effect on restart. Version
+        isolation is the other direction: a locally created version (plus its active pointer) is
+        never touched here. Content is compared first so an unchanged seed costs no write.
+        """
+        if not spec.seed:
+            return
+        path = self.path_of(spec.key, spec.default_version)
+        if path.is_file() and path.read_text(encoding="utf-8") == spec.seed:
+            return
+        _atomic_write(path, spec.seed)
 
     # -- reads --------------------------------------------------------- #
 
@@ -343,9 +372,15 @@ class PromptManager:
         return True
 
     def reload(self) -> PromptsConfig:
-        """Re-read the manifest from disk after an external edit."""
+        """Re-read the manifest from disk after an external edit.
+
+        The code seeds are re-adopted and their default files re-synced, so a reload keeps the
+        same rule as a start: the body is code-owned, the manifest shape is local.
+        """
         self._store.invalidate(PromptsConfig)
         self._config = self._store.get_or_create(PromptsConfig())
+        self._adopt_code_seeds()
+        self._materialize_seeds()
         return self._config
 
     def _save(self) -> None:
