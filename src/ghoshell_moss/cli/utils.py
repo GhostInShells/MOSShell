@@ -191,21 +191,21 @@ def print_error(message: str):
     if _ai_mode:
         click.echo(f"[ERROR] {_strip_markup(message)}", err=True)
         return
-    _stderr_console.print(f"[bold red]✗ {message}[/bold red]")
+    _stderr_console.print(f"[bold red]✗ {message}[/bold red]", soft_wrap=True)
 
 
 def print_warning(message: str):
     if _ai_mode:
         click.echo(f"[WARN] {_strip_markup(message)}", err=True)
         return
-    _stderr_console.print(f"[bold yellow]⚠ {message}[/bold yellow]")
+    _stderr_console.print(f"[bold yellow]⚠ {message}[/bold yellow]", soft_wrap=True)
 
 
 def print_info(message: str):
     if _ai_mode:
         click.echo(f"[INFO] {_strip_markup(message)}", err=True)
         return
-    _stderr_console.print(f"[bold bright_blue]ℹ[/bold bright_blue] [bright_blue]{message}[/bright_blue]")
+    _stderr_console.print(f"[bold bright_blue]ℹ[/bold bright_blue] [bright_blue]{message}[/bright_blue]", soft_wrap=True)
 
 
 def print_code(code: str, language: str = "python"):

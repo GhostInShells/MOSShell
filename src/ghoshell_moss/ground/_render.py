@@ -66,7 +66,7 @@ from ghoshell_moss.ground.contract import (
 
 __all__ = [
     "render_meta", "render_meta_at",
-    "render_position", "RenderLimits", "find_ground",
+    "render_position", "render_status", "RenderLimits", "find_ground",
 ]
 
 
@@ -738,6 +738,18 @@ def _discover_templates(ground_dir: Path) -> list[tuple[str, str]]:
             description = ""
         found.append((path.stem, description))
     return found
+
+
+def render_status(text: str) -> str | None:
+    """The root tag's ``status`` attribute, or None when there is none.
+
+    Only the root counts: a nested face that failed is that face's result, not
+    the caller's. Searching the whole text would let a child's failure decide the
+    caller's exit code.
+    """
+    first = text.splitlines()[0] if text else ""
+    match = re.search(r'\bstatus="([^"]+)"', first)
+    return match.group(1) if match else None
 
 
 def _error_face(position: Path, reason: str) -> str:

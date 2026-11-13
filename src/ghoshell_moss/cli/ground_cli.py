@@ -192,7 +192,7 @@ def cmd_templates(
         # Templates are discovered per ground (`<ground>/.grounds/`), so with no
         # ground there is nothing to read — say that, instead of implying the
         # command failed to find a ground it never needed.
-        print_info(
+        print_error(
             f"templates live under a ground's .grounds/, and there is no GROUND.md "
             f"from {position} up to {boundary}"
         )
@@ -268,7 +268,7 @@ def cmd_render(
     template: str | None = typer.Option(
         None, "--template", "-t",
         help="Render through a table instead of the ground's own body+pins+imports: "
-             "a template name from .grounds/, or a .md file path.",
+             "a template name from this ground's .grounds/, or a .md file path.",
     ),
     root: Path | None = typer.Option(
         None, "--root",
@@ -277,23 +277,26 @@ def cmd_render(
 ) -> None:
     """Render the face of a position.
 
-    Two faces, decided by where you stand:
+    Two faces, decided by where you stand.
 
-    - **field-root** — the directory has its own GROUND.md: body + pins + the
-      directories its `imports` names, nested in one `<imports>` block.
-    - **walk** — it does not, and the nearest GROUND.md up to the boundary
-      renders it: a `<cwd>` line, no body, positional pins expanded and the
-      rest folded into `<folded>` at the end.
+    field-root: the directory has its own GROUND.md. You get its body, its pins,
+    and the directories its imports names, nested in one <imports> block.
 
-    `-t` does not add a view: it replaces the whole face (body, pins and
-    imports) with the table's own. Rendering is a cold read, but not a pure
-    read: `exec` pins run, so a render can materialize files.
+    walk: the directory has no GROUND.md, so the nearest GROUND.md up to the
+    boundary renders it. You get a <cwd> line, no body, positional pins in full,
+    and every other pin folded into <folded> at the end.
+
+    -t does not add a view: it replaces the whole face — body, pins and imports —
+    with the table's own.
+
+    Rendering is a cold read, but not a pure read: exec pins run, including the
+    ones inside imported directories, so a render can materialize files.
 
     Exit code is 0 when a face was drawn from a ground, 1 when the face says
-    `status="empty"` or `status="error"` (the reason is inside the output), and
-    2 when the arguments are wrong.
+    status="empty" or status="error" (the reason is inside the output), and 2
+    when the arguments are wrong.
     """
-    from ghoshell_moss.ground._render import render_position
+    from ghoshell_moss.ground._render import render_position, render_status
 
     position = (path or Path.cwd()).resolve()
     boundary = (root or _default_boundary()).resolve()
@@ -303,8 +306,7 @@ def cmd_render(
 
     out = asyncio.run(render_position(position, boundary=boundary, template=template))
     echo(out)
-    first = out.splitlines()[0] if out else ""
-    if 'status="empty"' in first or 'status="error"' in first:
+    if render_status(out) in ("empty", "error"):
         raise typer.Exit(code=1)
 
 
@@ -334,7 +336,7 @@ def cmd_meta(
     else:
         ground_root = _find_ancestor_ground(root)
         if ground_root is None:
-            print_info(f"no ground: no GROUND.md from {root} up to $HOME")
+            print_error(f"no ground: no GROUND.md from {root} up to {_default_boundary()}")
             print_info("run 'moss ground init' to create one here")
             raise typer.Exit(code=1)
 
@@ -371,7 +373,7 @@ def cmd_observe(
     else:
         ground_root = _find_ancestor_ground(root)
         if ground_root is None:
-            print_info(f"no ground: no GROUND.md from {root} up to $HOME")
+            print_error(f"no ground: no GROUND.md from {root} up to {_default_boundary()}")
             raise typer.Exit(code=1)
 
     async def _op() -> None:
@@ -483,7 +485,7 @@ def cmd_validate(
     if not l0_path.is_file():
         print_error(f"no GROUND.md found at {root}")
         print_info("run 'moss ground init' to create one")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=1)
 
     text = l0_path.read_text(encoding="utf-8")
     errors: list[str] = []
