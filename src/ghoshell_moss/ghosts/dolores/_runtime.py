@@ -26,7 +26,7 @@ from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet, Ground
+from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -294,7 +294,6 @@ class Dolores(Ghost):
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
-        self._project_ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
         # ghost home root frame — rendered once at boot, carried by the instruction slot.
         self._ground_text: str | None = None
@@ -400,25 +399,17 @@ class Dolores(Ghost):
         )
 
     async def ground_instruction(self) -> str | None:
-        """Render the ghost home root field for the instruction slot.
+        """Render the ghost home field once, at boot, for the instruction slot.
 
-        The ghost home is the field that answers *who am I* — it belongs in the instruction,
-        not in a channel notice: the channel is the control surface (mount/refresh), the
-        instruction is the content. Rendered once at boot; a later ``refresh`` updates the
-        cache through the channel's ``on_root_refresh`` callback.
+        The ghost home answers *who am I* — it is cognition, not a control surface, so it has
+        no channel: it is rendered here and injected as text. This is the boot snapshot; the
+        ghost-ground-governance rework moves the render into ``memories()`` so it rides the
+        memento clock instead.
         """
         if self._root_ground is None:
             return None
         view = await self._root_ground.render()
         return str(view)
-
-    def _set_ground_text(self, text: str) -> None:
-        """Keep the instruction's ground text in step with a channel-side refresh.
-
-        A snapshot is still a snapshot — the running session keeps the text it was born with;
-        this only matters when the instruction is assembled again.
-        """
-        self._ground_text = text
 
     def _frame_root(self) -> "Path | None":
         """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.
@@ -487,10 +478,6 @@ class Dolores(Ghost):
                 if self._container is not None else None
             )
             self._channel = build_dolores_channel(
-                groundset=self._ground_set,
-                project_groundset=self._project_ground_set,
-                ground_root_frame=self._ground_text,
-                on_ground_refresh=self._set_ground_text,
                 memento_manager=self._memento_manager,
                 prompt_manager=prompt_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
@@ -650,25 +637,15 @@ class Dolores(Ghost):
         # assert the configured default model into the dsh settings document — dsh reads it at
         # startup, so it must land before the spawn below (and after .env, which carries the config).
         await asyncio.to_thread(self._sync_default_model)
-        # open and hold the root ground (ghost_home cognitive field). Stub sync runs first (GROUND.md
-        # already written); the GroundSet lifecycle is managed by the exit stack; the memory ground
-        # ground: 一个 ghost 同时治理 ghost / mode / project 三个 home (D1). 哪一层没有
-        # GROUND.md 就不挂, 但会以 absent 出现在 channel notice 里 (D6) —— 缺席是内容.
-        # 没有 matrix 就没有另外两个 home 的地址, 那时只剩 ghost home (事实, 不是开关).
-        # ghost home is always a ground (the stubs wrote its GROUND.md); project home is one
-        # only when it declares itself — a home without GROUND.md is simply not mounted, so
-        # "absent" never becomes something the model has to read.
+        # open and hold the ghost home ground. Stub sync runs first (GROUND.md already written);
+        # the GroundSet lifecycle is managed by the exit stack.
+        # 这一层正在重做 (ghost-ground-governance FEATURE): ghost home 只作为 cognition 渲染,
+        # 不挂 channel; project home 的场等 step 5 以新的 channel 形态回来, 现在不构造.
         if self._home is not None:
             self._ground_set = await self._exit_stack.enter_async_context(
                 DefaultGroundSet(workspace_root=self._home, root_label="ghost_home")
             )
             self._root_ground = self._ground_set.root
-            if self._matrix is not None:
-                project_root = Path(self._matrix.env.project_path)
-                if (project_root / DEFAULT_L0_FILENAME).is_file():
-                    self._project_ground_set = await self._exit_stack.enter_async_context(
-                        DefaultGroundSet(workspace_root=project_root, root_label="project_home")
-                    )
         # render the ground text, cached for synchronous read by memories() (ego create_session consumes it via closure).
         self._ground_text = await self.ground_instruction()
         if self._matrix is not None:

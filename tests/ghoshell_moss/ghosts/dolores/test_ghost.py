@@ -144,53 +144,40 @@ class TestDoloresMemories:
 class TestBuildChannel:
     @pytest.mark.asyncio
     async def test_mounts_frame_channel_when_frame_root_given(self, tmp_path: Path):
-        from ghoshell_moss.ground import DefaultGroundSet
-
         from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
 
-        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
-        gs = DefaultGroundSet(workspace_root=tmp_path)
         frame_root = tmp_path / "frames"
         frame_root.mkdir()
-        chan = build_dolores_channel(groundset=gs, frame_root=frame_root
-        )
+        chan = build_dolores_channel(frame_root=frame_root)
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             names = {m.name for m in runtime.metas().values()}
             assert "frame" in names
-            assert "ground" in names
 
     @pytest.mark.asyncio
-    async def test_no_frame_channel_without_frame_root(self, tmp_path: Path):
-        from ghoshell_moss.ground import DefaultGroundSet
-
+    async def test_ghost_home_ground_is_not_an_organ(self, tmp_path: Path):
+        """认知场不是器官: ghost home 的场渲染进 instruction, 不挂 channel (ground 重做 D12)."""
         from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
 
-        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
-        gs = DefaultGroundSet(workspace_root=tmp_path)
-        chan = build_dolores_channel(groundset=gs)
+        chan = build_dolores_channel()
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             names = {m.name for m in runtime.metas().values()}
+            assert "ground" not in names
             assert "frame" not in names
-            assert "ground" in names
 
     @pytest.mark.asyncio
     async def test_model_organ_mounts_and_its_identity_rides_the_ghost_notice(self, tmp_path: Path):
         """ghost.model 挂上来, 当前模型走 ghost 根的 named notice (变才重发)."""
-        from ghoshell_moss.ground import DefaultGroundSet
-
         from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
         from ghoshell_moss.ghosts.dolores.model_channel import ModelOrgan
 
-        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
-        gs = DefaultGroundSet(workspace_root=tmp_path)
         organ = ModelOrgan(
             read_catalog=self._empty_catalog,
             read_identity=lambda: ("deepseek-official", "deepseek-flash", "low"),
             declare=lambda provider, model, effort: f"declared {provider}/{model}",
         )
-        chan = build_dolores_channel(groundset=gs, model=organ)
+        chan = build_dolores_channel(model=organ)
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             metas = {m.name: m for m in runtime.metas().values()}
@@ -201,13 +188,9 @@ class TestBuildChannel:
     @pytest.mark.asyncio
     async def test_no_model_organ_means_no_model_channel(self, tmp_path: Path):
         """没有后端就不挂这个器官 —— 挂一个只会答"做不了"的命令是在骗模型."""
-        from ghoshell_moss.ground import DefaultGroundSet
-
         from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
 
-        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
-        gs = DefaultGroundSet(workspace_root=tmp_path)
-        chan = build_dolores_channel(groundset=gs)
+        chan = build_dolores_channel()
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             metas = {m.name: m for m in runtime.metas().values()}
@@ -260,16 +243,13 @@ class TestBuildChannel:
     @pytest.mark.asyncio
     async def test_init_frame_lands_in_notice(self, tmp_path: Path):
         from ghoshell_moss.channels.frame_channel import Frame
-        from ghoshell_moss.ground import DefaultGroundSet
 
         from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
 
-        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
-        gs = DefaultGroundSet(workspace_root=tmp_path)
         frame_root = tmp_path / "frames"
         frame_root.mkdir()
         seed = Frame(label="orient", questions=["Where am I?"])
-        chan = build_dolores_channel(groundset=gs, frame_root=frame_root, init_frame=seed
+        chan = build_dolores_channel(frame_root=frame_root, init_frame=seed
         )
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
