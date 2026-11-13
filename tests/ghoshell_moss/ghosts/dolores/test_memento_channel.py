@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from ._support import _OfflineConnection
+
 class TestMementoChannel:
     """memento channel — ghost 的记忆器官: 读面透传 + 落锚写面 + 坏 commit 失败 + notice 列 branch."""
 
@@ -55,7 +57,7 @@ class TestMementoChannel:
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         return EgoMementoManager(
-            connection=connection, memento=memento, config=EgoMementoConfig()
+            connection=connection or _OfflineConnection(), memento=memento, config=EgoMementoConfig()
         ), memento
 
     @staticmethod

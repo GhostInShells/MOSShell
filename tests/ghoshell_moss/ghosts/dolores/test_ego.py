@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from ghoshell_container import Container
+from ._support import _OfflineConnection
 from ghoshell_moss.core.blueprint.moment import Echoes
 
 class TestDoloresEgoObserveContinuation:
@@ -273,6 +274,12 @@ class _FakeCompactManager:
     def compact_cut_turn(self):
         return self._cut_turn
 
+    def compact_cut(self):
+        """(cut_turn, tip coord) —— 压缩点连同"哪条留在 surface 里"一起给."""
+        if self._cut_turn is None:
+            return None
+        return self._cut_turn, "1-9"
+
 
 class _FakeCompactLauncher:
     def __init__(self, replaced: int = 1):
@@ -291,7 +298,7 @@ class _CancellingLauncher:
         raise asyncio.CancelledError()
 
 
-def _compact_ego(*, memories, memento_manager=None, launcher=None):
+def _compact_ego(*, memories, memento_manager=None, launcher=None, memory_refresh=None):
     from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
 
     ego = DoloresEgo(
@@ -305,6 +312,7 @@ def _compact_ego(*, memories, memento_manager=None, launcher=None):
             facade=None,
         ),
         memories=memories,
+        memory_refresh=memory_refresh,
         memento_manager=memento_manager,
     )
     ego._ego_session_id = "s1"
@@ -351,6 +359,35 @@ class TestDoloresEgoCompact:
         assert ego._pending_compact is False
         # 成功返回即交付, 不留下跨帧暂存.
         assert ego.take_compact_memory() is None
+
+    @pytest.mark.asyncio
+    async def test_compact_re_renders_memory_before_it_replaces_the_surface(self):
+        """The recap must be rendered **now**, not read from the boot snapshot.
+
+        Without the refresh, the surface is replaced by a snapshot taken at boot and every
+        commit made since then disappears from the model's view: the head jumps straight to
+        the last summary with nothing in between. The refresh also has to run before the RPC —
+        a cancelled compact keeps this memory for the next frame, and it must be the fresh one.
+        """
+        calls: list[str | None] = []
+
+        async def refresh(until: str | None = None) -> None:
+            calls.append(until)
+
+        launcher = _FakeCompactLauncher(replaced=1)
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memory_refresh=refresh,
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=launcher,
+        )
+        ego._pending_compact = True
+
+        memory = await ego.compact_if_pending()
+
+        assert memory is not None
+        assert calls == ["1-9"]          # the cut commit, exclusive upper bound
+        assert launcher.calls             # and it happened before the replace RPC
 
     @pytest.mark.asyncio
     async def test_nothing_shadowed_is_not_a_compact(self):
@@ -576,7 +613,7 @@ class TestDoloresEgoCommit:
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         manager = EgoMementoManager(
-            connection=None, memento=memento,
+            connection=_OfflineConnection(), memento=memento,
             config=EgoMementoConfig(force_tokens=force_tokens, warn_tokens=warn_tokens),
         )
         ego = DoloresEgo(

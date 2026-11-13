@@ -76,6 +76,11 @@ look at first.
 
 
 def _now_utc() -> datetime:
+    """The record's instant — UTC, one axis for every row.
+
+    The stored value is an absolute point; which clock a reader sees is a render-time
+    question (the body's OS zone), never something the record freezes.
+    """
     return datetime.now(timezone.utc)
 
 
@@ -661,30 +666,68 @@ class FsBranch(Branch):
             view.memento = path if path in nodes else None
         return view
 
-    def _parent(self, meta: BranchMeta) -> "FsBranch | None":
-        fork_from = meta.fork_from
-        if fork_from is None:
-            return None
-        return self._memento._branch_by_id(fork_from.branch_id)
+    def view(self, *, n: int = 10, until: int | None = None) -> BranchView:
+        return self._build_view(self.commits(), self.notes(), n, until)
 
-    def view(self, *, n: int = 10) -> BranchView:
-        return self._build_view(self.commits(), self.notes(), n)
-
-    async def aview(self, *, n: int = 10) -> BranchView:
+    async def aview(self, *, n: int = 10, until: int | None = None) -> BranchView:
         commits = await self.acommits()
         notes = await self.anotes()
-        return self._build_view(commits, notes, n)
+        return self._build_view(commits, notes, n, until)
 
-    def _build_view(self, commits: list[CommitRef], notes: dict[str, Note], n: int) -> BranchView:
+    def _fork_of(self, meta: BranchMeta) -> tuple["BranchView | None", str]:
+        """The parent as a pointer, plus the coordinate on it where this branch left.
+
+        ``parent.view(n=n)`` used to rebuild the whole parent — recursively, one level per
+        fork — and no renderer ever read it. What a reader needs is who the parent is, how
+        big it is, and where the split happened; the content is one coordinate away.
+        """
+        fork = meta.fork_from
+        if fork is None:
+            return None, ""
+        parent = self._memento._branch_by_id(fork.branch_id)
+        if parent is None:
+            return None, ""
+        parent_meta = parent.meta()
+        commits = parent.commits()
+        seq = next((c.seq for c in commits if c.id == fork.commit_id), 0)
+        pointer = BranchView(
+            name=parent_meta.name,
+            description=parent_meta.description,
+            branch_id=parent_meta.branch_id,
+            index=parent_meta.index,
+            created=parent_meta.created,
+            commit_id="",
+            previous=None,
+            history=[],
+            latest=[],
+            commits_total=len(commits),
+        )
+        return pointer, (f"{parent_meta.index}-{seq}" if seq else "")
+
+    def _build_view(
+            self,
+            commits: list[CommitRef],
+            notes: dict[str, Note],
+            n: int,
+            until: int | None = None,
+    ) -> BranchView:
+        """Project the branch, optionally **as it stood before ``until``**.
+
+        ``until`` is the compact cut: the commit at ``until`` keeps its raw span in the
+        surface, so a snapshot rendered during compaction must stop just before it. Without
+        this, the re-rendered memory would summarise a span that is still verbatim above it —
+        and the summary and the span would disagree the moment the note is written late.
+        """
         meta = self.meta()
+        if until is not None:
+            commits = [c for c in commits if c.seq < until]
         views = _collapse_broken_commits([self._commit_view(c, notes, meta.index) for c in commits])
         nodes = self._node_index()
         for cv in views:
             self._probe_memento(cv, nodes)
         latest = views[-n:]
         history = views[:-n]
-        parent = self._parent(meta)
-        previous = parent.view(n=n) if parent is not None else None
+        previous, fork_coord = self._fork_of(meta)
         tip = commits[-1].id if commits else ""
         return BranchView(
             name=self._name,
@@ -694,6 +737,7 @@ class FsBranch(Branch):
             created=self._created,
             commit_id=tip,
             previous=previous,
+            fork_coord=fork_coord,
             history=history,
             latest=latest,
             commits_total=len(commits),
@@ -743,14 +787,14 @@ class FsBranch(Branch):
             return ""
         return render_view_text(results)
 
-    async def aview_with_hooks(self, *, n: int = 10) -> BranchView:
+    async def aview_with_hooks(self, *, n: int = 10, until: int | None = None) -> BranchView:
         """The view an actual reader gets: the projection **plus** what the directory renders.
 
         Cheap views (``view`` / ``aview``) stay hook-free on purpose — they are called from sync
         paths and inside other projections. This one is the explicit opt-in, and it re-runs the
         slot on every call: a plan that moved a minute ago must not come back stale.
         """
-        view = await self.aview(n=n)
+        view = await self.aview(n=n, until=until)
         view.ground = await self._render_slot("branch_view")
         return view
 

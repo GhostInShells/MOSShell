@@ -7,10 +7,13 @@ hands back. All of it runs outside dsh, on a fake connection.
 
 import asyncio
 import logging
+import re
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
+
+from ._support import _OfflineConnection
 
 class TestEgoMementoSidecar:
     """Note task — one off-record round per commit, with the mindfork container.
@@ -302,7 +305,7 @@ class TestMementoReadSurface:
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         return EgoMementoManager(
-            connection=connection, memento=memento, config=EgoMementoConfig()
+            connection=connection or _OfflineConnection(), memento=memento, config=EgoMementoConfig()
         ), memento
 
     @staticmethod
@@ -370,17 +373,129 @@ class TestMementoReadSurface:
         # one folded entry, not twenty: the far side is a range plus a few titles
         assert len(text) < 12000
 
-    def test_view_message_carries_node_path_when_present(self, tmp_path: Path):
+    def test_view_message_marks_a_node_without_shipping_its_path(self, tmp_path: Path):
+        """A node's presence is one flag; its path is derivable and would be pure noise.
+
+        The commit line used to carry the absolute path of ``MEMENTO.md`` — hundreds of
+        characters per anchor, recomputed on every render, for a fact ``node(coord)``
+        answers on demand.
+        """
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         branch.note(anchor.id, "main-note")
 
-        assert "memento=" not in manager.view_message().to_content_string()
+        assert 'node="' not in manager.view_message().to_content_string()
 
         node = branch.ensure_memento(anchor.seq)
+        text = manager.view_message().to_content_string()
 
-        assert str(node) in manager.view_message().to_content_string()
+        assert 'node="1"' in text
+        assert str(node) not in text
+
+    def test_view_message_groups_the_window_by_day(self, tmp_path: Path):
+        """The window is a day's work; the date is paid once, the clock travels per commit.
+
+        A bare ``D13`` cannot say which month it belongs to — this branch already spans
+        three of them — so the day carries the absolute date and the zone; each commit
+        carries only the clock, on the body's current clock.
+        """
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        for i in range(3):
+            anchor = manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
+            branch.note(anchor.id, f"note {i}")
+
+        created = [c.created for c in branch.commits()]
+        local = created[0].astimezone()
+        text = manager.view_message().to_content_string()
+
+        assert text.count("<day ") == 1
+        assert f'<day date="{local.strftime("%Y-%m-%d")}' in text
+        assert re.search(r'<day date="\d{4}-\d{2}-\d{2}[+-]\d', text)
+        # the clock is the body's clock, minute precision, no zone repeated per line
+        assert re.search(r'<commit seq="1-\d+" at="\d{2}:\d{2}"', text)
+        assert 'created="' not in text
+
+    def test_view_message_stops_before_a_coordinate(self, tmp_path: Path):
+        """A snapshot rendered for compaction must end where the surface takes over.
+
+        The cut commit's span stays verbatim above the recap; rendering it into the snapshot
+        as well would put two versions of the same span in one context.
+        """
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        coords = []
+        for i in range(3):
+            anchor = manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
+            branch.note(anchor.id, f"note {i}")
+            coords.append(manager.coord(anchor))
+
+        text = manager.view_message(until=coords[2]).to_content_string()
+
+        # exclusive: the cut commit and everything after it are the surface's job
+        assert coords[0] in text and coords[1] in text
+        assert coords[2] not in text
+        assert 'total="2"' in text
+
+    def test_view_message_names_its_owner(self, tmp_path: Path):
+        """A coordinate is unique only inside one owner, so the container states which."""
+        manager, memento = self._manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        assert 'owner="owner"' in manager.view_message().to_content_string()
+
+    def test_view_message_points_at_the_forked_parent(self, tmp_path: Path):
+        """The branch opening reserves the parent: one pointer, never the parent's history."""
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(anchor.id, "main-note")
+        branch.fork("child")
+
+        text = manager.view_message("child").to_content_string()
+
+        assert f'<fork from="main" index="{branch.index}"' in text
+        assert f'coord="{branch.index}-{anchor.seq}"' in text
+        assert "<commit" not in text  # the parent's commits stay at the parent
+
+    def test_view_message_shows_what_arrived_from_another_branch(self, tmp_path: Path):
+        """A confluence is the only cross-branch write, so it must be visible where it landed.
+
+        Only the title travels (the contract copies nothing else); the body stays at the
+        origin and is one ``read`` away.
+        """
+        from ghoshell_moss.memento.abcd import BranchAddr
+
+        manager, memento = self._manager(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        main = memento.get_branch("main")
+        side = main.fork("side")
+        main.note(anchor.id, "main-note", recipients=[
+            BranchAddr(branch_id=side.meta().branch_id, branch_name="side", branch_index=side.index),
+        ])
+        landed = side.commit(metatype="session", metadata={})
+        side.note(landed.id, "side-note")
+
+        text = manager.view_message("side").to_content_string()
+
+        assert '<from branch="main"' in text
+        assert f'coord="{main.index}-{anchor.seq}"' in text
+        assert "main-note" in text
+
+    def test_view_message_shows_a_branch_it_spawned(self, tmp_path: Path):
+        """The outgoing half of the same exchange: a child is absorbed by the next commit."""
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(anchor.id, "main-note")
+        branch.fork("child")
+        later = manager.commit(session_id="s1", start_turn=1, end_turn=2)
+        branch.note(later.id, "later-note")
+
+        text = manager.view_message().to_content_string()
+
+        assert '<to branch="child"' in text
 
     @pytest.mark.asyncio
     async def test_read_renders_the_route_events(self, tmp_path: Path):
@@ -504,7 +619,7 @@ class TestMementoCommitSpan:
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         return EgoMementoManager(
-            connection=None, memento=memento, config=EgoMementoConfig()
+            connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig()
         ), memento
 
     def test_records_half_open_span(self, tmp_path: Path):
@@ -533,7 +648,7 @@ class TestEgoMementoCompactCut:
 
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
-        return EgoMementoManager(connection=None, memento=memento, config=EgoMementoConfig()), memento
+        return EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig()), memento
 
     def test_none_without_commits(self, tmp_path: Path):
         manager, _ = self._manager(tmp_path)

@@ -52,6 +52,32 @@ def _dolores(meta=None, *, home=None, session=None, matrix=None, shell=None, bas
     )
 
 
+class _OfflineConnection:
+    """A connection that exists but can reach nothing — the shape a read-only test needs.
+
+    Not ``None``: the runtime always holds a connection object (the dsh launcher), so a test
+    that passes ``None`` builds a state production never builds. That mismatch is what once
+    left a note task dying with ``AttributeError`` in the background, invisible until GC.
+    """
+
+    def __init__(self):
+        self.attached: list[str] = []
+
+    def attach_session(self, session_id: str, logger=None, *, follow: bool = True):
+        self.attached.append(session_id)
+        return _OfflineSession()
+
+
+class _OfflineSession:
+    """One handle whose only call fails at once — the sidecar's paved "unavailable" path."""
+
+    async def chat_off_record(self, messages, *, anchor=None, **kwargs):
+        raise RuntimeError("offline connection in tests")
+
+    async def close(self) -> None:
+        return None
+
+
 # --- dsh event vocabulary ----------------------------------------------------
 # One frame of a run is a stream of these. The constructor lives here rather than on a test class
 # because more than one file drives the run surface; a test importing another test is a coupling

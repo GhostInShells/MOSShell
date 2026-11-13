@@ -28,7 +28,7 @@ import dataclasses
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
@@ -200,6 +200,7 @@ class DoloresEgo:
             config: DoloresEgoConfig | None = None,
             logger: LoggerItf | None = None,
             memories: Callable[[], list[Message]] | None = None,
+            memory_refresh: Callable[[str | None], Awaitable[None]] | None = None,
             memento_manager: EgoMementoManager | None = None,
             default_thinking_effort: str = "",
     ) -> None:
@@ -214,6 +215,10 @@ class DoloresEgo:
         :param logger: logger; None falls back to the MOSS logger.
         :param memories: closure returning the ghost's dynamic memory (existential layer); called on
             create_session for the freshest value. Clones share the same closure. None = no memory.
+        :param memory_refresh: async re-render of that memory, called with the compact cut coordinate
+            before the surface is replaced. ``memories`` is a **cache read**; this is the only writer
+            of that cache after boot. Without it a compact would re-deliver the boot snapshot and
+            every commit made since boot would vanish from the model's view.
         :param memento_manager: ghost-held memento 旁路服务; 锚点写入与阈值判定都过它. None = 无 memento.
         :param default_thinking_effort: boot-time thinking depth declaration (from startup doc). Empty =
             declare nothing — the depth stays whatever dsh/UI holds.
@@ -223,6 +228,7 @@ class DoloresEgo:
         self._facade = ctx.facade
         self._config = config or DoloresEgoConfig()
         self._memories = memories
+        self._memory_refresh = memory_refresh
         self._memento_manager = memento_manager
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
@@ -357,6 +363,16 @@ class DoloresEgo:
         启动**不再回放源 session 的原文 tail**：seed 只有 memory (ground + memento view)。这样 dsh
         历史消息协议再变，启动都不碰（防「升级后 ghost 永远起不来」）。跨重启的连续性由 memento
         视图 + read/chat 承担。
+
+        约定的两种起始形态（**按 ref 起 session 还没接线**，现在只有第一种）：
+
+        1. 无 ref：memory 渲染到 last commit，新 session 从这里往下长。
+        2. 有 ref：memory 渲染到该 commit **之前**（不含它），再把那条 commit 的消息正文展开、
+           塞进新 session 的起始上下文。也就是"从某个锚点接上"——快照只说它之前的事，它自己
+           只被展开一次，任何一段都不会在上下文里出现两遍。
+
+        第二种要接线时必须走 refresh_memory(until=coord)，和 compact 用的是同一条路径 —— 别在
+        这里另写一套截断逻辑。
         """
         # Close the sessions this boot replaces before opening the new one; the roster stays at
         # exactly one live Ψ even after a crash of the previous process.
@@ -795,9 +811,20 @@ class DoloresEgo:
         manager = self._memento_manager
         if manager is None:
             return None
-        cut_turn = manager.compact_cut_turn()
-        if cut_turn is None:
+        cut = manager.compact_cut()
+        if cut is None:
             return None
+        cut_turn, tip_coord = cut
+        # 先把 memory 重渲染到切点之前 —— 缓存里那份是**开机时**拍的, 直接拿来当 recap 会让
+        # 开机以来的所有 commit 在 surface 被替换后消失. 重渲染在 RPC 之前做, 所以取消时它已经
+        # 是这份 memory 的一部分, 会被 _compact_memory 一起带走.
+        if self._memory_refresh is not None:
+            try:
+                await self._memory_refresh(tip_coord)
+            except Exception:
+                # 重渲染失败就放弃本次压缩: 拿旧快照去换 surface 才是真的丢数据.
+                self._logger.exception("dolores compact skipped — memory refresh failed")
+                return None
         try:
             memory, notice = self._compact_memory_payload()
         except Exception:

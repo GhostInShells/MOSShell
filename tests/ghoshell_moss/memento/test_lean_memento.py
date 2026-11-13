@@ -149,7 +149,12 @@ def test_view_coord_is_branch_index_and_commit_seq(memento):
     assert cv.index == 2
     assert [v.coord for v in cv.latest] == ["2-1"]
     assert cv.previous is not None
-    assert cv.previous.latest[-1].coord == "1-3"
+    # the parent is a pointer: identity + size, and the coordinate the fork left from.
+    # its commits are read at the parent, never copied into the child's view.
+    assert cv.previous.index == b.index
+    assert cv.previous.commits_total == 3
+    assert cv.previous.latest == []
+    assert cv.fork_coord == "1-3"
 
 
 def test_commit_view_carries_ref_and_note(memento):

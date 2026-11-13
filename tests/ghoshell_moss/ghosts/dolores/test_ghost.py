@@ -5,6 +5,8 @@ Answers: what a Dolores *is* before it starts thinking. The ego is elsewhere
 """
 
 import asyncio
+import re
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +16,7 @@ from ghoshell_moss.core.blueprint.ghost import Ghost
 from ghoshell_moss.core.blueprint.moment import Echoes
 from ghoshell_moss.core.session.mock_session import MockSession
 
-from ._support import _dolores, _dolores_meta
+from ._support import _dolores, _dolores_meta, _OfflineConnection
 
 class TestDolores:
     def test_is_ghost_abc(self):
@@ -116,23 +118,25 @@ class TestDoloresMemories:
 
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
-        manager = EgoMementoManager(connection=None, memento=memento, config=EgoMementoConfig())
+        manager = EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig())
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         memento.get_branch("main").note(anchor.id, "note")
 
         ghost = _dolores()
         ghost._ground_text = "GROUND"
         ghost._memento_manager = manager
-        # 渲染是异步的 (要跑 branch_view 槽位), 在 __aenter__ 里做一次, memories() 读缓存.
-        ghost._memento_view = await manager.aview_message()
+        # 渲染是异步的 (要跑 branch_view 槽位): refresh 写缓存, memories() 只读.
+        await ghost.refresh_memory()
 
         memories = ghost.memories()
 
         assert len(memories) == 1
         text = memories[0].to_content_string()
         assert "<memory" in text
+        # 快照要带"它成形于哪一刻" —— 不是 now, 是 instance 的时间锚
+        assert re.search(r'<memory instanced_at="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[^"]*[+-]\d', text)
         assert "<ground" in text and "GROUND" in text
-        assert "<branch" in text and "note" in text
+        assert '<memento owner="' in text and "note" in text
 
     @pytest.mark.asyncio
     async def test_branch_ground_rides_into_boot_memory(self, tmp_path: Path):
@@ -147,7 +151,7 @@ class TestDoloresMemories:
 
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
-        manager = EgoMementoManager(connection=None, memento=memento, config=EgoMementoConfig())
+        manager = EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig())
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         memento.get_branch("main").note(anchor.id, "note")
 

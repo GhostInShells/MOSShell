@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import itertools
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -76,9 +77,50 @@ _READ_ROUTE = "/moss-api/ghost/dolores/read"
 _BYPASS_EFFORT = "low"
 # 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
 _NOTE_PRIOR_COUNT = 1
-_DIGEST_TITLES = 5
-"""How many titles the folded past keeps. The rest of `history` is a count and a
-coordinate range — a budget, not a promise to render every commit."""
+
+
+def _local(created: datetime) -> datetime:
+    """The record's instant on the body's clock — the OS zone, read at render time.
+
+    Records store an absolute instant; which clock a reader sees is a rendering question,
+    and the answer is always "the body's current clock". Nothing here freezes a frame.
+    """
+    return created.astimezone()
+
+
+def stamp_zone(created: datetime) -> str:
+    """``+8`` / ``-5`` / ``+5:30`` — the offset of the clock being displayed; empty when naive."""
+    offset = created.utcoffset()
+    if offset is None:
+        return ""
+    total = int(offset.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    hours, remainder = divmod(total, 3600)
+    minutes = remainder // 60
+    return f"{sign}{hours}" if minutes == 0 else f"{sign}{hours}:{minutes:02d}"
+
+
+def stamp_day(created: datetime) -> str:
+    """``2026-11-13+8`` — the calendar day on the body's clock, zone attached.
+
+    Absolute on purpose: the branch spans months, and a bare ``D13`` cannot say which
+    month it belongs to. The zone rides along so a bare clock underneath it stays
+    unambiguous.
+    """
+    local = _local(created)
+    return f"{local.strftime('%Y-%m-%d')}{stamp_zone(local)}"
+
+
+def stamp_clock(created: datetime) -> str:
+    """``15:09`` — time of day on the body's clock; the day above already carries the zone."""
+    return _local(created).strftime("%H:%M")
+
+
+def stamp(created: datetime) -> str:
+    """``2026-11-13 15:09+8`` — the whole stamp, for things that sit outside a ``<day>``."""
+    local = _local(created)
+    return f"{local.strftime('%Y-%m-%d %H:%M')}{stamp_zone(local)}"
 
 
 def log_emanation_usage(logger: LoggerItf, *, kind: str, subject: str, usage: TokenUsage) -> None:
@@ -122,7 +164,21 @@ class EgoMementoConfig(BaseModel):
     """``.dolores.yml`` 的 ``memento:`` 段. Field 默认即兜底."""
 
     branch_name: str = Field(default="main", description="ego 提交的 memento branch (ghost 启动时取其/建).")
+    owner: str = Field(
+        default="",
+        description=(
+            "轨迹的所有者名字, 进 memory 的 <memento owner=..> —— 坐标只在 owner 内唯一, 所以"
+            "容器必须自己声明边界. 空 = 用 memento 根目录的名字."
+        ),
+    )
     view_limit: int = Field(default=10, description="Branch.view(n=..) — 最近 n 条进 memory view.")
+    digest_titles: int = Field(
+        default=5,
+        description=(
+            "折叠段 (earlier) 保留多少条 title. 其余只有 count + 坐标区间 —— 这是个预算, "
+            "不是渲染全部 commit 的承诺."
+        ),
+    )
     warn_tokens: int = Field(
         default=50_000,
         description="K: 距上次 commit 的窗口增量 token 达此值, 插**一次** commit 提醒 (每窗口).",
@@ -381,7 +437,30 @@ class EgoMementoManager:
             return
         run = BypassCommit(commit_id=commit_id, ref=ref)
         self._bypass[commit_id] = run
-        run.task = asyncio.create_task(self._run_bypass(run), name=f"memento-note-{commit_id}")
+        run.task = asyncio.create_task(self._guarded_note(run), name=f"memento-note-{commit_id}")
+
+    async def _guarded_note(self, run: BypassCommit) -> None:
+        """The note task's last resort — every escape from ``_run_bypass`` ends here.
+
+        ``_run_bypass`` paves its own failures (model unavailable / unreadable source / empty
+        reply), but a tail of it runs **outside** that paving: the usage log, the shape of the
+        reply, and the note write itself. A death there used to vanish. The task is fire-and-
+        forget, and the shutdown path only gathers tasks that are *still running* — so a task
+        that had already died with an exception was never retrieved: one
+        ``Task exception was never retrieved`` line at GC time, no commit id, not in the log.
+
+        So the task carries its own catch. Nothing here changes the outcome — the note stays
+        empty and the commit is still readable — it only makes the outcome visible and settles
+        the run state instead of leaving it "running" forever.
+        """
+        try:
+            await self._run_bypass(run)
+        except asyncio.CancelledError:
+            # 关停取消不算失败: 不写 error note, 不改状态 —— 直接穿透.
+            raise
+        except Exception:
+            self._logger.exception("memento note task died: commit=%s", run.commit_id)
+            run.state = BypassState.FAILED
 
     async def _run_bypass(self, run: BypassCommit) -> None:
         """跑一轮 note task 并写 note.
@@ -713,17 +792,34 @@ class EgoMementoManager:
 
     # ── 读侧投影 (branch / commit 都是纯读, 不触 dsh) ───────────────
 
-    def view_message(self, name: str | None = None, *, n: int | None = None) -> Message | None:
+    def view_message(
+            self,
+            name: str | None = None,
+            *,
+            n: int | None = None,
+            until: str | None = None,
+    ) -> Message | None:
         """把 branch view 渲染成 xml-like memory 块 (坏 commit 已由 memento view 折叠).
 
         ``name`` 缺省 = 当前 branch (ego 的 memory 用这条); 给了名字就读别的 branch.
+        ``until`` 是一条坐标: 渲染"那条 commit 之前"的轨迹 —— compact 之后重渲染 memory
+        就走这条(切点那条的原文 tail 还留在 surface 里, 不该再被摘要一遍).
         """
         branch = self._memento.get_branch(name or self._config.branch_name)
         if branch is None:
             return None
-        return self._render_view(branch.view(n=n if n is not None else self._config.view_limit))
+        return self._render_view(branch.view(
+            n=n if n is not None else self._config.view_limit,
+            until=self._seq_before(branch, until),
+        ))
 
-    async def aview_message(self, name: str | None = None, *, n: int | None = None) -> Message | None:
+    async def aview_message(
+            self,
+            name: str | None = None,
+            *,
+            n: int | None = None,
+            until: str | None = None,
+    ) -> Message | None:
         """``view_message`` 的带 hook 版本 —— 真正读这一页的人都该走这条.
 
         差别只有一个: ``branch_view`` 槽位在这里跑, 结果进 ``BranchView.ground`` 再被渲染.
@@ -733,8 +829,24 @@ class EgoMementoManager:
         branch = self._memento.get_branch(name or self._config.branch_name)
         if branch is None:
             return None
-        view = await branch.aview_with_hooks(n=n if n is not None else self._config.view_limit)
+        view = await branch.aview_with_hooks(
+            n=n if n is not None else self._config.view_limit,
+            until=self._seq_before(branch, until),
+        )
         return self._render_view(view)
+
+    def _seq_before(self, branch: Branch, coord: str | None) -> int | None:
+        """坐标 → 该 branch 上的 seq; 渲染时用它做**排他**上界.
+
+        坐标属于别的 branch 时返回 None (整条线渲染) —— 一条线的 snapshot 不该被另一条线的
+        坐标悄悄截断; 传错坐标是调用方的问题, 这里只保证不会切出半个视图.
+        """
+        if not coord:
+            return None
+        view = self._memento.resolve_commit(coord)
+        if view is None or view.branch_index != branch.index:
+            return None
+        return view.seq
 
     def list_branches(self) -> list[BranchInfo]:
         """所有现存 branch 的概览 —— 先看有哪些, 再用 ``view_message(name)`` 看内容."""
@@ -789,10 +901,22 @@ class EgoMementoManager:
         意味着「压到 n-1、保留最新一个 commit 的 span 作原文 tail」——「不丢最近几轮」是结构保证,
         不靠算。返回 ``None`` 表示无可压 (没有 tip / tip 就是第一个 commit, 无 n-1)。
         """
+        cut = self.compact_cut()
+        return None if cut is None else cut[0]
+
+    def compact_cut(self) -> tuple[int, str] | None:
+        """``(cut_turn, tip_coord)`` —— 压缩点, 外加"哪一条 commit 留在 surface 里".
+
+        两者必须一起给: commit 的 turn 决定 surface 从哪儿切, 坐标决定 memory 重渲染到哪儿停。
+        只给 turn 的话, 重渲染的人还得自己反查是哪一条 —— 而那正好是最容易错的地方。
+        """
         ref = self.latest_ref()
         if ref is None or ref.start_turn <= 0:
             return None
-        return ref.start_turn
+        commits = self._branch().commits()
+        if not commits:
+            return None
+        return ref.start_turn, self.coord(commits[-1])
 
     # ── 渲染 ─────────────────────────────────────────────────────
 
@@ -807,17 +931,21 @@ class EgoMementoManager:
         282 of them into memory while the budget only existed in a signature.
         """
         container = Message.new(
-            tag="branch",
+            tag="memento",
             attributes={
-                "name": view.name,
+                "owner": self._owner_name(),
+                "branch": view.name,
                 "index": str(view.index),
                 "total": str(view.commits_total),
             },
         )
         children: list[Message] = []
+        fork = self._render_fork(view)
+        if fork is not None:
+            children.append(fork)
         if view.history:
             children.append(self._render_digest(view))
-        children.extend(self._render_commit(cv) for cv in view.latest)
+        children.extend(self._render_days(view.latest))
         if view.ground:
             # 线自己渲染的那一页（计划、开着的 task）属于这个 view, 不是摘要的脚注.
             children.append(Message.new(tag="ground").with_content(view.ground))
@@ -825,14 +953,55 @@ class EgoMementoManager:
             return container.with_content("no commit")
         return container.with_messages(*children)
 
+    def _owner_name(self) -> str:
+        """轨迹的所有者 —— 坐标只在 owner 内唯一, 所以容器必须自己声明边界."""
+        return self._config.owner or self._memento.root.name
+
+    def _render_fork(self, view: BranchView) -> Message | None:
+        """父线在哪儿 —— 一条指针, 不是父线的副本.
+
+        ``at`` 在这套 prompt 里是时间词 (``<command at="D12 18:49:30+8">``); 分叉点是
+        父线上的一个**位置**, 所以写 ``coord``. 父线的内容一条坐标就能取到, 不必搬过来.
+        """
+        parent = view.previous
+        if parent is None:
+            return None
+        attributes = {
+            "from": parent.name,
+            "index": str(parent.index),
+            "total": str(parent.commits_total),
+        }
+        if view.fork_coord:
+            attributes["coord"] = view.fork_coord
+        return Message.new(tag="fork", attributes=attributes)
+
+    def _render_days(self, latest: list[CommitView]) -> list[Message]:
+        """The detail window, grouped by the day each commit was written on.
+
+        A day is the unit a reader actually folds by ("this is what that day was"), and
+        this branch runs 13–25 commits a day, so the date is paid once instead of once
+        per line. Commits are chronological inside a branch, so a consecutive group-by
+        is enough: if the clock ever went backwards, a second ``<day>`` appears rather
+        than a lie.
+        """
+        days: list[Message] = []
+        for day, group in itertools.groupby(latest, key=lambda cv: _local(cv.created).date()):
+            entries = list(group)
+            days.append(
+                Message.new(tag="day", attributes={"date": f"{day.isoformat()}{stamp_zone(_local(entries[0].created))}"})
+                .with_messages(*(self._render_commit(cv) for cv in entries))
+            )
+        return days
+
     def _render_digest(self, view: BranchView) -> Message:
         """The folded past: how much, which slice, and the titles nearest the light.
 
-        Bounded on purpose — ``_DIGEST_TITLES`` is the whole budget of the far
-        side. Anything older than the window is reachable by coordinate
-        (``read`` / ``history``), which is why it is safe not to ship it.
+        Bounded on purpose — ``digest_titles`` is the whole budget of the far side.
+        Anything older than the window is reachable by coordinate (``read`` /
+        ``history``), which is why it is safe not to ship it.
         """
-        recent = view.history[-_DIGEST_TITLES:]
+        budget = self._config.digest_titles
+        recent = view.history[-budget:] if budget > 0 else []
         body = "\n".join(
             f"{cv.coord}  {cv.title}" + ("  [node]" if cv.memento is not None else "")
             for cv in recent
@@ -846,16 +1015,48 @@ class EgoMementoManager:
                 "last": view.history[-1].coord,
                 "titles": str(len(recent)),
                 "nodes": str(nodes),
+                # 折叠段原先完全没有时间 —— "这段记忆有多老"无处可查.
+                "since": stamp_day(view.history[0].created),
+                "until": stamp_day(view.history[-1].created),
             },
         ).with_content(body)
 
     def _render_commit(self, cv: CommitView) -> Message:
-        attributes = {"seq": cv.coord, "created": cv.created.isoformat()}
+        attributes = {"seq": cv.coord, "at": stamp_clock(cv.created)}
         if cv.is_broken:
             attributes["error"] = "1"
         if cv.memento is not None:
-            attributes["memento"] = str(cv.memento)
-        return Message.new(tag="commit", attributes=attributes).with_content(cv.message)
+            # 有没有自己的空间就够了; 路径是可算的, 用它去 ``node`` 取.
+            attributes["node"] = "1"
+        container = Message.new(tag="commit", attributes=attributes)
+        relations = self._render_relations(cv)
+        if relations:
+            container.with_messages(*relations)
+            container.with_content("\n")
+        return container.with_content(cv.message)
+
+    def _render_relations(self, cv: CommitView) -> list[Message]:
+        """汇入与分出 —— 跨线的写只有这一种形态, 所以它必须在轨迹上看得见.
+
+        只带 title (契约里唯一被复制的内容) 与坐标; 正文留在源线, ``read`` 去取.
+        放在 note 正文之前: 它们是"写这个锚点时手上已经有的东西", 不是脚注.
+        """
+        out: list[Message] = []
+        for incoming in cv.confluences:
+            attributes = {
+                "branch": incoming.branch.branch_name,
+                "index": str(incoming.branch.branch_index),
+            }
+            if incoming.coord:
+                attributes["coord"] = incoming.coord
+            out.append(Message.new(tag="from", attributes=attributes).with_content(incoming.title))
+        for child in cv.children:
+            out.append(Message.new(tag="to", attributes={
+                "branch": child.branch.branch_name,
+                "index": str(child.branch.branch_index),
+                "at": stamp(child.created),
+            }))
+        return out
 
     # ── 内部读取 ─────────────────────────────────────────────────
 

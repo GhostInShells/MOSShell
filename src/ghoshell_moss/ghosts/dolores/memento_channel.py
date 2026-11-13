@@ -60,8 +60,9 @@ def _instruction_text(
         "",
         f"- You are on branch `{manager.config.branch_name}`; the notice lists every branch.",
         "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
-        "- A commit may carry a node of its own. When its line shows `memento=`, that file is the"
-        " commit's own space on disk — read it first; it is not managed by memento.",
+        "- A commit may carry a node of its own. When its line shows `node=\"1\"`, that commit"
+        " has a space on disk — `node` opens it and lists what is in there; nothing here"
+        " manages what you put in it.",
         "- `commit` queues an anchor for the end of this turn; write its note yourself, or leave"
         " it empty and the background summarizer writes it for you. The coordinate arrives in"
         " the notice after the anchor lands.",

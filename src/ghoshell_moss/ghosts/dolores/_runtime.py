@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -305,6 +306,8 @@ class Dolores(Ghost):
         # read synchronously by memories(). One render per boot: the plan is a snapshot of the
         # directory at the moment the session opens, which is exactly what boot memory is.
         self._memento_view: Message | None = None
+        # <memory instanced_at> —— 这一块快照成形的那一刻 (本地钟面, 带偏移).
+        self._memory_instanced_at: datetime | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: DoloresEgo | None = None
         self._facade: MShellContextFacade | None = None
@@ -489,8 +492,12 @@ class Dolores(Ghost):
         """The ghost's dynamic memory — one ``<memory>`` container, not loose messages.
 
         Children: the ground frame (existential field, rendered async in __aenter__ and cached) and
-        the memento ``<branch>`` view (the trajectory outline). Each is optional; with neither
+        the memento ``<memento>`` view (the trajectory outline). Each is optional; with neither
         present the container is dropped rather than sent empty.
+
+        ``instanced_at`` is when *this* memory instance was formed — the anchor every time inside
+        it is read against. It is not "now": the block is a snapshot, and the number stops being
+        now the moment it is written.
 
         The cognition epoch is deliberately *not* here: it opens on the first thinking, after the
         runtime wires the shell facade (see think()), so at session-creation time there is no epoch
@@ -505,7 +512,33 @@ class Dolores(Ghost):
             children.append(self._memento_view)
         if not children:
             return []
-        return [Message.new(tag="memory").with_messages(*children)]
+        attributes = {}
+        if self._memory_instanced_at is not None:
+            attributes["instanced_at"] = self._memory_instanced_at.isoformat()
+        return [Message.new(tag="memory", attributes=attributes).with_messages(*children)]
+
+    async def refresh_memory(self, until: str | None = None) -> None:
+        """Re-render the memory snapshot — the **only** writer of the cache ``memories()`` reads.
+
+        Called at two points, and both are boundaries where the snapshot would otherwise lie:
+
+        - boot (``__aenter__``): no ``until`` → the whole trajectory.
+        - compaction: ``until`` = the cut commit's coordinate → everything *before* it. The cut
+          commit's span stays verbatim in the surface, so the snapshot must stop just there;
+          summarising it too would put two versions of the same span in context.
+
+        Why a cache at all: ``memories()`` is a sync closure handed to dsh at session creation,
+        and the view needs an async render (the branch's own ``branch_view`` slot runs there).
+        So the async side owns the render, the sync side only reads what it left behind.
+
+        Skipping this at compaction is not a small staleness bug: the surface gets replaced by
+        the recap, so a boot-time snapshot would drop every commit made since boot from the
+        model's view — the head would jump straight to the last summary with nothing between.
+        """
+        if self._memento_manager is None:
+            return
+        self._memento_view = await self._memento_manager.aview_message(until=until)
+        self._memory_instanced_at = datetime.now().astimezone()
 
     def mindflow(self) -> Mindflow:
         """Return the mindflow Dolores owns, materializing it on first call.
@@ -680,15 +713,16 @@ class Dolores(Ghost):
                         logger=self.logger,
                     )
                 )
-                # 线自己渲染的那一页（计划 / 开着的 task）由 branch_view 槽位生成 —— 渲染在
-                # 这里, 因为 memories() 是同步读; 它现在真的会进 boot memory, 不再只在 memento:view 里.
-                self._memento_view = await self._memento_manager.aview_message()
+                # memory 的唯一写入点(开机这一次 + 每次 compact 前一次). memories() 是同步闭包,
+                # 只能读缓存; 渲染(含线自己的 branch_view 槽位)在这里和 compact 前发生.
+                await self.refresh_memory()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,
                     ctx=ctx,
                     config=self._load_ego_config(),
                     memories=self.memories,
+                    memory_refresh=self.refresh_memory,
                     memento_manager=self._memento_manager,
                     # logger 逐层传下去: ghost → ego → run → 每个 tool 调用. 不传 = ego 掉回兜底的
                     # get_moss_logger(), 整个 ghost 的日志就从当前 node 的语境里漂走了.

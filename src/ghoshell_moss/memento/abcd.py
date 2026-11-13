@@ -92,6 +92,11 @@ def _unique_id() -> str:
 
 
 def _now_utc() -> datetime:
+    """The record's instant — UTC, one axis for every row.
+
+    The stored value is an absolute point; which clock a reader sees is a render-time
+    question (the body's OS zone), never something the record freezes.
+    """
     return datetime.now(timezone.utc)
 
 
@@ -563,7 +568,13 @@ class BranchView(BaseModel):
 
     Folding policy (near = detailed, far = coarse, deterministic): ``latest`` gives detail
     for the most recent N commits; ``history`` folds earlier commits into summaries (Note
-    preferred); ``previous`` is the compacted recap of the forked parent.
+    preferred); ``previous`` locates the forked parent and ``fork_coord`` says *where* on it
+    this branch left.
+
+    ``previous`` is a **pointer, not a copy**: the parent arrives with its identity and its
+    size and with no commits of its own. Rendering a parent's history into a child's view was
+    never read by anyone and cost a recursive rebuild per level; whoever wants the parent's
+    content reads it by coordinate.
 
     Broken commits (non-empty ``Note.error``) still enter ``history`` / ``latest`` so the
     model perceives them, but **consecutive** broken commits keep only the first (a run of
@@ -579,7 +590,14 @@ class BranchView(BaseModel):
     index: int = Field(description="Branch ordinal within the owner (1-based) — first half of the coordinate.")
     created: AwareDatetime
     commit_id: str = Field(description="Id of the most recent commit, for talking to this commit.")
-    previous: "BranchView | None" = Field(default=None, description="Forked parent branch (reference).")
+    previous: "BranchView | None" = Field(default=None, description="Forked parent branch (identity + size only).")
+    fork_coord: str = Field(
+        default="",
+        description=(
+            "Coordinate on ``previous`` where this branch forked (``{index}-{seq}``); empty for "
+            "a root branch or when the anchor commit is no longer resolvable."
+        ),
+    )
     history: list[CommitView] = Field(default_factory=list, description="Earlier commits, folded summaries.")
     latest: list[CommitView] = Field(default_factory=list, description="Most recent commits, detail.")
     commits_total: int = Field(default=0)
@@ -792,20 +810,24 @@ class Branch(ABC):
         """
 
     @abstractmethod
-    def view(self, *, n: int = 10) -> BranchView:
-        """The most recent n commits in detail + earlier ones folded; includes the forked parent's
-        recap.
+    def view(self, *, n: int = 10, until: int | None = None) -> BranchView:
+        """The most recent n commits in detail + earlier ones folded; the forked parent as a pointer.
+
+        ``until`` renders the trajectory **as it stood at a commit**: everything with
+        ``seq < until``. That is how memory is re-rendered at compaction — the cut commit's
+        span stays verbatim in the surface, so the snapshot must stop just before it rather
+        than summarise it twice. ``until=None`` = the whole line.
 
         Not a pure cache fast path: the detail window probes each commit's node index
         (``CommitView.memento``) because the node space is dynamic by definition.
         """
 
     @abstractmethod
-    async def aview(self, *, n: int = 10) -> BranchView:
+    async def aview(self, *, n: int = 10, until: int | None = None) -> BranchView:
         """IO-costly: aggregate multiple files into a view; the most expensive read."""
 
     @abstractmethod
-    async def aview_with_hooks(self, *, n: int = 10) -> BranchView:
+    async def aview_with_hooks(self, *, n: int = 10, until: int | None = None) -> BranchView:
         """``aview`` plus the directory's own rendering, in ``BranchView.ground``.
 
         The explicit opt-in to the ``branch_view`` slot: ``view`` / ``aview`` stay hook-free
