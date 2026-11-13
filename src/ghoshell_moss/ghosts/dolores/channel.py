@@ -34,6 +34,9 @@ __all__ = ["build_dolores_channel"]
 def build_dolores_channel(
     *,
     groundset: GroundSet,
+    project_groundset: GroundSet | None = None,
+    ground_root_frame: str | None = None,
+    on_ground_refresh: Callable[[str], None] | None = None,
     memento_manager: EgoMementoManager | None = None,
     prompt_manager: PromptManager | None = None,
     memento_root: str | Path | None = None,
@@ -46,8 +49,14 @@ def build_dolores_channel(
 ) -> MutableChannel:
     """组装 Dolores 的 ghost 根 channel.
 
-    :param groundset: ghost 持有的 GroundSet — 注入给 ground 子 channel 共享, 不新建
-        (两个 set 压同一目录 = 两个 snapshot owner).
+    :param groundset: ghost home 的场集 — 这个 channel 独占它, 不新建 (两个 set 压同一
+        目录 = 两个 snapshot owner).
+    :param project_groundset: project home 的场集. None = 项目根没有 GROUND.md, 不挂.
+        它是独立的一个 channel: 两个 home 不共用命令面, 也不共用边界.
+    :param ground_root_frame: ghost home 根场已经渲染好的帧 (instruction 的正文).
+        传进来让 channel 复用, 不在开机时重渲染一次.
+    :param on_ground_refresh: ghost home 根场被 refresh 后的回调, 让 instruction 的持有者
+        同步更新.
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
     :param prompt_manager: prompt registry — memento 子 channel 读 ``memento.note``
@@ -81,12 +90,27 @@ def build_dolores_channel(
             groundset,
             render_root=False,
             name="ground",
+            root_frame=ground_root_frame,
+            on_root_refresh=on_ground_refresh,
             description=(
-                "Your cognitive field (GROUND.md) — the law chain survives compaction; "
-                "open/close mount a field as a sub-channel."
+                "Your cognitive field (ghost home) — the law chain survives compaction; "
+                "fields are mounted on demand."
             ),
         )
     )
+    if project_groundset is not None:
+        chan.import_channels(
+            new_ground_channel(
+                project_groundset,
+                render_root=True,
+                instruction="",
+                name="project_ground",
+                description=(
+                    "The project's cognitive field — its root frame is in the notice; "
+                    "fields are mounted on demand."
+                ),
+            )
+        )
     if memento_manager is not None:
         chan.import_channels(
             build_memento_channel(

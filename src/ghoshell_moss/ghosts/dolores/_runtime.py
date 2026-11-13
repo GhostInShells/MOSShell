@@ -26,8 +26,7 @@ from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.ground import DefaultGroundSet, Ground
-from ghoshell_moss.ground._manager import GroundSlot, GroundsManager
+from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -295,9 +294,9 @@ class Dolores(Ghost):
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
-        self._grounds: GroundsManager | None = None
+        self._project_ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
-        # ground render cache — rendered async in __aenter__, read synchronously by memories().
+        # ghost home root frame — rendered once at boot, carried by the instruction slot.
         self._ground_text: str | None = None
         # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
         self._memento: FsMemento | None = None
@@ -360,6 +359,10 @@ class Dolores(Ghost):
 
         parts.append(dolores_terminology())
         parts.append(dolores_memory())
+        # The ghost home's own law. It is content, not a channel description — the ground
+        # channel only carries the control surface. Rendered once at boot (see __aenter__).
+        if self._ground_text:
+            parts.append("<!-- ground: ghost home -->\n" + self._ground_text.strip())
         parts.append(self._dolores_inception())
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
@@ -397,18 +400,25 @@ class Dolores(Ghost):
         )
 
     async def ground_instruction(self) -> str | None:
-        """ground slot — 多 home 模式下不再把场内容塞进 ghost 的 instruction.
+        """Render the ghost home root field for the instruction slot.
 
-        D2: instruction 讲的是"这个 channel 怎么用"; 场的渲染结果是**内容**, 它在 ground
-        channel 的子 channel notice 里. 所以这里返回 None, 让那个槽回到 ghost 自己手里
-        (或者空着), 而不是被某个场的 body + pins 占住.
+        The ghost home is the field that answers *who am I* — it belongs in the instruction,
+        not in a channel notice: the channel is the control surface (mount/refresh), the
+        instruction is the content. Rendered once at boot; a later ``refresh`` updates the
+        cache through the channel's ``on_root_refresh`` callback.
         """
-        if self._grounds is not None:
-            return None
         if self._root_ground is None:
             return None
         view = await self._root_ground.render()
         return str(view)
+
+    def _set_ground_text(self, text: str) -> None:
+        """Keep the instruction's ground text in step with a channel-side refresh.
+
+        A snapshot is still a snapshot — the running session keeps the text it was born with;
+        this only matters when the instruction is assembled again.
+        """
+        self._ground_text = text
 
     def _frame_root(self) -> "Path | None":
         """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.
@@ -466,7 +476,7 @@ class Dolores(Ghost):
         gets the same instance: the channel closes over live resources (shared GroundSet, memento
         manager), and rebuilding it would hand out a second view of the same organs.
         """
-        if self._home is None or (self._ground_set is None and self._grounds is None):
+        if self._home is None or self._ground_set is None:
             return None
         if self._channel is None:
             from .channel import build_dolores_channel
@@ -477,7 +487,10 @@ class Dolores(Ghost):
                 if self._container is not None else None
             )
             self._channel = build_dolores_channel(
-                groundset=self._grounds if self._grounds is not None else self._ground_set,
+                groundset=self._ground_set,
+                project_groundset=self._project_ground_set,
+                ground_root_frame=self._ground_text,
+                on_ground_refresh=self._set_ground_text,
                 memento_manager=self._memento_manager,
                 prompt_manager=prompt_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
@@ -491,9 +504,9 @@ class Dolores(Ghost):
     def memories(self) -> list[Message]:
         """The ghost's dynamic memory — one ``<memory>`` container, not loose messages.
 
-        Children: the ground frame (existential field, rendered async in __aenter__ and cached) and
-        the memento ``<memento>`` view (the trajectory outline). Each is optional; with neither
-        present the container is dropped rather than sent empty.
+        Child: the memento ``<memento>`` view (the trajectory outline). The ground is not here —
+        it is content for the instruction (see ``system_prompt``), and duplicating it in the
+        memory snapshot would make one edit invalidate two surfaces.
 
         ``instanced_at`` is when *this* memory instance was formed — the anchor every time inside
         it is read against. It is not "now": the block is a snapshot, and the number stops being
@@ -506,8 +519,6 @@ class Dolores(Ghost):
         Read by the ego's create_session through this closure (clones share it).
         """
         children: list[Message] = []
-        if self._ground_text:
-            children.append(Message.new(tag="ground").with_content(self._ground_text))
         if self._memento_view is not None:
             children.append(self._memento_view)
         if not children:
@@ -644,27 +655,20 @@ class Dolores(Ghost):
         # ground: 一个 ghost 同时治理 ghost / mode / project 三个 home (D1). 哪一层没有
         # GROUND.md 就不挂, 但会以 absent 出现在 channel notice 里 (D6) —— 缺席是内容.
         # 没有 matrix 就没有另外两个 home 的地址, 那时只剩 ghost home (事实, 不是开关).
+        # ghost home is always a ground (the stubs wrote its GROUND.md); project home is one
+        # only when it declares itself — a home without GROUND.md is simply not mounted, so
+        # "absent" never becomes something the model has to read.
         if self._home is not None:
-            if self._matrix is None:
-                self._ground_set = await self._exit_stack.enter_async_context(
-                    DefaultGroundSet(workspace_root=self._home)
-                )
-                self._root_ground = await self._ground_set.open(self._home)
-            else:
-                env = self._matrix.env
-                slots = [
-                    GroundSlot("ghost_home", self._home),
-                    GroundSlot("mode_home", Path(env.mode_home)),
-                    GroundSlot("project_home", Path(env.project_path)),
-                ]
-                # 谁持有谁创建: manager 只编排 (查 GROUND.md / 报 absent), 场集由这里造.
-                # 根场的身份就是 slot key —— 目录名是地址, 不是身份.
-                self._grounds = await GroundsManager(slots).mount(
-                    lambda slot: DefaultGroundSet(
-                        workspace_root=slot.home, root_label=slot.key,
+            self._ground_set = await self._exit_stack.enter_async_context(
+                DefaultGroundSet(workspace_root=self._home, root_label="ghost_home")
+            )
+            self._root_ground = self._ground_set.root
+            if self._matrix is not None:
+                project_root = Path(self._matrix.env.project_path)
+                if (project_root / DEFAULT_L0_FILENAME).is_file():
+                    self._project_ground_set = await self._exit_stack.enter_async_context(
+                        DefaultGroundSet(workspace_root=project_root, root_label="project_home")
                     )
-                )
-                self._exit_stack.push_async_callback(self._grounds.close)
         # render the ground text, cached for synchronous read by memories() (ego create_session consumes it via closure).
         self._ground_text = await self.ground_instruction()
         if self._matrix is not None:

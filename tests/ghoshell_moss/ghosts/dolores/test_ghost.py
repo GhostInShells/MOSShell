@@ -99,14 +99,14 @@ class TestDoloresMemoriesFromHome:
             assert ghost.memories() == []
 
     @pytest.mark.asyncio
-    async def test_memories_returns_ground_as_first(self, tmp_path: Path):
-        """home 存在 → ground 渲染文本包成 ground tag 的记忆, 是唯一一条."""
+    async def test_ground_is_content_for_the_instruction_not_the_memory(self, tmp_path: Path):
+        """home 存在 → ground 渲染进 instruction; memory 里不再重复一份."""
         ghost = _dolores(home=tmp_path)
         async with ghost:
-            memories = ghost.memories()
-            assert len(memories) == 1
-            text = memories[0].to_content_string()
-            assert "<ground>" in text and "</ground>" in text
+            assert ghost.memories() == []
+            prompt = ghost.system_prompt()
+            assert "<!-- ground: ghost home -->" in prompt
+            assert ghost._ground_text and ghost._ground_text.strip() in prompt
 
 
 class TestDoloresMemories:
@@ -123,7 +123,6 @@ class TestDoloresMemories:
         memento.get_branch("main").note(anchor.id, "note")
 
         ghost = _dolores()
-        ghost._ground_text = "GROUND"
         ghost._memento_manager = manager
         # 渲染是异步的: refresh 写缓存, memories() 只读.
         await ghost.refresh_memory()
@@ -135,7 +134,6 @@ class TestDoloresMemories:
         assert "<memory" in text
         # 快照要带"它成形于哪一刻" —— 绝对锚, UTC, 秒精度
         assert re.search(r'<memory instanced_at="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"', text)
-        assert "<ground" in text and "GROUND" in text
         assert '<memento branch="main"' in text and "note" in text
 
     def test_returns_empty_when_nothing_to_remember(self):

@@ -1,12 +1,13 @@
-"""Tests for ground_channel — 认知场的运行时落点 (virtual children 模型).
+"""Tests for ground_channel — 认知场的运行时落点 (one set, one channel).
 
 Covers:
-- 命令面: 驻留 (open/close/refresh/stats) + 落盘 (pin_*/unpin) + 一个 CLI runner
-- 读侧不重复实现: render/validate/templates/spec 由 ``moss ground`` 提供
-- open → virtual child (instruction=meta, help=帧); close → 撤下
+- 一个 channel 一个 GroundSet: 子面是 root 的 ``groundset:``, 根帧按 render_root 决定去处
+- gate: 子场默认只进目录, ``mount_child`` 才进 facade
+- 命令面分两层: 主面只有 ``refresh`` (读侧), 落盘/诊断收在 ``admin`` 子通道
+- open 的边界 = home: 越界目录拒绝
 - 契约 classmethod: peek_dir / validate_text / templates_at / upsert_pin / unpin_at
 - pin_file 增改落盘 + always_show; 目标不存在报告不创建
-- open_on_start 启动时开场面
+- open_on_start 启动时开场面 (进目录, 不自动挂)
 """
 
 from __future__ import annotations
@@ -52,17 +53,39 @@ def _meta_by_name(runtime, name):
     return None
 
 
+async def _mount(runtime, name: str):
+    """挂一个 gated 子通道, 返回它的 runtime —— 子通道的命令只能挂在树上才调得到."""
+    await runtime.execute_command("mount_child", kwargs={"name": name})
+    await runtime.refresh_metas()
+    return runtime.fetch_sub_runtime(name)
+
+
+# -- 命令面分层 -------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_commands_registered(ground):
+async def test_read_surface_is_thin(ground):
+    """主面只有 refresh + gate 自带的 mount/unmount; 其余都在 admin 里."""
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         names = {c.name for c in runtime.self_meta().commands}
-        assert {"open", "close", "refresh", "stats", "ground_run", "edit",
+        # unmount_child 只在有挂载时才出现 (available 谓词) —— 挂着才需要卸.
+        assert names == {"refresh", "mount_child"}
+        assert {"render", "validate", "templates", "spec"}.isdisjoint(names)
+
+
+@pytest.mark.asyncio
+async def test_admin_holds_the_write_surface(ground):
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        assert admin is not None
+        names = {c.name for c in admin.self_meta().commands}
+        assert {"open", "close", "stats", "ground_run", "edit",
                 "pin_file", "pin_glob", "pin_frontmatter", "pin_ls", "pin_exec",
                 "pin_law", "unpin"} <= names
-        # 读侧归 CLI: 命令面不重复实现它
-        assert {"render", "validate", "templates", "spec"}.isdisjoint(names)
 
 
 @pytest.mark.asyncio
@@ -77,34 +100,126 @@ async def test_instruction_explains_ground_but_does_not_list_commands(ground):
 
 
 @pytest.mark.asyncio
-async def test_open_adds_virtual_child_with_meta_and_frame(ground):
-    (ground / "sub").mkdir()
-    (ground / "sub" / "GROUND.md").write_text("---\nname: sub\n---\n# Sub Ground\n")
-    chan = _chan(ground)
+async def test_instruction_can_be_cleared(ground):
+    """次要的 ground channel 传空字符串 —— instruction 整段不出现."""
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(gs, instruction="")
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("open", kwargs={"directory": "sub"})
-        await runtime.refresh_metas()
-        child = _meta_by_name(runtime, "sub")
-        assert child is not None
-        # 冷数据 (身份) 与热数据 (帧) 都在 named notice — instruction 无 delta 载体, 不放这里.
-        assert "cd " in child.named_notices.get("meta", "")
-        assert "# Sub Ground" in child.named_notices.get("frame", "")
-        assert "cd " not in (child.instruction or "")
+        assert not runtime.self_meta().instruction
+
+
+# -- gate: 目录在, 内容不在 ---------------------------------------------------
+
+
+def _with_child(ground):
+    (ground / "child").mkdir()
+    (ground / "child" / "GROUND.md").write_text("---\nname: child\n---\n# Child Ground\n")
+    (ground / "GROUND.md").write_text(
+        "---\nname: test\ngroundset: [child]\n---\n# Test Ground\nbody line\n"
+    )
 
 
 @pytest.mark.asyncio
-async def test_close_removes_virtual_child(ground):
+async def test_children_are_catalogued_not_mounted(ground):
+    _with_child(ground)
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        catalog = runtime.self_meta().named_notices.get("gated_children", "")
+        assert "child (closed)" in catalog
+        assert _meta_by_name(runtime, "child") is None
+
+
+@pytest.mark.asyncio
+async def test_mounting_a_child_brings_its_frame(ground):
+    _with_child(ground)
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        child = await _mount(runtime, "child")
+        assert child is not None
+        meta = child.self_meta()
+        assert "# Child Ground" in meta.named_notices.get("frame", "")
+        # 冷数据 (身份) 与热数据 (帧) 都在 named notice — instruction 无 delta 载体.
+        assert "cd " in meta.named_notices.get("meta", "")
+        assert "cd " not in (meta.instruction or "")
+
+
+@pytest.mark.asyncio
+async def test_unmount_hides_the_frame_again(ground):
+    _with_child(ground)
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        await _mount(runtime, "child")
+        await runtime.execute_command("unmount_child", kwargs={"name": "child"})
+        await runtime.refresh_metas()
+        assert _meta_by_name(runtime, "child") is None
+        catalog = runtime.self_meta().named_notices.get("gated_children", "")
+        assert "child (closed)" in catalog
+
+
+# -- open / close -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_returns_frame_and_catalogues_the_field(ground):
     (ground / "sub").mkdir()
     (ground / "sub" / "GROUND.md").write_text("---\nname: sub\n---\n# Sub Ground\n")
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("open", kwargs={"directory": "sub"})
-        result = await runtime.execute_command("close", kwargs={"label": "sub"})
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command("open", kwargs={"directory": "sub"})
+        assert "opened sub" in result
+        assert "# Sub Ground" in result
+        await runtime.refresh_metas()
+        assert _meta_by_name(runtime, "sub") is None      # 进目录, 不自动挂
+        assert "sub (closed)" in runtime.self_meta().named_notices["gated_children"]
+
+
+@pytest.mark.asyncio
+async def test_open_refuses_a_directory_outside_the_home(ground):
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        with pytest.raises(Exception) as exc:
+            await admin.execute_command("open", kwargs={"directory": "../outside"})
+        assert "outside" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_open_refuses_the_admin_label(ground):
+    (ground / "admin").mkdir()
+    (ground / "admin" / "GROUND.md").write_text("---\nname: admin\n---\n# Admin\n")
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        with pytest.raises(Exception) as exc:
+            await admin.execute_command("open", kwargs={"directory": "admin"})
+        assert "reserved" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_close_removes_the_field_from_the_catalog(ground):
+    (ground / "sub").mkdir()
+    (ground / "sub" / "GROUND.md").write_text("---\nname: sub\n---\n# Sub Ground\n")
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        await admin.execute_command("open", kwargs={"directory": "sub"})
+        result = await admin.execute_command("close", kwargs={"label": "sub"})
         assert "closed sub" in result
         await runtime.refresh_metas()
-        assert _meta_by_name(runtime, "sub") is None
+        catalog = runtime.self_meta().named_notices.get("gated_children", "")
+        assert "sub" not in catalog
+
+
+# -- 契约 classmethod --------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -125,35 +240,6 @@ async def test_peek_meta_adds_identity(ground):
 async def test_peek_nonexistent_dir_reported(ground):
     result = await DefaultGroundSet.peek_dir(ground / "nope")
     assert "not a directory" in result or "no GROUND.md" in result
-
-
-@pytest.mark.asyncio
-async def test_pin_file_reports_missing_ground_file(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command(
-            "pin_file", kwargs={"ground_file": str(ground / "missing.md"), "label": "x", "path": "y"}
-        )
-        assert "no such GROUND.md" in result
-        assert not (ground / "missing.md").exists()
-
-
-@pytest.mark.asyncio
-async def test_pin_file_writes_with_always_show(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command(
-            "pin_file",
-            kwargs={"ground_file": str(ground), "label": "greet", "path": "data/hot.py",
-                    "always_show": True, "description": "greet"},
-        )
-        assert "pinned file:greet" in result
-        text = (ground / "GROUND.md").read_text()
-        assert "label: greet" in text
-        assert "label: hot" in text               # 原有 pin 保留
-        assert "always_show: true" in text        # always_show 落盘
 
 
 @pytest.mark.asyncio
@@ -193,68 +279,18 @@ async def test_templates_at_discovers_project_templates(ground):
     assert "basic" in names
 
 
+# -- 启动 / 渲染 / 指令覆盖 ---------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_open_on_start_injects_child(ground):
+async def test_open_on_start_catalogues_the_field(ground):
     child = ground / "child"
     child.mkdir()
     (child / "GROUND.md").write_text("---\nname: child\n---\n# Child Ground\n")
     chan = _chan(ground, open_on_start=["child"])
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        assert _meta_by_name(runtime, "child") is not None
-
-
-@pytest.mark.asyncio
-async def test_edit_folds_commands_by_default(ground):
-    # 默认 edit=False: 编辑命令组折叠, 只留 open/close/render/edit.
-    gs = DefaultGroundSet(workspace_root=ground)
-    chan = new_ground_channel(gs)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        names = {c.name for c in runtime.self_meta().commands}
-        assert {"open", "close", "refresh", "stats", "ground_run", "edit"} <= names
-        assert "pin_file" not in names
-        assert "unpin" not in names
-
-
-@pytest.mark.asyncio
-async def test_edit_command_unfolds_gated_commands(ground):
-    gs = DefaultGroundSet(workspace_root=ground)
-    chan = new_ground_channel(gs)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        assert "pin_file" not in {c.name for c in runtime.self_meta().commands}
-        await runtime.execute_command("edit", kwargs={"on": True})
-        await runtime.refresh_metas()
-        names = {c.name for c in runtime.self_meta().commands}
-        assert "pin_file" in names
-        assert "unpin" in names
-        # 折叠回来
-        await runtime.execute_command("edit", kwargs={"on": False})
-        await runtime.refresh_metas()
-        assert "pin_file" not in {c.name for c in runtime.self_meta().commands}
-
-
-# -- groundset 物化 / render_root / instruction 覆盖 -------------------------
-
-
-def _with_child(ground):
-    (ground / "child").mkdir()
-    (ground / "child" / "GROUND.md").write_text("---\nname: child\n---\n# Child Ground\n")
-    (ground / "GROUND.md").write_text(
-        "---\nname: test\ngroundset: [child]\n---\n# Test Ground\nbody line\n"
-    )
-
-
-@pytest.mark.asyncio
-async def test_groundset_children_mounted_on_start(ground):
-    _with_child(ground)
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        child = _meta_by_name(runtime, "child")
-        assert child is not None
-        assert "# Child Ground" in child.named_notices.get("frame", "")
+        assert "child (closed)" in runtime.self_meta().named_notices["gated_children"]
 
 
 @pytest.mark.asyncio
@@ -270,24 +306,20 @@ async def test_child_frame_cached_until_refresh(ground):
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("open", kwargs={"directory": "sub"})
-        await runtime.refresh_metas()
-        child = _meta_by_name(runtime, "sub")
-        assert "v1" in child.named_notices.get("frame", "")
+        admin = await _mount(runtime, "admin")
+        await admin.execute_command("open", kwargs={"directory": "sub"})
+        child = await _mount(runtime, "sub")
+        assert "v1" in child.self_meta().named_notices.get("frame", "")
 
         # 磁盘变了, 但只 refresh_metas → 帧仍是缓存值
         (ground / "sub" / "note.md").write_text("v2\n")
         await runtime.refresh_metas()
-        child = _meta_by_name(runtime, "sub")
-        assert "v2" not in child.named_notices.get("frame", "")
-        assert "v1" in child.named_notices.get("frame", "")
+        assert "v2" not in child.self_meta().named_notices.get("frame", "")
 
         # 显式 refresh → 帧更新, 缓存重读
         await runtime.execute_command("refresh", kwargs={"label": "sub"})
         await runtime.refresh_metas()
-        child = _meta_by_name(runtime, "sub")
-        assert "v2" in child.named_notices.get("frame", "")
-        assert "v1" not in child.named_notices.get("frame", "")
+        assert "v2" in child.self_meta().named_notices.get("frame", "")
 
 
 @pytest.mark.asyncio
@@ -312,6 +344,30 @@ async def test_render_root_renders_root_in_notice(ground):
 
 
 @pytest.mark.asyncio
+async def test_supplied_root_frame_is_reused(ground):
+    """送进来的 root 帧直接吃, 不在 startup 重渲染一次 (exec pin 不该跑两遍)."""
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(gs, root_frame="PRE-RENDERED")
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        stats = await admin.execute_command("stats")
+        assert "rendered at" in stats
+
+
+@pytest.mark.asyncio
+async def test_root_refresh_calls_back(ground):
+    """refresh(root) 把新帧交给 instruction 的持有者."""
+    seen: list[str] = []
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(gs, on_root_refresh=seen.append)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        await runtime.execute_command("refresh")
+        assert seen and "# Test Ground" in seen[-1]
+
+
+@pytest.mark.asyncio
 async def test_instruction_override(ground):
     gs = DefaultGroundSet(workspace_root=ground)
     chan = new_ground_channel(gs, edit=True, instruction="CUSTOM INSTRUCTION")
@@ -329,7 +385,38 @@ async def test_materialize_error_surfaced_in_notice(ground):
         assert "missing" in runtime.self_meta().notice
 
 
-# -- 落盘面的另一半 / CLI runner ---------------------------------------------
+# -- admin 的落盘面 / CLI runner ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pin_file_reports_missing_ground_file(ground):
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command(
+            "pin_file", kwargs={"ground_file": str(ground / "missing.md"), "label": "x", "path": "y"}
+        )
+        assert "no such GROUND.md" in result
+        assert not (ground / "missing.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_pin_file_writes_with_always_show(ground):
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command(
+            "pin_file",
+            kwargs={"ground_file": str(ground), "label": "greet", "path": "data/hot.py",
+                    "always_show": True, "description": "greet"},
+        )
+        assert "pinned file:greet" in result
+        text = (ground / "GROUND.md").read_text()
+        assert "label: greet" in text
+        assert "label: hot" in text               # 原有 pin 保留
+        assert "always_show: true" in text        # always_show 落盘
 
 
 @pytest.mark.asyncio
@@ -337,7 +424,8 @@ async def test_unpin_removes_a_pin(ground):
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        result = await runtime.execute_command(
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command(
             "unpin", kwargs={"ground_file": str(ground), "label": "hot"}
         )
         assert "unpinned hot" in result
@@ -349,7 +437,8 @@ async def test_unpin_reports_unknown_label(ground):
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        result = await runtime.execute_command(
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command(
             "unpin", kwargs={"ground_file": str(ground), "label": "nope"}
         )
         assert "no pin 'nope'" in result
@@ -358,21 +447,55 @@ async def test_unpin_reports_unknown_label(ground):
 
 @pytest.mark.asyncio
 async def test_edit_face_refuses_relative_paths(ground):
-    """多 home 下"相对谁"没有唯一答案 → 编辑面只认绝对路径, 且报错说清."""
+    """编辑面只认绝对路径 —— 相对谁没有唯一答案, 与其猜不如报错."""
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        result = await runtime.execute_command(
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command(
             "pin_file", kwargs={"ground_file": "GROUND.md", "label": "x", "path": "y"}
         )
         assert "absolute" in result
 
 
 @pytest.mark.asyncio
+async def test_edit_folds_commands_by_default(ground):
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(gs)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        names = {c.name for c in admin.self_meta().commands}
+        assert {"open", "close", "stats", "ground_run", "edit"} <= names
+        assert "pin_file" not in names
+        assert "unpin" not in names
+
+
+@pytest.mark.asyncio
+async def test_edit_command_unfolds_gated_commands(ground):
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(gs)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        admin = await _mount(runtime, "admin")
+        assert "pin_file" not in {c.name for c in admin.self_meta().commands}
+        await admin.execute_command("edit", kwargs={"on": True})
+        await runtime.refresh_metas()
+        names = {c.name for c in admin.self_meta().commands}
+        assert "pin_file" in names
+        assert "unpin" in names
+        # 折叠回来
+        await admin.execute_command("edit", kwargs={"on": False})
+        await runtime.refresh_metas()
+        assert "pin_file" not in {c.name for c in admin.self_meta().commands}
+
+
+@pytest.mark.asyncio
 async def test_ground_run_proxies_the_cli(ground):
-    """读侧归 CLI: runner 在指定的 home 下跑 ``moss ground <verb>`` 并带回 stdout."""
+    """读侧归 CLI: runner 在 home 下跑 ``moss ground <verb>`` 并带回 stdout."""
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        result = await runtime.execute_command("ground_run", kwargs={"text__": "verbs"})
+        admin = await _mount(runtime, "admin")
+        result = await admin.execute_command("ground_run", kwargs={"text__": "verbs"})
         assert "file" in result and "exec" in result
