@@ -94,12 +94,10 @@ def render_meta(
     """
     lines: list[str] = []
 
-    # location
-    if doc_path.resolve() == root.resolve() / "GROUND.md":
-        lines.append(f"cd {root}")
-    else:
-        lines.append(f"cd {root}")
-        lines.append(f"ground: {doc_path}")
+    # location — a statement about where this ground is, not a command to run
+    lines.append(f"root: {root}")
+    if doc_path.resolve() != root.resolve() / "GROUND.md":
+        lines.append(f"document: {doc_path}")
 
     # content — 本场正文是否存在 (body 不向上合并)
     lines.append("content: present" if body else "content: none")
@@ -768,6 +766,8 @@ async def render_position(
     pos = Path(position).expanduser().resolve()
     edge = Path(boundary).expanduser().resolve()
 
+    if not pos.is_dir():
+        return _error_face(pos, f"not a directory: {pos}")
     if not pos.is_relative_to(edge):
         return _error_face(pos, f"outside boundary: {edge}")
 

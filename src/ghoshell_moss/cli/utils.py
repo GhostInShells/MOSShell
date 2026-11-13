@@ -279,9 +279,14 @@ def print_simple_table(
         title_style: str = "bold underline",
         column_ratios: Optional[List[int]] = None,
         show_header: bool = True,
+        nowrap_columns: tuple[int, ...] = (),
 ) -> None:
     """
     Print a table. In AI mode, outputs as a markdown table.
+
+    ``nowrap_columns`` names columns whose cells must not be wrapped: a path
+    broken across two lines cannot be copied, and "half a path" is worse than a
+    wide table (the terminal scrolls, a truncated path lies).
     """
     if _ai_mode:
         _print_ai_table(data, headers, title, show_header)
@@ -299,18 +304,44 @@ def print_simple_table(
         pad_edge=False,
         padding=(0, 2),
         collapse_padding=True,
-        width=_real_console.width,
+        width=(
+            _needed_width(data, headers, _real_console.width)
+            if nowrap_columns
+            else _real_console.width
+        ),
     )
 
     for i, header in enumerate(headers):
         style = column_styles[i] if column_styles and i < len(column_styles) else None
         ratio = column_ratios[i] if column_ratios and i < len(column_ratios) else None
-        table.add_column(header, style=style, ratio=ratio, overflow="fold")
+        no_wrap = i in nowrap_columns
+        table.add_column(
+            header,
+            style=style,
+            ratio=ratio,
+            overflow="ignore" if no_wrap else "fold",
+            no_wrap=no_wrap,
+        )
 
     for row in data:
         table.add_row(*[str(cell) for cell in row])
 
-    console.print(table)
+    # soft_wrap keeps a wide row intact: rich otherwise crops it to the console
+    # width, and a path cut in half is a lie the reader cannot detect.
+    _real_console.print(table, soft_wrap=bool(nowrap_columns))
+
+
+def _needed_width(
+        data: List[List[Any]],
+        headers: List[str],
+        floor: int,
+) -> int:
+    """Width at which every cell fits on one line (padding included)."""
+    widths = []
+    for i, header in enumerate(headers):
+        cells = [len(str(row[i])) for row in data if i < len(row)]
+        widths.append(max([len(header)] + cells))
+    return max(floor, sum(widths) + 2 * len(widths) + len(widths) - 1)
 
 
 def _print_ai_table(

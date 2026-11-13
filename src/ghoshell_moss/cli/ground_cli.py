@@ -189,7 +189,13 @@ def cmd_templates(
     boundary = (root or _default_boundary()).resolve()
     ground = find_ground(position, boundary)
     if ground is None:
-        print_info(f"no ground: no GROUND.md from {position} up to {boundary}")
+        # Templates are discovered per ground (`<ground>/.grounds/`), so with no
+        # ground there is nothing to read — say that, instead of implying the
+        # command failed to find a ground it never needed.
+        print_info(
+            f"templates live under a ground's .grounds/, and there is no GROUND.md "
+            f"from {position} up to {boundary}"
+        )
         raise typer.Exit(code=1)
 
     found = _discover_templates(ground)
@@ -261,7 +267,8 @@ def cmd_render(
     ),
     template: str | None = typer.Option(
         None, "--template", "-t",
-        help="Render table: a template name from .grounds/, or a .md file path.",
+        help="Render through a table instead of the ground's own body+pins+imports: "
+             "a template name from .grounds/, or a .md file path.",
     ),
     root: Path | None = typer.Option(
         None, "--root",
@@ -270,16 +277,35 @@ def cmd_render(
 ) -> None:
     """Render the face of a position.
 
-    The position decides the face: its own GROUND.md -> field-root face;
-    otherwise the nearest GROUND.md inside the boundary -> walk face.
-    Children named by `inline` render recursively; failures are results
-    (`status="empty"` / `status="error"`), never exceptions.
+    Two faces, decided by where you stand:
+
+    - **field-root** — the directory has its own GROUND.md: body + pins + the
+      directories its `imports` names, nested in one `<imports>` block.
+    - **walk** — it does not, and the nearest GROUND.md up to the boundary
+      renders it: a `<cwd>` line, no body, positional pins expanded and the
+      rest folded into `<folded>` at the end.
+
+    `-t` does not add a view: it replaces the whole face (body, pins and
+    imports) with the table's own. Rendering is a cold read, but not a pure
+    read: `exec` pins run, so a render can materialize files.
+
+    Exit code is 0 when a face was drawn from a ground, 1 when the face says
+    `status="empty"` or `status="error"` (the reason is inside the output), and
+    2 when the arguments are wrong.
     """
     from ghoshell_moss.ground._render import render_position
 
     position = (path or Path.cwd()).resolve()
     boundary = (root or _default_boundary()).resolve()
-    echo(asyncio.run(render_position(position, boundary=boundary, template=template)))
+    if not position.is_dir():
+        print_error(f"not a directory: {position}")
+        raise typer.Exit(code=2)
+
+    out = asyncio.run(render_position(position, boundary=boundary, template=template))
+    echo(out)
+    first = out.splitlines()[0] if out else ""
+    if 'status="empty"' in first or 'status="error"' in first:
+        raise typer.Exit(code=1)
 
 
 def _default_boundary() -> Path:
@@ -363,7 +389,12 @@ def cmd_observe(
             target = _pin_target_display(p, anchor)
             status, size = _obs_status_and_size(p, obs)
             rows.append([p.label, p.verb, status, target, size])
-        print_simple_table(rows, headers=["label", "verb", "status", "target", "size"])
+        print_simple_table(
+            rows,
+            headers=["label", "verb", "status", "target", "size"],
+            # target is a path: a wrapped path cannot be copied, and half a path lies
+            nowrap_columns=(3,),
+        )
 
     asyncio.run(_op())
 
