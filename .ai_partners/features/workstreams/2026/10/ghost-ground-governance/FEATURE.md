@@ -25,7 +25,7 @@ channel + 子场挂成只带 notice 的空 channel。那套东西已经落地又
 偏差的形状：**每一次迭代都在 channel 层补协议缺的洞，协议始终保持"一个目录一张面"，
 于是 channel 长出树、门（gate）、行政面（admin）去模拟"多目录多面"。**
 
-- `groundset` 是容器私事写进了场的 frontmatter（`contract.py:77` 自述"Ground 自身不
+- `inline` 是容器私事写进了场的 frontmatter（`contract.py:77` 自述"Ground 自身不
   消费"），而 SPEC §7.2 前半说子目录自带 GROUND.md 就是**平级场**——同一节里两种子场观。
 - walk 面（SPEC §7.4，位置决定视角）只在 `moss ground render <dir>` 与 `admin.ground_run`
   的子进程里可达；`ground_channel._build_leaf` 永远 `render()` 无 cwd。**机制存在，但不在
@@ -71,10 +71,10 @@ confinement），收成**解析器持有 root**：解析器自己知道边界。
 
 ### D3 — 子场是点名渲染，不是自动铺开
 
-父场的 `groundset:` 列出**要在父场渲染的那几个子场**。没点名的子场不出现在父场的渲染里——
+父场的 `inline:` 列出**要在父场渲染的那几个子场**。没点名的子场不出现在父场的渲染里——
 它们仍在磁盘上，可由一次显式的 render 到达。
 
-### D4 — `groundset:` 由 Ground 消费，是渲染指令
+### D4 — `inline:` 由 Ground 消费，是渲染指令
 
 不是"容器物化指令"。`contract.py` 里"Ground 自身不消费"那句要删——它即将变成假话。
 一个字段住在一个场的 frontmatter 里，就该由那个场执行。
@@ -103,7 +103,7 @@ render(path: str = "", template: str = "") -> str
 `unpin` / `ground_run` / `mount_child` / gate / admin 子通道。channel 唯一比 bash 多的
 能力是：**把一段渲染推进 ghost 的活上下文**。
 
-### D8 — template = 预设渲染表
+### D8 — render table = 预设渲染表（模板或目标 .md）
 
 渲染目录 x 时，不走发现，走一个指定的模板；模板要么是 `.md` 文件，要么在默认模板列表里。
 模板列表从场根（`.grounds/`）发现，**且感知本身是 GROUND 自动的**——渲染面自带一个
@@ -123,16 +123,17 @@ render(path: str = "", template: str = "") -> str
 `law` 是 fable5 定义的，产生的歧义已经超过它承载的信息。GROUND.md 的正文就是**目录的
 自解释内容**，不叫法。影响面：
 
-- `LawPin` / `LawArguments` / `law` verb → 改名（提议 `convention`：从 cwd 向上收集
-  CLAUDE.md / AGENT.md 这类外部约定文件）。
+- `LawPin` / `LawArguments` / `law` verb → 改名 **`content`**（从 cwd 向上收集
+  CLAUDE.md / AGENT.md 这类外部内容文件）。GROUND.md 本质是 README.md 的目录级加强版，
+  所以"外部文档"就叫 content；`@` 语法保留。
 - `chain_text()` / `_chain.py(collect_law_files)` / SPEC §1 §5.6 §7.3 / 术语表同步。
-- **待确认**：verb 的最终名字。
+- 定为 `content`，不再有候选。
 
 ### D12 — ghost home 的场进 `<memory>`，不进 instruction
 
 ```xml
 <memory instanced_at="...">
-  <ground .../>      <!-- ghost home，groundset 点名渲染 -->
+  <ground .../>      <!-- ghost home，inline 点名渲染 -->
   <memento .../>
 </memory>
 ```
@@ -153,7 +154,7 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
   回到"没有 ground 也能活"的状态。
 - **1 改 SPEC。** `src/ghoshell_moss/ground/SPECIFICATION.md`：边界、位置解析、点名渲染、
   模板、截断、去 Law 名词、把已落地但未记录的模板子系统写进去。
-- **2 改契约 + 实现。** `contract.py`（groundset 归属、去 LawPin、删 snapshot/context/
+- **2 改契约 + 实现。** `contract.py`（inline 归属、去 LawPin、删 snapshot/context/
   frame 转发）→ `_ground.py`（去生命周期，渲染带预算）→ `_grounds.py`（退化解析器）→
   `_render.py`（位置解析 + 递归 + `<templates>` + 截断标记）。
 - **3 改 `moss ground` CLI，用它做测试。** CLI 是这一层唯一能脱离 ghost 跑起来的验证面。
@@ -165,7 +166,7 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 
 1. `moss ground render <dir>` 对"有 GROUND.md / 无 GROUND.md 但在场内 / 在边界外"三种
    位置给出三种正确的面。
-2. 父场渲染里只出现 `groundset:` 点名的子场；未点名的子场不在其中。
+2. 父场渲染里只出现 `inline:` 点名的子场；未点名的子场不在其中。
 3. 截断点可见（路径 + 原因），不是静默丢。
 4. `<templates>` 节自动出现在有 `.grounds/` 的场渲染里。
 5. ghost 的 memory 段形状 `<memory><ground/><memento/></memory>`，instruction 里没有场内容。
@@ -174,7 +175,8 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 
 ## 5. 开放问题
 
-- `law` verb 的新名字：`convention` / `external` / 其他。
+- ~~`law` verb 的新名字~~ 已定：`content`（D11）。
+- 渲染表的两种形态（`template=<name>` / `template=<path>.md`）是否还需要第三种"目录直挂"？
 - 字节预算的默认值（先按 8K 试，逐层递减？还是整次渲染一个总预算）。
 - 渲染墙钟预算默认值（先按 5s/整次）。
 - `.grounds/` 模板发现的搜索层级：只有 root 一层，还是边界内每层都看。
