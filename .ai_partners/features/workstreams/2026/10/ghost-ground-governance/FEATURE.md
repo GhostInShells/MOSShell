@@ -3,260 +3,190 @@ title: Ghost Ground Governance
 status: in-progress
 priority: P1
 created: 2026-10-27
-updated: 2026-10-27
-depends:
-- ghost-ground
+updated: 2026-11-13
+depends: []
 milestone:
 description: >-
-  A dolores ghost governs three grounds at once — ghost home (mind), mode home
-  (body), project (environment). One channel, one control plane, content carried
-  by notice; plurality lives in a manager, and GroundSet stays single-rooted.
+  重做 ground —— 把渲染策略收回 GROUND.md 自己身上。GroundSet 退化成带边界的
+  解析器，Ground 变成无状态的一次渲染，子场由父场点名递归渲染，channel 只剩
+  render，ghost home 直接进 memory。
 ---
 
 # Ghost Ground Governance
 
 > `moss features set-status ghost-ground-governance <status> -m "note"`
 
-## Motivation
+## 0. 这份文档为什么被整体重写
 
-Ground 是模型可以自迭代的那一层（法在自己手上，harness 只是注入）。但它现在只能挂
-**一个**根场：`DefaultGroundSet(workspace_root=ghost_home)`，而且只有根场的 body 会
-被顶进 ghost 的 instruction（`_runtime.ground_instruction()` → `_ground_text` →
-memories 里的 `ground` 消息）。
+上一版（2026-10-27）写的是"一个 ghost 治理三个 home"：manager + 每 home 一个内容子
+channel + 子场挂成只带 notice 的空 channel。那套东西已经落地又拆了，而拆完之后问题
+反而更清楚：**方向从一开始就偏了。**
 
-一个 ghost 活在三个 home 里，三者的法回答不同的问题：
+偏差的形状：**每一次迭代都在 channel 层补协议缺的洞，协议始终保持"一个目录一张面"，
+于是 channel 长出树、门（gate）、行政面（admin）去模拟"多目录多面"。**
 
-| home | 回答 | 生命 |
-|---|---|---|
-| ghost | 我是谁、我怎么想、我记得什么 | 与 session 同寿 |
-| mode | 我是什么身体、怎么动怎么听 | 与 session 同寿；**多个 ghost 共享** |
-| project | 我在干什么活、这摊活什么规矩 | 同寿（单次启动内不可变，改要重启） |
+- `groundset` 是容器私事写进了场的 frontmatter（`contract.py:77` 自述"Ground 自身不
+  消费"），而 SPEC §7.2 前半说子目录自带 GROUND.md 就是**平级场**——同一节里两种子场观。
+- walk 面（SPEC §7.4，位置决定视角）只在 `moss ground render <dir>` 与 `admin.ground_run`
+  的子进程里可达；`ground_channel._build_leaf` 永远 `render()` 无 cwd。**机制存在，但不在
+  ghost 的身体里。**
+- channel 用 gate + `mount_child` 重造了 §7.2 已经交给 frontmatter pin 的渐进披露，两套
+  且不同步（实测 3 vs 7）。
+- 死面：`Ground.snapshot/ack_hash/changed`（仅测试用）、`Ground.context()`、
+  `GroundSet.frame/pin/unpin`（src 零调用）、`peek_dir`/`templates_at`（无调用方）、
+  `always_show` 只在 LawPin 处判断却对六个 `pin_*` 开放、`_render.py:234` 用
+  `anchor_kind(...)=="cwd"` 字符串嗅探决定 pin 是否跟随位置。
+- 模板子系统（`.grounds/`、`TemplateInfo`、`--template`、`templates_at`）整套在代码里，
+  SPEC 472 行里一个字都没有——`810c09b3`「align SPEC with implementation」之后，SPEC 已从
+  协议降级成实现说明书。
 
-三个 home 可能完全不在一个目录层次里，所以它们的地址是**启动事实**（matrix 手上的绝对
-路径），不能靠 `../../..` 这类相对路径表达——那既是目录巧合，也会顺带继承上级的法。
+判词：**方向错的时候，模型会非常高效地把错误执行到底。** 这次先钉协议，再动代码。
 
-## Context — what exists today (verified in code, not assumed)
+## 1. 核心定位（一句话）
 
-- `DefaultGroundSet.__init__` 建 root，并按 root 的 `groundset:` **物化一层**子场。
-- `_construct` **不**物化子场 → 非 root 场的 `groundset:` 现在是被静默忽略的。
-- `_materialize_children` 内部写死 `self._root`，所以它只对 root 成立。
-- `ground_channel.build(groundset, ...)`：root 的 body 进 channel instruction，其余
-  active 场挂成**只带 notice（frame + meta）、不带命令**的子 channel。
-- `_runtime.ground_instruction()` = `root_ground.render()`，含 body **与 pins 渲染结果**。
-- `collect_chain` 默认向上爬到 `$HOME` —— 没有 GROUND.md 的目录会**盗取**上级的法。
-- 已落地：根场 ignore `.*/` + `!.ai_partners/`，并用 `src/ghoshell_moss/ghosts/GROUND.md`
-  的 `stop_on_match` 挡住 `stubs/`（commit `5fafccd5`）。
+**GROUND.md 让一个目录声明自己的认知场。渲染策略由场自己统摄——包括指定哪些子场直接
+在本场渲染。对认知场的"编程"不在 harness 里**（不像 AGENTS.md 那样被 harness 定义死）。
 
-## Key Decisions
+由此直接推出三条，后面所有决定都是它们的推论：
 
-### D1 — Path 3's tree; plurality lives in a manager, not in GroundSet
+1. 位置决定视角：站在哪个目录，就用那个目录所属的场来渲染。
+2. 子场不是自动渲染：**父场点名哪几个子场在父场里渲染，就只渲染哪几个。** 不是所有
+   子场都需要默认呈现。
+3. 读是冷的：主动读，不做变更感知。
 
-树：一个根 channel → 每个 home 一个内容子 channel → 子场再一层。复数由
-`GroundsManager` 持有 **N 个各自单根** 的 `GroundSet` 提供；channel 是 manager 的视图。
+## 2. 重做决定（D）
 
-rejected：把多根塞进 `GroundSet`。它的每一处简化（`_materialize_children` 用
-`self._root`、平铺 label 空间、构造期一次物化）都以"一个根"为前提；多根会把每一处都
-变成特例。复数是父层的职责。
+### D1 — 探索的边界是 root
 
-rejected：一个 channel 挂多个 `GroundSet`（命令面重复；CTML 发现面没有 interface 去重）。
+向上找 GROUND.md 必须止于 root，越界即拒绝。现在这条边界散在三处（channel 的
+`_inside()`、CLI 的 `_find_ancestor_ground` 一直走到 `$HOME`、`_addr.py` 的 anchor
+confinement），收成**解析器持有 root**：解析器自己知道边界。
 
-### D2 — instruction 只讲 channel，不装内容；ghost 的 instruction 槽不再装场内容
+### D2 — 位置决定规则
 
-`instruction` 是"这个 channel 怎么用、这三层是什么关系"，冷、稳。**渲染出来的场内容
-一律不进 instruction。** ghost 的 instruction 槽因此空出来，内容全部走 notice。
+`render(dir)` 的第一步永远是"这个位置属于哪个场"：
 
-理由：instruction 是**整段重发**（见 `channel_builder.instruction` 契约），任一段变动
-都重发全部；named notice 是**逐片段**重发。同样的三份 body，放错地方成本是三倍。
+- 目录自己有 GROUND.md → 用它的规则（field-root 面）。
+- 否则 → 向上找最近的 GROUND.md（不合并祖先 body，§7.3），用它渲染，`$CWD = dir`（walk 面）。
 
-### D3 — 内容面 = 子 channel + notice，路径即来源
+### D3 — 子场是点名渲染，不是自动铺开
 
-key：`ghost-home` / `mode-ground` / `project-ground`。子场按 `前缀+label` 命名。保留
-channel 路径（而不是把所有东西摊平成字符串 key），因为**来源要可寻址**：要 refresh 单个
-子场、要指出"这个子场坏了"，都需要地址。
+父场的 `groundset:` 列出**要在父场渲染的那几个子场**。没点名的子场不出现在父场的渲染里——
+它们仍在磁盘上，可由一次显式的 render 到达。
 
-### D4 — 四值语义保持，并定义映射
+### D4 — `groundset:` 由 Ground 消费，是渲染指令
 
-| 现实 | 值 |
+不是"容器物化指令"。`contract.py` 里"Ground 自身不消费"那句要删——它即将变成假话。
+一个字段住在一个场的 frontmatter 里，就该由那个场执行。
+
+### D5 — 递归按字节预算截断
+
+场体积差一个数量级，depth 管不住。用一个整次渲染的字节预算，截断点必须显式标出来
+（路径 + 原因），不能静默丢。
+
+### D6 — GroundSet 退化成"解析器"
+
+如果渲染是递归的、读是冷的，一个 GroundSet 里不需要持有任何 Ground 对象：
+
+- 删 `open/close/_active/_label_by_path/dirty/sediment` 的半段生命周期。
+- `sediment` 存在的理由是"内存里的 pin 集要写回去"；pin 的编辑面已经归文件工具
+  （file editor + bash），这条理由消失。
+- 保留：root、边界、`resolve(dir)`、模板发现。
+
+### D7 — Channel 只剩 render
+
+```python
+render(path: str = "", template: str = "") -> str
+```
+
+默认渲染 root 场。其余全部退场：`open` / `close` / `stats` / `edit` / `pin_*` /
+`unpin` / `ground_run` / `mount_child` / gate / admin 子通道。channel 唯一比 bash 多的
+能力是：**把一段渲染推进 ghost 的活上下文**。
+
+### D8 — template = 预设渲染表
+
+渲染目录 x 时，不走发现，走一个指定的模板；模板要么是 `.md` 文件，要么在默认模板列表里。
+模板列表从场根（`.grounds/`）发现，**且感知本身是 GROUND 自动的**——渲染面自带一个
+`<templates>` 节，不需要 pin、不需要额外命令。模板路径同样受 D1 边界约束。
+
+### D9 — 渲染有墙钟预算（约束落在 exec pin）
+
+冷读 = 每次 render 都真执行。给整次渲染一个时间预算，超时在 XML 容器上声明（哪个 pin
+在哪一层超时），已得的部分照常交出。这是 exec pin 自身的约束，不是上层的调度。
+
+### D10 — walk 面不输出 body（确认，不是 bug）
+
+在场内子目录每看一次都重读一遍法，是纯浪费。法只在它自己的场根出现。
+
+### D11 — 从 GROUND 体系里拿掉 "Law" 这个名词
+
+`law` 是 fable5 定义的，产生的歧义已经超过它承载的信息。GROUND.md 的正文就是**目录的
+自解释内容**，不叫法。影响面：
+
+- `LawPin` / `LawArguments` / `law` verb → 改名（提议 `convention`：从 cwd 向上收集
+  CLAUDE.md / AGENT.md 这类外部约定文件）。
+- `chain_text()` / `_chain.py(collect_law_files)` / SPEC §1 §5.6 §7.3 / 术语表同步。
+- **待确认**：verb 的最终名字。
+
+### D12 — ghost home 的场进 `<memory>`，不进 instruction
+
+```xml
+<memory instanced_at="...">
+  <ground .../>      <!-- ghost home，groundset 点名渲染 -->
+  <memento .../>
+</memory>
+```
+
+理由：ground 和 memento 是同一种东西——认知面。同生命周期的东西住同一个容器。副作用是
+顺手解决"ground 冻在 epoch baseline、refresh 改了缓存没人读"——memory 每次 refresh 就带
+新渲染。
+
+### D13 — ghost 只挂 project 级 ground channel
+
+ghost home 不挂 channel（D12），mode home 不挂。project ground 由 channel 冷读拉取，因为
+它太大，不适合每次进 memory。
+
+## 3. 执行顺序（严格串行，每步可重启）
+
+- **-1 本记录 + commit。** 破坏性重启丢了上下文还能从这里恢复。
+- **0 筹备：dolores ghost 先拿掉 ghost ground channel。** 避免改到一半重启爆炸——先让它
+  回到"没有 ground 也能活"的状态。
+- **1 改 SPEC。** `src/ghoshell_moss/ground/SPECIFICATION.md`：边界、位置解析、点名渲染、
+  模板、截断、去 Law 名词、把已落地但未记录的模板子系统写进去。
+- **2 改契约 + 实现。** `contract.py`（groundset 归属、去 LawPin、删 snapshot/context/
+  frame 转发）→ `_ground.py`（去生命周期，渲染带预算）→ `_grounds.py`（退化解析器）→
+  `_render.py`（位置解析 + 递归 + `<templates>` + 截断标记）。
+- **3 改 `moss ground` CLI，用它做测试。** CLI 是这一层唯一能脱离 ghost 跑起来的验证面。
+- **4 把 ghost home ground 渲染进 memory。** `_runtime.memories()` 里 `<ground/>` 在
+  `<memento/>` 之前；`system_prompt()` 里的 ground 段删除。
+- **5 project ground channel** 等 0–4 全部完成后再考虑加。
+
+## 4. 验收（重启后逐条对）
+
+1. `moss ground render <dir>` 对"有 GROUND.md / 无 GROUND.md 但在场内 / 在边界外"三种
+   位置给出三种正确的面。
+2. 父场渲染里只出现 `groundset:` 点名的子场；未点名的子场不在其中。
+3. 截断点可见（路径 + 原因），不是静默丢。
+4. `<templates>` 节自动出现在有 `.grounds/` 的场渲染里。
+5. ghost 的 memory 段形状 `<memory><ground/><memento/></memory>`，instruction 里没有场内容。
+6. facade 里没有 `ghost.ground`；只有 project 级 ground channel（step 5 之后）。
+7. `grep -r "LawPin\|law pin" src/` 为空（D11 完成）。
+
+## 5. 开放问题
+
+- `law` verb 的新名字：`convention` / `external` / 其他。
+- 字节预算的默认值（先按 8K 试，逐层递减？还是整次渲染一个总预算）。
+- 渲染墙钟预算默认值（先按 5s/整次）。
+- `.grounds/` 模板发现的搜索层级：只有 root 一层，还是边界内每层都看。
+
+## 6. 参考（当前实现的位置，供 step 1–2 逐条对照）
+
+| 关注点 | 现在在哪 |
 |---|---|
-| 根场不存在（无 GROUND.md） | 缺席 → `removed` |
-| 存在但解析/加载失败 | 业务零值 `broken: <原因>` |
-| 存在且为空 | 业务零值 `empty` |
-| 未变化 | `""`（零 token） |
-| 有内容 | 文本 |
-
-### D5 — 不自动热更新；过时性不进 notice，改走冷读
-
-`refresh` 是命令，不是时钟。**过时性不能写进 notice 正文**：那会让每轮都判定"变了"，
-每轮全量重发，等于把 delta 机制废掉。改由冷读 `stats()` 回答：每个根上次渲染的时刻、
-源文件此后的变动。
-
-### D6 — 存在性在装配期判定，缺席可见
-
-装配时逐个 `(home / "GROUND.md").is_file()`；缺失的不挂，并按 D4 显示为 `removed`。
-不静默、不继承。
-
-### D7 — 子场常驻有上限，超出的折成 TOC
-
-一个根的子场可能有几十个。超过阈值后只挂前 N 个 + 一条 TOC（对齐 `render --meta`）。
-阈值是配置，不是常量。
-
-### D8 — 法链 boundary 钉在挂载点
-
-每个挂载根的场，`collect_chain` 的边界 = 它自己的根。否则一个没有 GROUND.md 的子目录
-会爬出 home，把别的层的法当成自己的。
-
-### D9 — 所有 mode 默认不挂 ground channel
-
-mode 是能力组装，不是知识域；共享给多个 ghost，写成约束。
-
-### D10 — AGENTS.md / CLAUDE.md 归 dsh，ground 不做兼容
-
-两条发现链互不引用。ground 只管 GROUND.md。
-
-## Acceptance criteria — 写完再看，重启后逐条对
-
-1. facade 里**只有一个**带命令的 ground channel；三层的命令面不重复。
-2. ghost-home / mode-ground / project-ground 各以一个内容子 channel 出现；缺 GROUND.md
-   的那个显示为 removed（status line，而不是消失得无声无息）。
-3. 每个根的 `groundset:` **都生效**（非 root 的 home 不再被静默忽略）。
-4. ghost 的 instruction 里**没有**场内容。
-5. 项目根的索引里没有 `.moss`（已达成，回归项）。
-6. `refresh` 能指名刷新单个根；`stats()` 能说出每个根的上次渲染时刻。
-7. 启动期只有**一种**装配路径 —— 没有回退开关。回去的路是 git：分支 `ground-multi-home` 上
-   的改动没有提交，`git switch dev` 即退回。没有 matrix 时只剩 ghost home，那是地址缺失的事实，
-   不是开关。
-
-## Execution plan
-
-1. 本记录 + commit（**先落盘再改代码**：破坏性重启丢了上下文，还能靠它恢复）。
-2. 在本地分支 `ground-multi-home` 上实现，一次做完。
-3. **重启前先做进程内装配验证**：构造 manager + channel，渲染三根的 notice，不依赖
-   ghost 启停。新机制挂掉的症状是"我不会再回来"，没有第二个人能手修。
-4. 重启，逐条对 Acceptance criteria，然后自己打磨。
-5. 通过后合并回 dev。
-
-## Open questions
-
-- mode home 现在没有 GROUND.md（它有 `HOST.md`）。是让它长期缺位，还是承认它该有自己的场？
-- 子场 TOC 的阈值定多少（先按 8 试）。
-- `stats()` 属于 channel 命令还是外壳 CLI（暂定 channel，因为它是我要读的东西）。
-
-### Rejected — a config switch to fall back to the single-root path
-
-An earlier cut carried `MOSS_GROUND_MULTI_HOME=0` in `_runtime.py`, reading `os.environ`
-directly. Removed on thirdgerb's objection, and the objection was right three times over:
-
-1. **An architecture-level mechanism does not get an off-switch.** A switch is a sentence
-   saying "we are not sure this is correct", and it leaves a second code path that no one
-   runs — which rots, then only pretends to be a way back.
-2. **It borrowed a namespace it was not declared in.** `MOSS_*` is the runtime-scope
-   namespace, enumerated in `dump_runtime_scope`. This variable was in neither the list
-   nor the ghost's `.env.example`, so it was neither a moss protocol variable nor a
-   declared ghost knob — it sat in the worst position: visible only to whoever reads the
-   implementation.
-3. **A hidden way back is not a way back.** The two real recoveries already existed: the
-   branch (`git switch dev`) and the mechanism's own absence semantics (a home without
-   `GROUND.md` is not mounted; a broken one keeps its reason while the others mount).
-
-What stays: `new_ground_channel` still accepts a single `GroundSet`. That is not a switch
-— other call sites genuinely own a one-root set, and removing it would only be purity at
-their expense.
-
-### D11 — 命令面按"作用在什么上"分层，不按"谁方便"分层
-
-15 个命令逐个查过，只有 4 个真的需要 home 身份：
-
-| 作用对象 | 命令 | 需要什么 |
-|---|---|---|
-| 驻留的树 | `open` / `close` / `refresh` / `stats` | 一个 home 身份 |
-| 一份文件 | `pin_file` / `pin_glob` / `pin_frontmatter` / `pin_ls` / `pin_exec` / `pin_law` / `unpin` / `edit` | 一个**绝对路径**（edit 连路径都不要） |
-| 一次 CLI 调用 | `ground_run(text__, ground)` | home（作为 cwd） |
-
-`render` / `meta` / `validate` / `templates` / `spec` **从命令面拿掉**：CLI 全有，
-重复实现就是同一种能力两种表达（与 `__content__` 被撤同一个判词 ——
-`sqlite_channel.py` 早写过"自由文本路由对多库定位太绕"）。读它们走
-`ground_run`，cwd 就是所指的那一层 home，相对路径因此天然指对地方。
-
-`ground_run` 用 `text__` 而不是属性：属性值走 `XML decode → ast.literal_eval`，
-命令行的引号要转义两层；`text__` 是标签体，原样到达。
-
-### D12 — 多 home 下 `ground=` 不给就报错，绝不默认主槽
-
-今天所有"回到主槽"的问题出处只有一处：`new_ground_channel(workspace_root=...)`
-一个共享变量当相对路径基点，10 个命令共用它，而这 10 个里没有一个真的在乎是哪个家。
-
-- 单 home：省略 `ground` 安全（没有第二种答案）。
-- 多 home：省略 → 报错并列出全部 `label=path`。猜错不静默 —— 猜错的后果是渲染/改写
-  另一个家的文件，而错误看起来像成功。
-- `workspace_root` 从 `new_ground_channel` 与 `build_dolores_channel` 面上去掉：
-  相对路径的基点现在由 `ground=` 说，不再有一个隐式的"主槽"。
-
-### D13 — 无驻留态操作进契约，以 `@classmethod` 声明
-
-`GroundSet` 新增六个抽象 classmethod：`peek_dir` / `peek_meta` / `templates_at` /
-`validate_text` / `upsert_pin` / `unpin_at`。理由不是"顺手"，是这类操作以前借
-`GroundSet` 当函数用：`_render_dir` 为了渲染别家的目录，会 `new` 一个
-`DefaultGroundSet(workspace_root=主槽)` —— 临时场的锚在错的家，模板发现
-（`.grounds/`）与子场声明都随之错。声明进契约后：
-
-- 消费方（channel / CLI / 测试）不必知道实现如何定位；
-- 换实现不能悄悄漂；
-- `pin_*` 这类纯文件操作彻底离开"哪个家"的坐标系（实现落在 `ground/_edit.py`）。
-
-### D14 — 创建只有一条路径：谁持有谁创建
-
-`GroundsManager.mount()` 以前自己 `new DefaultGroundSet`，而 channel factory 也会
-`new` —— 两条创建路径可以让同一个 home 有两个场集，而只有一个是被读的那一个。
-改成 `mount(groundset_factory)`：manager 只编排（查 GROUND.md、持 slot、报
-`absent`/`broken`），场集由持有者造。**没有场集就没有真相**这条因此只剩一个出处。
-
-### D15 — `unpin` 补齐：pin 是单向门
-
-契约里一直有 `pin` / `unpin` 转发，命令面只有 6 个 `pin_*`，没有 `unpin` ——
-能加不能撤，只能去改文件。pin 决定每轮看见什么，是场里最重的东西，单向门迟早出事。
-`unpin(ground_file, label)` 走编辑组，只认绝对路径，label 不存在则不写盘并列出已有 label。
-
-### D16 — 一个 home 只带一个身份：根场的 label 就是 slot key
-
-重启验收时暴露的是"同一个 home 三个名字"：channel 叫 `ghost_home`，`stats` 里根场那行
-叫 `moss`（目录名），帧里 frontmatter 叫 `Ghost Ground`。三个名字不是三种信息，是一处雾。
-
-判词：**目录名是地址，不是身份**。所以根场不再从 `dir_abs.name` 取 label —— 装配者把
-slot key 传进去（`DefaultGroundSet(workspace_root=..., root_label=slot.key)`），`mount`
-的工厂因此改为接收整个 `GroundSlot` 而不是 `Path`。`stats` 里根场不再单独占一行，
-它的状态并进 home 那一行：
-
-```
-ghost_home: /abs/path — rendered at 17:32, source changed: no
-  existence: rendered at 17:32, source changed: no
-```
-
-frontmatter 的 `name` 保持是**文档标题**（内容），不参与身份。单 home 场景没有 slot key，
-label 仍是目录名 —— 那里没有第二个名字可用。
-
-### D17 — 冷读面不出热数据
-
-`stats` 原来打的是 `rendered 38s ago`。相对时长每次读都变，把冷读面变成热数据，还
-暗示一种"新鲜度"——而系统里没有任何东西会自己刷新，`refresh` 是命令不是时钟。它唯一
-造成的效果是让人（和我）把"刚生成"误当成"可信"。
-
-改：时间用**绝对时刻**（`rendered at 17:32`，刷新前不变）；判据只留一位——
-`source changed: yes/no`，也就是"你读到的帧和盘上的法是否一致"。
-
-### D18 — 缺 `ground=` 抛错误码，不抛裸异常
-
-`_set()` 以前 `raise KeyError`。裸异常在 `CommandError.from_error` 里一律降级成
-`UNKNOWN_ERROR(505)`，而 505 属**致命档**：一次"你少传了个参数"会中断整批兄弟命令
-（实测：一个报错让同批另外两条被 cancelled）。错误消息本身是对的，错的是它的等级与
-类型被抹平了。
-
-现在按语义分档：缺 `ground=` → `INVALID_USAGE(401)`；slot 名不认识 → `NOT_FOUND(404)`；
-slot 没挂 → `NOT_AVAILABLE(403)`。糖用现成的 `CommandErrorCode.X.error(msg)`（`errors.py`）。
-
-同一处还修了一个"文档教错的命令"：`ground_run` 的示例写 `render . --meta`，而 `meta`
-是独立动词，`render` 没有这个选项——照它跑就 exit 2。示例改为 `meta .`。
-
-**没有做、记成 issue 的三件事**（都属于命令错误面/解析面，不在本 feature scope 内）：
-① CTML 里流式参数走属性（`text__="..."`）会被静默接受并降级成一次性参数，模型收不到
-任何"这不符合最佳实践"的信号；② `UNKNOWN_ERROR` 的友好兼容 + `CommandUtil` 补通用
-error 糖；③ channel builder 没有把"未捕获异常 = 致命未知错误"这条契约写在作者看得见的地方。
+| 位置解析（walk vs field-root） | `_ground.py:102` `render(cwd=)`；`_find_ancestor_ground` 在 `cli/ground_cli.py:85` |
+| walk 面组装（折叠 TOC） | `_render.py:206` `render_walk` / `_render.py:256` `_assemble_walk_blocks` |
+| 子场物化 | `_grounds.py:343` `_materialize_children` |
+| 帧缓存 / refresh | `channels/ground_channel.py:177` `_refresh_ground` |
+| 根场进 instruction | `ghosts/dolores/_runtime.py:362-365`、`:673` |
+| 模板 | `_grounds.py:46` `scan_templates`、`.grounds/` |
+| 场级 ignore | `_ground.py:191` `_make_ignore_spec`、`contract.py` `GroundConvention.ignore` |
