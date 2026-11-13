@@ -392,9 +392,9 @@ def test_node_surface_covers_the_whole_view(memento):
 def test_reading_never_creates_a_node_directory(memento):
     """A read reports a node; it never makes one.
 
-    The regression this pins: a hook slot used to be handed a guaranteed existing directory, so
-    every commit and every read materialised one — 166 shells against 571 anchors, and a walk
-    over the node space paid for all of them.
+    The regression this pins: a view/read path used to be handed a guaranteed existing
+    directory, so every commit and every read materialised one — 166 shells against 571
+    anchors, and a walk over the node space paid for all of them.
     """
 
     def node_dirs() -> list[Path]:
@@ -408,13 +408,6 @@ def test_reading_never_creates_a_node_directory(memento):
     for seq in (1, 2, 3):
         b.get_commit(seq)
     assert node_dirs() == [], "a single read must not materialise the node space"
-
-    async def read_with_hooks() -> None:
-        for seq in (1, 2, 3):
-            await b.aget_commit_with_hooks(seq)
-
-    asyncio.run(read_with_hooks())
-    assert node_dirs() == [], "a hook slot without a directory must not create one"
 
     b.ensure_memento(1)  # first use is the only creator
     assert len(node_dirs()) == 1

@@ -22,8 +22,8 @@ Discipline:
   Only read-modify-write operations take it (``commit`` / ``fork``); appends do not.
 - The node space is an **unmanaged asset area**: memento only reports whether ``MEMENTO.md``
   exists — one walk per branch view, one stat per single read — and never reads or cleans it.
-  A directory appears only when something is put there: ``ensure_memento``, or a hook moving a
-  finished file in. The read path never creates one.
+  A directory appears only when something is put there: ``ensure_memento``, or a writer
+  putting a file in. The read path never creates one.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import aiofiles
 import ulid
@@ -56,7 +56,6 @@ from ghoshell_moss.memento.abcd import (
     Memento,
     Note,
 )
-from ghoshell_moss.memento.hooks import hook_env, hook_paths, render_view_text, run_slot
 
 __all__ = ["FsBranch", 'FsMemento', 'new_local_memento']
 
@@ -721,12 +720,19 @@ class FsBranch(Branch):
         meta = self.meta()
         if until is not None:
             commits = [c for c in commits if c.seq < until]
-        views = _collapse_broken_commits([self._commit_view(c, notes, meta.index) for c in commits])
+        raw = [self._commit_view(c, notes, meta.index) for c in commits]
+        views = _collapse_broken_commits(raw)
         nodes = self._node_index()
         for cv in views:
             self._probe_memento(cv, nodes)
-        latest = views[-n:]
-        history = views[:-n]
+        latest = views[-n:] if n > 0 else []
+        history = views[:-n] if n > 0 else views
+        # Counts are over the raw commits, not the collapsed entries: ``count`` next to a
+        # first/last coordinate range must mean "this many commits", and the broken ones are
+        # still commits even when a run of them shows as one entry. ``history_errors`` is what
+        # explains a title list shorter than the range it stands for.
+        boundary = latest[0].seq if latest else (commits[-1].seq + 1 if commits else 1)
+        history_raw = [cv for cv in raw if cv.seq < boundary]
         previous, fork_coord = self._fork_of(meta)
         tip = commits[-1].id if commits else ""
         return BranchView(
@@ -741,6 +747,8 @@ class FsBranch(Branch):
             history=history,
             latest=latest,
             commits_total=len(commits),
+            history_total=len(history_raw),
+            history_errors=sum(1 for cv in history_raw if cv.is_broken),
         )
 
     def get_commit(self, seq: int) -> CommitView | None:
@@ -759,60 +767,6 @@ class FsBranch(Branch):
             return None
         notes = await self.anotes()
         return self._probe_memento(self._commit_view(commits[seq - 1], notes, self.index))
-
-    # ── generation with hooks ──
-    async def _render_slot(self, slot: str, *, coord: str = "", commit_dir: Path | None = None) -> str:
-        """Run this branch's mounted view slot and return what it contributes to the page.
-
-        The slot belongs to memento, not to whoever renders the view: the branch already knows
-        its own directory, so it also knows where the hooks are mounted (branch first, then the
-        root) and what the protocol promises them. Letting a caller append the output instead
-        is how a plan written into the branch directory failed to reach the boot memory.
-        """
-        roots = [self._dir(), self._memento.root]
-        if not hook_paths(roots, slot):
-            return ""
-        env = hook_env(
-            slot,
-            root=self._memento.root,
-            branch=self._name,
-            branch_dir=self._dir(),
-            coord=coord,
-            commit_dir=commit_dir,
-        )
-        try:
-            results = await run_slot(slot, roots, env_base=env, log_root=self._memento.root)
-        except Exception:  # noqa: BLE001 — the read surface must not die because a hook did
-            logger.exception("view slot %r failed on branch %r", slot, self._name)
-            return ""
-        return render_view_text(results)
-
-    async def aview_with_hooks(self, *, n: int = 10, until: int | None = None) -> BranchView:
-        """The view an actual reader gets: the projection **plus** what the directory renders.
-
-        Cheap views (``view`` / ``aview``) stay hook-free on purpose — they are called from sync
-        paths and inside other projections. This one is the explicit opt-in, and it re-runs the
-        slot on every call: a plan that moved a minute ago must not come back stale.
-        """
-        view = await self.aview(n=n, until=until)
-        view.ground = await self._render_slot("branch_view")
-        return view
-
-    async def aget_commit_with_hooks(self, seq: int) -> CommitView | None:
-        """A commit read with its directory's own rendering — same contract as the branch view.
-
-        The slot runs only for a commit whose directory exists — a node index, or a file a hook
-        moved in. Nothing there means nothing to render, and the read path never creates the
-        directory to find out.
-        """
-        view = await self.aget_commit(seq)
-        if view is None:
-            return view
-        commit_dir = view.memento_path(self._memento.root).parent
-        if not commit_dir.is_dir():
-            return view
-        view.ground = await self._render_slot("commit_view", coord=view.coord, commit_dir=commit_dir)
-        return view
 
     # ── queries ──
     def query_commits(

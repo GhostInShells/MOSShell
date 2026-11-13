@@ -182,12 +182,11 @@ def build_memento_channel(
         message = await manager.aview_message(branch, n=limit)
         if message is None:
             return f"[memento] no branch `{branch}`"
-        # 线自己渲染的那一页已经长在 view 里了 (BranchView.ground) —— 这里不再拼.
         return message.to_content_string()
 
     @chan.build.command(name="read", always_observe=True)
     async def read(coord: str) -> str:
-        """Read a span's raw conversation, with what that commit's directory says about itself.
+        """Read a span's raw conversation.
 
         :param coord: commit coordinate, e.g. `1-27`.
         """
@@ -195,7 +194,6 @@ def build_memento_channel(
             text = await manager.read(coord)
         except KeyError:
             return f"[memento] no commit at `{coord}`"
-        # 文本与 commit_view 的产物都是 manager.read 这次生成的, 这里只渲染.
         return text or f"[memento] nothing was said in that span ({coord})"
 
     @chan.build.command(name="history", always_observe=True)

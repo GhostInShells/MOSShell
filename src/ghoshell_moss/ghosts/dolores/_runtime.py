@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -302,11 +302,11 @@ class Dolores(Ghost):
         # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
         self._memento: FsMemento | None = None
         self._memento_manager: EgoMementoManager | None = None
-        # branch view render cache — rendered async in __aenter__ (it runs the branch_view slot),
-        # read synchronously by memories(). One render per boot: the plan is a snapshot of the
-        # directory at the moment the session opens, which is exactly what boot memory is.
+        # memento view cache — rendered async in __aenter__ and before every compact; read
+        # synchronously by memories(). It is a snapshot of the trajectory at the moment it is
+        # formed, which is exactly what boot memory is.
         self._memento_view: Message | None = None
-        # <memory instanced_at> —— 这一块快照成形的那一刻 (本地钟面, 带偏移).
+        # <memory instanced_at> — the snapshot's absolute anchor, stored/rendered in UTC.
         self._memory_instanced_at: datetime | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: DoloresEgo | None = None
@@ -514,7 +514,7 @@ class Dolores(Ghost):
             return []
         attributes = {}
         if self._memory_instanced_at is not None:
-            attributes["instanced_at"] = self._memory_instanced_at.isoformat()
+            attributes["instanced_at"] = self._memory_instanced_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         return [Message.new(tag="memory", attributes=attributes).with_messages(*children)]
 
     async def refresh_memory(self, until: str | None = None) -> None:
@@ -528,8 +528,8 @@ class Dolores(Ghost):
           summarising it too would put two versions of the same span in context.
 
         Why a cache at all: ``memories()`` is a sync closure handed to dsh at session creation,
-        and the view needs an async render (the branch's own ``branch_view`` slot runs there).
-        So the async side owns the render, the sync side only reads what it left behind.
+        while the view needs an async render (disk reads plus the branch projection). So the
+        async side owns the render, the sync side only reads what it left behind.
 
         Skipping this at compaction is not a small staleness bug: the surface gets replaced by
         the recap, so a boot-time snapshot would drop every commit made since boot from the
@@ -538,7 +538,7 @@ class Dolores(Ghost):
         if self._memento_manager is None:
             return
         self._memento_view = await self._memento_manager.aview_message(until=until)
-        self._memory_instanced_at = datetime.now().astimezone()
+        self._memory_instanced_at = datetime.now(timezone.utc)
 
     def mindflow(self) -> Mindflow:
         """Return the mindflow Dolores owns, materializing it on first call.
@@ -677,8 +677,8 @@ class Dolores(Ghost):
                 self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR)
                 if self._memento.get_branch(branch_name) is None:
                     self._memento.create_branch(branch_name)
-                # 布局不在这里写: 两类 ground 与 on_commit 都是 stubs 里的种子文件,
-                # 由 _seed_ground 在开机时补进 ghost home; 分支目录本身保持空, 渲染靠 walk.
+                # 布局不在这里写: memento 根与 branch 由 new_local_memento 建。目录里不再种子
+                # ground 或进程 hook —— 那套文件即契约的机制已整体移除。
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
             from ._ego import DoloresEgo, DoloresEgoContext
@@ -714,7 +714,7 @@ class Dolores(Ghost):
                     )
                 )
                 # memory 的唯一写入点(开机这一次 + 每次 compact 前一次). memories() 是同步闭包,
-                # 只能读缓存; 渲染(含线自己的 branch_view 槽位)在这里和 compact 前发生.
+                # 只能读缓存; 渲染在这里和 compact 前发生.
                 await self.refresh_memory()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(

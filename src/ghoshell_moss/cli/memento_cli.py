@@ -4,17 +4,20 @@
 Semantics are git's, deliberately: someone who knows ``git log``/``git show``/
 ``git commit`` should not have to learn a second vocabulary to see their own memory.
 
-    status                 where I am, what is mounted, how the last hook run went
+    status                 where I am and what the trajectory holds
     log [--from --until]   the anchors in a range, one line each
-    show <coord>           one anchor in detail — note, directory, commit_view output
+    show <coord>           one anchor in detail — the note and its directory
     commit -m "..."        freeze the span since the last anchor
     branch list|show|create
-    hook list|run|log
 
 Two things are deliberately absent. ``read`` — the raw span lives in the agent session
 store, not in this index, so reading it belongs to the ghost channel that holds the
 session, not to a shell that can only see the trajectory files. ``chat`` — a real round of
 inference is a capability of the model side, never a command a person runs.
+
+The process-hook machinery (``memento/hooks.py``, the slot files under a ghost home) is
+gone: a file was the contract, so it could never ride a dolores upgrade. Hooks come back
+code-side first; the process side can return later as a thin layer over them.
 
 Every command resolves its root the same way: ``--root`` if given — before or after the
 subcommand, both work — else ``.memento/ego`` in the working directory. Nothing is
@@ -24,9 +27,6 @@ error that names what it looked at, not a reason to go hunting for someone else'
 
 from __future__ import annotations
 
-import asyncio
-import json
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -34,21 +34,11 @@ import typer
 
 from ghoshell_moss.cli.utils import echo, print_error, print_info, print_success
 from ghoshell_moss.memento import new_local_memento
-from ghoshell_moss.memento.hooks import (
-    HOOK_DIR_NAME,
-    HOOK_SLOTS,
-    LOG_FILE_NAME,
-    hook_env,
-    hook_paths,
-    log_results,
-    render_view_text,
-    run_slot,
-)
 
 __all__ = ["memento_app"]
 
 memento_app = typer.Typer(
-    short_help="The cognitive trajectory — log, show, commit, branch, hook.",
+    short_help="The cognitive trajectory — log, show, commit, branch.",
     help=(
         "memento is the trajectory index: branches, anchors (commits) and the notes that "
         "say what a span was. The commands follow git's semantics on purpose."
@@ -57,9 +47,7 @@ memento_app = typer.Typer(
 )
 
 branch_app = typer.Typer(short_help="The lines (branches) of the trajectory.", no_args_is_help=True)
-hook_app = typer.Typer(short_help="The lifecycle slots — what is mounted, and what ran.", no_args_is_help=True)
 memento_app.add_typer(branch_app, name="branch")
-memento_app.add_typer(hook_app, name="hook")
 
 DEFAULT_EGO_DIR = ".memento/ego"
 
@@ -122,25 +110,12 @@ def _branch(m, name: Optional[str]):
     return branch
 
 
-def _hook_roots(branch, root: Path) -> list[Path]:
-    """Branch first, then the ego root — both run: a branch adds to the root, never replaces it."""
-    return [branch.path, root]
-
-
-def _run(coro):
-    try:
-        return asyncio.run(coro)
-    except Exception as error:  # a CLI must not dump a traceback at a person
-        print_error(f"{type(error).__name__}: {error}")
-        raise typer.Exit(code=2) from error
-
-
 # ── status ──────────────────────────────────────────────────────────────────
 
 
 @memento_app.command("status")
 def status(root: Optional[Path] = typer.Option(None, "--root", help="memento root directory.")):
-    """Where I am: the branch, the latest anchor, the slots, the last hook run."""
+    """Where I am: the branch and the latest anchor."""
     resolved = _resolve_root(root)
     m = new_local_memento(resolved)
     refs = m.list_branches()
@@ -159,13 +134,6 @@ def status(root: Optional[Path] = typer.Option(None, "--root", help="memento roo
             if view is not None:
                 latest = view.coord
         echo(f"branch    {ref.name}  commits={len(commits)}  latest={latest or '(empty)'}")
-        for slot in HOOK_SLOTS:
-            mounted = hook_paths(_hook_roots(branch, resolved), slot)
-            if mounted:
-                for path in mounted:
-                    echo(f"  slot    {slot:<12} {path}")
-            else:
-                echo(f"  slot    {slot:<12} (not mounted)")
 
 
 # ── log / show ──────────────────────────────────────────────────────────────
@@ -179,7 +147,7 @@ def log_cmd(
     limit: int = typer.Option(20, "--limit", "-n"),
     root: Optional[Path] = typer.Option(None, "--root"),
 ):
-    """The anchors, one line each — summaries only, no hook is ever run here."""
+    """The anchors, one line each — summaries only."""
     resolved = _resolve_root(root)
     m = new_local_memento(resolved)
     target = _branch(m, branch)
@@ -198,29 +166,20 @@ def log_cmd(
 @memento_app.command("show")
 def show_cmd(
     coord: str = typer.Argument(..., help="coordinate, e.g. 1-404"),
-    hook: bool = typer.Option(True, "--hook/--no-hook", help="run the commit_view slot."),
     root: Optional[Path] = typer.Option(None, "--root"),
 ):
-    """One anchor in detail: the note, its directory, and what commit_view adds."""
+    """One anchor in detail: the note and its directory."""
     resolved = _resolve_root(root)
     m = new_local_memento(resolved)
     view = m.resolve_commit(coord)
     if view is None:
         print_error(f"no commit at `{coord}`")
         raise typer.Exit(code=1)
-    branch = m.get_branch_by_index(view.branch_index)
     echo(f"coord     {view.coord}")
     echo(f"created   {view.created.astimezone().isoformat()}")
     echo(f"message   {view.message or '(no note — the summarizer has not run)'}")
     commit_dir = view.memento_path(resolved).parent
     echo(f"dir       {commit_dir}{'' if commit_dir.is_dir() else '  (not created)'}")
-    if not hook or branch is None:
-        return
-    # 这一段的产物现在归 memento 生成 (CommitView.ground) —— CLI 只把它印出来, 不再自己跑一遍.
-    hooked = _run(branch.aget_commit_with_hooks(view.seq))
-    if hooked is not None and hooked.ground:
-        echo("")
-        echo(hooked.ground)
 
 
 # ── commit ──────────────────────────────────────────────────────────────────
@@ -232,7 +191,7 @@ def commit_cmd(
     branch: Optional[str] = typer.Option(None, "--branch", "-b"),
     root: Optional[Path] = typer.Option(None, "--root"),
 ):
-    """Freeze a new anchor on the branch, and run the on_commit slot beside it."""
+    """Freeze a new anchor on the branch."""
     resolved = _resolve_root(root)
     m = new_local_memento(resolved)
     target = _branch(m, branch)
@@ -240,27 +199,6 @@ def commit_cmd(
     view = target.get_commit(ref.seq)
     coord = view.coord if view is not None else f"{target.index}-{ref.seq}"
     print_success(f"committed {coord}")
-    commit_dir = view.memento_path(resolved).parent if view is not None else None
-    if commit_dir is not None:
-        # 协议承诺: hook 拿到的目标目录已经存在, 它只管往里搬东西.
-        commit_dir.mkdir(parents=True, exist_ok=True)
-    results = _run(
-        run_slot(
-            "on_commit",
-            _hook_roots(target, resolved),
-            env_base=hook_env(
-                "on_commit",
-                root=resolved,
-                branch=target.ref.name,
-                branch_dir=target.path,
-                coord=coord,
-                commit_dir=commit_dir,
-            ),
-            log_root=resolved,
-        )
-    )
-    for result in results:
-        echo(f"  {result.summary}")
 
 
 # ── branch ──────────────────────────────────────────────────────────────────
@@ -288,11 +226,10 @@ def branch_list(root: Optional[Path] = typer.Option(None, "--root")):
 @branch_app.command("show")
 def branch_show(
     name: Optional[str] = typer.Argument(None),
-    hook: bool = typer.Option(True, "--hook/--no-hook", help="run the branch_view slot."),
     limit: int = typer.Option(10, "--limit", "-n"),
     root: Optional[Path] = typer.Option(None, "--root"),
 ):
-    """A line as it is now: its description, its recent anchors, and what branch_view adds."""
+    """A line as it is now: its description and its recent anchors."""
     resolved = _resolve_root(root)
     m = new_local_memento(resolved)
     target = _branch(m, name)
@@ -305,13 +242,6 @@ def branch_show(
         view = target.get_commit(ref.seq)
         if view is not None:
             echo(f"  {view.coord:<12} {view.title or '(no note)'}")
-    if not hook:
-        return
-    # 同上: 线自己渲染的那一页由 memento 生成 (BranchView.ground), 这里只印.
-    view = _run(target.aview_with_hooks(n=limit))
-    if view.ground:
-        echo("")
-        echo(view.ground)
 
 
 @branch_app.command("create")
@@ -325,96 +255,3 @@ def branch_create(
     m = new_local_memento(resolved)
     branch = m.create_branch(name, description)
     print_success(f"created branch `{branch.ref.name}` at {branch.path}")
-
-
-# ── hook ────────────────────────────────────────────────────────────────────
-
-
-@hook_app.command("list")
-def hook_list(
-    branch: Optional[str] = typer.Option(None, "--branch", "-b"),
-    root: Optional[Path] = typer.Option(None, "--root"),
-):
-    """What is mounted on each slot — the branch's own file first, then the ego default."""
-    resolved = _resolve_root(root)
-    m = new_local_memento(resolved)
-    target = _branch(m, branch)
-    for slot in HOOK_SLOTS:
-        mounted = hook_paths(_hook_roots(target, resolved), slot)
-        if not mounted:
-            echo(f"{slot:<12} (not mounted)")
-            continue
-        for path in mounted:
-            echo(f"{slot:<12} {path}")
-
-
-@hook_app.command("run")
-def hook_run(
-    slot: str = typer.Argument(..., help="on_commit / commit_view / branch_view"),
-    coord: str = typer.Option("", "--coord", help="the anchor to hand the hook."),
-    timeout: float = typer.Option(20.0, "--timeout"),
-    branch: Optional[str] = typer.Option(None, "--branch", "-b"),
-    root: Optional[Path] = typer.Option(None, "--root"),
-):
-    """Run one slot by hand — the way to see what a slot prints without committing."""
-    if slot not in HOOK_SLOTS:
-        print_error(f"unknown slot `{slot}`; known: {', '.join(HOOK_SLOTS)}")
-        raise typer.Exit(code=2)
-    resolved = _resolve_root(root)
-    m = new_local_memento(resolved)
-    target = _branch(m, branch)
-    commit_dir = None
-    if coord:
-        view = m.resolve_commit(coord)
-        if view is None:
-            print_error(f"no commit at `{coord}`")
-            raise typer.Exit(code=1)
-        commit_dir = view.memento_path(resolved).parent
-        commit_dir.mkdir(parents=True, exist_ok=True)
-    results = _run(
-        run_slot(
-            slot,
-            _hook_roots(target, resolved),
-            env_base=hook_env(
-                slot,
-                root=resolved,
-                branch=target.ref.name,
-                branch_dir=target.path,
-                coord=coord,
-                commit_dir=commit_dir,
-            ),
-            timeout=timeout,
-            log_root=resolved,
-        )
-    )
-    if not results:
-        print_info(f"nothing mounted on `{slot}`")
-        return
-    for result in results:
-        echo(f"{result.summary}  {result.path}")
-        if result.stdout.strip():
-            echo(result.stdout.rstrip())
-        if result.stderr.strip():
-            print_error(result.stderr.rstrip())
-
-
-@hook_app.command("log")
-def hook_log(
-    limit: int = typer.Option(20, "--limit", "-n"),
-    root: Optional[Path] = typer.Option(None, "--root"),
-):
-    """The verdicts of past runs — no retry, so this is the only record there is."""
-    resolved = _resolve_root(root)
-    path = resolved / HOOK_DIR_NAME / LOG_FILE_NAME
-    if not path.is_file():
-        print_info("no hook has run yet")
-        return
-    rows = path.read_text(encoding="utf-8").splitlines()[-limit:]
-    for row in rows:
-        try:
-            data = json.loads(row)
-        except json.JSONDecodeError:
-            continue
-        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data.get("at", 0)))
-        verdict = "ok" if data.get("ok") else (data.get("error") or f"exit {data.get('exit_code')}")
-        echo(f"{when}  {data.get('slot', ''):<12} {verdict}")

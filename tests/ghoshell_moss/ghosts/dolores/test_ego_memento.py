@@ -367,11 +367,50 @@ class TestMementoReadSurface:
 
         text = manager.view_message().to_content_string()
 
-        assert text.count("<commit ") == 10
+        # 6 详展 + 24 折叠; the folded count is over raw commits, and its title budget is 20.
+        assert text.count("<commit ") == 6
         assert text.count("<earlier ") == 1
-        assert 'count="20"' in text
-        # one folded entry, not twenty: the far side is a range plus a few titles
+        assert 'count="24"' in text
+        assert 'titles="20"' in text
+        # every folded title carries a visible marker, so a collapsed newline cannot merge lines
+        assert "\n· 1-" in text
+        # one folded entry, not twenty-four: the far side is a range plus a few titles
         assert len(text) < 12000
+
+    def test_digest_counts_raw_commits_and_reports_broken_ones(self, tmp_path: Path):
+        """count is over commits, not rendered entries — a broken run still consumes its range.
+
+        Two consecutive broken notes collapse to one entry so they cannot flood the view; the
+        count and the error count are what keep that fold from silently losing two commits.
+        """
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        ids = []
+        for i in range(12):
+            anchor = manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
+            ids.append(anchor.id)
+            branch.note(anchor.id, f"note {i}")
+        branch.note(ids[0], "", error="run failed: timeout")
+        branch.note(ids[1], "", error="run failed: timeout")
+
+        text = manager.view_message().to_content_string()
+
+        assert 'count="6"' in text, "history is six raw commits"
+        assert 'errors="2"' in text, "the collapsed run is still two broken commits"
+        assert 'titles="5"' in text, "two broken entries collapse to one title line"
+
+    def test_commit_note_body_is_escaped_before_it_enters_the_surface(self, tmp_path: Path):
+        """A note is text, not structure: its angle brackets must not become tags."""
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(anchor.id, "shape <memento> & <commit seq=...>")
+
+        text = manager.view_message().to_content_string()
+
+        assert "&lt;memento&gt;" in text
+        assert "&amp;" in text
+        assert "<memento branch=" in text, "the container itself is still markup"
 
     def test_view_message_marks_a_node_without_shipping_its_path(self, tmp_path: Path):
         """A node's presence is one flag; its path is derivable and would be pure noise.
@@ -438,12 +477,12 @@ class TestMementoReadSurface:
         assert coords[2] not in text
         assert 'total="2"' in text
 
-    def test_view_message_names_its_owner(self, tmp_path: Path):
-        """A coordinate is unique only inside one owner, so the container states which."""
+    def test_view_message_does_not_claim_an_owner(self, tmp_path: Path):
+        """owner was a directory name, not an identity; the container no longer states one."""
         manager, memento = self._manager(tmp_path)
         manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
-        assert 'owner="owner"' in manager.view_message().to_content_string()
+        assert 'owner="' not in manager.view_message().to_content_string()
 
     def test_view_message_points_at_the_forked_parent(self, tmp_path: Path):
         """The branch opening reserves the parent: one pointer, never the parent's history."""

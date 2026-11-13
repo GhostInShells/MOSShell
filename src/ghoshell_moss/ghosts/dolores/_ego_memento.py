@@ -29,7 +29,6 @@ import dataclasses
 import itertools
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
@@ -52,7 +51,6 @@ from ghoshell_moss.ghosts.dolores.mindset.prompter import (
 )
 from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED
 from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
-from ghoshell_moss.memento.hooks import hook_env, run_slot
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -164,16 +162,12 @@ class EgoMementoConfig(BaseModel):
     """``.dolores.yml`` 的 ``memento:`` 段. Field 默认即兜底."""
 
     branch_name: str = Field(default="main", description="ego 提交的 memento branch (ghost 启动时取其/建).")
-    owner: str = Field(
-        default="",
-        description=(
-            "轨迹的所有者名字, 进 memory 的 <memento owner=..> —— 坐标只在 owner 内唯一, 所以"
-            "容器必须自己声明边界. 空 = 用 memento 根目录的名字."
-        ),
+    view_limit: int = Field(
+        default=6,
+        description="Branch.view(n=..) — 最近 n 条进 memory view (详展窗口).",
     )
-    view_limit: int = Field(default=10, description="Branch.view(n=..) — 最近 n 条进 memory view.")
     digest_titles: int = Field(
-        default=5,
+        default=20,
         description=(
             "折叠段 (earlier) 保留多少条 title. 其余只有 count + 坐标区间 —— 这是个预算, "
             "不是渲染全部 commit 的承诺."
@@ -238,7 +232,7 @@ class BypassCommit:
 
 
 class BranchInfo(BaseModel):
-    """一个 branch 的概览 —— 先看有哪些 branch, 再用 ``branch_view(name)`` 看内容.
+    """一个 branch 的概览 —— 先看有哪些 branch, 再用 ``view_message(name)`` 看内容.
 
     坐标 ``latest_coord`` 是给模型引用的地址 (形如 ``1-27``); 空 branch 没有坐标.
     """
@@ -383,8 +377,9 @@ class EgoMementoManager:
             metatype="session",
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
         )
-        # 旁路: 锚点已落地, hook 在旁边跑. 不 await, 失败不回滚, 也不挡主路.
-        self.fire_hook("on_commit", commit)
+        # 旁路: 锚点已落地. hook 机制已整体移除 (文件即契约无法随 dolores 升级) ——
+        # 先在代码侧重做, 完成后再把进程侧作为薄适配层接回:
+        # self.fire_hook("on_commit", commit)
         return commit
 
     # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
@@ -663,22 +658,10 @@ class EgoMementoManager:
             raise self._read_failure(view, ref, exc) from exc
         events = [event_from_dict(event) for event in (raw or {}).get("events", [])]
         text = render_transcript(events)
-        # What this commit's directory says about itself comes from the commit_view slot and is
-        # part of the read — not a tail the channel appends after the transcript. A commit with
-        # no node has nothing to render, so the slot does not run and nothing is created.
-        ground = await self._commit_ground(view)
-        return f"{text}\n\n{ground}" if ground else text
-
-    async def _commit_ground(self, view: CommitView) -> str:
-        """这一个 commit 的目录说自己什么 —— 取的时候才跑槽位, 所以永远是新的一遍."""
-        branch = self._memento.get_branch(self._config.branch_name)
-        if branch is None:
-            return ""
-        try:
-            hooked = await branch.aget_commit_with_hooks(view.seq)
-        except Exception:  # noqa: BLE001 — 读面不许因为 hook 而挂
-            return ""
-        return hooked.ground if hooked is not None else ""
+        # commit_view was a process-hook slot; gone with the mechanism. The raw span is the read.
+        # ground = await self._commit_ground(view)
+        # return f"{text}\n\n{ground}" if ground else text
+        return text
 
     async def chat(self, coord: str, prompt: str) -> str:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
@@ -820,16 +803,15 @@ class EgoMementoManager:
             n: int | None = None,
             until: str | None = None,
     ) -> Message | None:
-        """``view_message`` 的带 hook 版本 —— 真正读这一页的人都该走这条.
+        """``view_message`` 的异步入口 —— 开机 memory / compact 重渲染都走这条.
 
-        差别只有一个: ``branch_view`` 槽位在这里跑, 结果进 ``BranchView.ground`` 再被渲染.
-        同步那条留着, 是因为它在别的投影里被当纯读数用; 但它读不出线自己渲染的东西,
-        所以开机 memory 与 ``memento:view`` 都必须走这条异步入口.
+        ``branch_view`` 槽位随进程 hook 机制一起移除（文件即契约无法随 dolores 升级）；
+        代码侧 hook 重做后，这里再接回。现在两条入口渲染的是同一份投影。
         """
         branch = self._memento.get_branch(name or self._config.branch_name)
         if branch is None:
             return None
-        view = await branch.aview_with_hooks(
+        view = await branch.aview(
             n=n if n is not None else self._config.view_limit,
             until=self._seq_before(branch, until),
         )
@@ -933,7 +915,6 @@ class EgoMementoManager:
         container = Message.new(
             tag="memento",
             attributes={
-                "owner": self._owner_name(),
                 "branch": view.name,
                 "index": str(view.index),
                 "total": str(view.commits_total),
@@ -946,16 +927,9 @@ class EgoMementoManager:
         if view.history:
             children.append(self._render_digest(view))
         children.extend(self._render_days(view.latest))
-        if view.ground:
-            # 线自己渲染的那一页（计划、开着的 task）属于这个 view, 不是摘要的脚注.
-            children.append(Message.new(tag="ground").with_content(view.ground))
         if not children:
             return container.with_content("no commit")
         return container.with_messages(*children)
-
-    def _owner_name(self) -> str:
-        """轨迹的所有者 —— 坐标只在 owner 内唯一, 所以容器必须自己声明边界."""
-        return self._config.owner or self._memento.root.name
 
     def _render_fork(self, view: BranchView) -> Message | None:
         """父线在哪儿 —— 一条指针, 不是父线的副本.
@@ -1003,14 +977,17 @@ class EgoMementoManager:
         budget = self._config.digest_titles
         recent = view.history[-budget:] if budget > 0 else []
         body = "\n".join(
-            f"{cv.coord}  {cv.title}" + ("  [node]" if cv.memento is not None else "")
+            f"· {cv.coord}  {escape(cv.title)}" + ("  [node]" if cv.memento is not None else "")
             for cv in recent
         )
         nodes = sum(1 for cv in view.history if cv.memento is not None)
         return Message.new(
             tag="earlier",
             attributes={
-                "count": str(len(view.history)),
+                # count 是**原始 commit 数**（未折叠 broken 前）: 它和 first/last 的坐标区间、
+                # total 同一套语义; errors 说明为什么标题行可能比 count 少.
+                "count": str(view.history_total),
+                "errors": str(view.history_errors),
                 "first": view.history[0].coord,
                 "last": view.history[-1].coord,
                 "titles": str(len(recent)),
@@ -1033,7 +1010,7 @@ class EgoMementoManager:
         if relations:
             container.with_messages(*relations)
             container.with_content("\n")
-        return container.with_content(cv.message)
+        return container.with_content(escape(cv.message))
 
     def _render_relations(self, cv: CommitView) -> list[Message]:
         """汇入与分出 —— 跨线的写只有这一种形态, 所以它必须在轨迹上看得见.
@@ -1049,7 +1026,7 @@ class EgoMementoManager:
             }
             if incoming.coord:
                 attributes["coord"] = incoming.coord
-            out.append(Message.new(tag="from", attributes=attributes).with_content(incoming.title))
+            out.append(Message.new(tag="from", attributes=attributes).with_content(escape(incoming.title)))
         for child in cv.children:
             out.append(Message.new(tag="to", attributes={
                 "branch": child.branch.branch_name,
@@ -1065,63 +1042,6 @@ class EgoMementoManager:
         if branch is None:
             raise RuntimeError(f"memento branch '{self._config.branch_name}' not found")
         return branch
-
-    # ── 生命周期 hook (槽位是文件, 见 memento/hooks.py) ─────────────
-
-    @property
-    def branch_path(self) -> Path:
-        """这条线的目录 —— 交给 hook 的工作面."""
-        return self._branch().path
-
-    @property
-    def memento_root(self) -> Path:
-        return self._memento.root
-
-    def hook_roots(self) -> list[Path]:
-        """线的 hooks/ 在前, ego 根的在后 —— 覆盖而不是替换."""
-        return [self.branch_path, self.memento_root]
-
-    def hook_env_for(self, slot: str, coord: str = "") -> dict[str, str]:
-        """协议约定的那组环境变量; commit 目录按约定算, 不看它存不存在."""
-        root = self.memento_root
-        commit_dir = self._commit_dir_of(coord) if coord else None
-        return hook_env(
-            slot,
-            root=root,
-            branch=self._config.branch_name,
-            branch_dir=self.branch_path,
-            coord=coord,
-            commit_dir=commit_dir,
-        )
-
-    def _commit_dir_of(self, coord: str) -> Path | None:
-        view = self._memento.resolve_commit(coord)
-        if view is None:
-            return None
-        return view.memento_path(self.memento_root).parent
-
-    def fire_hook(self, slot: str, commit: CommitRef) -> None:
-        """把槽位挂到事件旁边 —— 一个 task, 不 await, 不参与 commit 的成败."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._run_hook_quietly(slot, commit))
-
-    async def _run_hook_quietly(self, slot: str, commit: CommitRef) -> None:
-        try:
-            view = self._branch().get_commit(commit.seq)
-            if view is None:
-                return
-            root = self.memento_root
-            await run_slot(
-                slot,
-                self.hook_roots(),
-                env_base=self.hook_env_for(slot, view.coord),
-                log_root=root,
-            )
-        except Exception:  # 旁路的一切失败都不许外溢
-            self._logger.warning("memento hook %s failed", slot, exc_info=True)
 
     def _ref_of(self, commit: CommitRef) -> DshSessionRef | None:
         raw = commit.metadata.get(_REF_KEY)

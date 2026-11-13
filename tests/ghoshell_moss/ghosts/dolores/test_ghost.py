@@ -125,7 +125,7 @@ class TestDoloresMemories:
         ghost = _dolores()
         ghost._ground_text = "GROUND"
         ghost._memento_manager = manager
-        # 渲染是异步的 (要跑 branch_view 槽位): refresh 写缓存, memories() 只读.
+        # 渲染是异步的: refresh 写缓存, memories() 只读.
         await ghost.refresh_memory()
 
         memories = ghost.memories()
@@ -133,46 +133,10 @@ class TestDoloresMemories:
         assert len(memories) == 1
         text = memories[0].to_content_string()
         assert "<memory" in text
-        # 快照要带"它成形于哪一刻" —— 不是 now, 是 instance 的时间锚
-        assert re.search(r'<memory instanced_at="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[^"]*[+-]\d', text)
+        # 快照要带"它成形于哪一刻" —— 绝对锚, UTC, 秒精度
+        assert re.search(r'<memory instanced_at="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"', text)
         assert "<ground" in text and "GROUND" in text
-        assert '<memento owner="' in text and "note" in text
-
-    @pytest.mark.asyncio
-    async def test_branch_ground_rides_into_boot_memory(self, tmp_path: Path):
-        """D21 的现场: 计划写在 branch 目录里, 开机却只收到锚点摘要.
-
-        判据 —— ``branch_view`` 是 branch view 生成的一部分, 所以它必须跟着 view 一起
-        进 boot memory; 不是等谁想起来再去拼.
-        """
-        from ghoshell_moss.memento import new_local_memento
-
-        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
-
-        memento = new_local_memento(tmp_path / "owner")
-        memento.create_branch("main")
-        manager = EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig())
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        memento.get_branch("main").note(anchor.id, "note")
-
-        branch = memento.get_branch("main")
-        (branch.path / "plan.md").write_text("# the plan\n", encoding="utf-8")
-        hooks = branch.path / "hooks"
-        hooks.mkdir()
-        (hooks / "branch_view.py").write_text(
-            "from ghoshell_moss.memento.hooks import MementoHookEnv\n"
-            "d = MementoHookEnv.BRANCH_DIR.path()\n"
-            "print((d / 'plan.md').read_text())\n",
-            encoding="utf-8",
-        )
-
-        ghost = _dolores()
-        ghost._ground_text = "GROUND"
-        ghost._memento_manager = manager
-        ghost._memento_view = await manager.aview_message()
-
-        text = ghost.memories()[0].to_content_string()
-        assert "# the plan" in text, "branch 目录渲染的东西没进 boot memory"
+        assert '<memento branch="main"' in text and "note" in text
 
     def test_returns_empty_when_nothing_to_remember(self):
         ghost = _dolores()
