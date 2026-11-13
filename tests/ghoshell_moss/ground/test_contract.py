@@ -169,15 +169,6 @@ class TestPinModels:
             GlobArguments(path="*", limit=0)
 
 
-class TestTemplateInfo:
-    def test_create(self):
-        from ghoshell_moss.ground.contract import TemplateInfo
-        t = TemplateInfo(name="python", source="project", path=Path("/tmp"))
-        assert t.name == "python"
-        assert t.source == "project"
-        assert t.description == ""
-
-
 class TestGroundConvention:
     def test_defaults(self):
         c = GroundConvention()

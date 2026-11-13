@@ -17,11 +17,9 @@ from pathlib import Path
 import typer
 
 from ghoshell_moss.cli.utils import echo, print_error, print_info, print_simple_table, print_success
-from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet, GroundSet
+from ghoshell_moss.ground import DEFAULT_L0_FILENAME
 from ghoshell_moss.ground._hash import observe_sync
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
-from ghoshell_moss.ground._render import render_meta
-from ghoshell_moss.ground.contract import Ground, GroundSet
 
 __all__ = ["ground_app"]
 
@@ -100,22 +98,6 @@ def _find_ancestor_ground(start: Path) -> Path | None:
         current = current.parent
 
 
-async def _run_one(root: Path, coro_fn):
-    """open GroundSet + one Ground → act → sediment → exit."""
-    workspace = _probe_workspace(root)
-    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-        ground = await gs.open(root)
-        await coro_fn(gs, ground)
-
-
-async def _run_one_with_template(root: Path, coro_fn, template: str):
-    """open GroundSet + one Ground with template → act → sediment → exit."""
-    workspace = _probe_workspace(root)
-    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-        ground = await gs.open(root, template=template)
-        await coro_fn(gs, ground)
-
-
 # -- spec -----------------------------------------------------------------
 
 
@@ -153,21 +135,22 @@ def cmd_init(
         raise typer.Exit(code=1)
 
     if template is not None:
-        # 预检模板存在性 — 找不到时报错并列出可用模板, 不静默生成空场
-        workspace = _probe_workspace(root)
-        names = [t.name for t in DefaultGroundSet(workspace_root=workspace, materialize=False).templates()]
+        # 模板内容是被"抄"进新场的 (SPEC §6.7), 不是引用.
+        from ghoshell_moss.ground._l0 import load_l0
+        from ghoshell_moss.ground._render import _discover_templates
+
+        names = [name for name, _ in _discover_templates(root)]
         if template not in names:
             print_error(f"template '{template}' not found")
             if names:
                 print_info("available templates: " + ", ".join(names))
             else:
-                print_info("no templates found (.grounds/ empty or missing)")
+                print_info(f"no templates under {root / '.grounds'}")
             raise typer.Exit(code=2)
 
-        async def _op(gs: GroundSet, ground: Ground) -> None:
-            await ground.sediment()
-
-        _run_async(_run_one_with_template(root, _op, template))
+        source = root / ".grounds" / f"{template}.md"
+        contents = load_l0(source.parent, source.name)
+        dump_l0_pins(root, contents.pins, body=contents.body)
         print_success(f"initialized {target} from template '{template}'")
     else:
         dir_name = root.resolve().name
@@ -329,24 +312,9 @@ def cmd_meta(
             print_info("run 'moss ground init' to create one here")
             raise typer.Exit(code=1)
 
-    doc_path = ground_root / DEFAULT_L0_FILENAME
+    from ghoshell_moss.ground._render import render_meta_at
 
-    async def _op() -> None:
-        workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-            ground = await gs.open(root, doc=doc_path)
-            chain = await ground.body_text()
-            text = render_meta(
-                root=ground.root,
-                doc_path=ground.doc_path,
-                chain=chain,
-                pins=ground.pins(),
-                id_=ground.convention.id,
-                label=ground.label,
-            )
-            echo(text)
-
-    asyncio.run(_op())
+    echo(asyncio.run(render_meta_at(ground_root)))
 
 
 # -- observe --------------------------------------------------------------
@@ -380,27 +348,22 @@ def cmd_observe(
             print_info(f"no ground: no GROUND.md from {root} up to $HOME")
             raise typer.Exit(code=1)
 
-    doc_path = ground_root / DEFAULT_L0_FILENAME
-
     async def _op() -> None:
-        workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-            ground = await gs.open(root, doc=doc_path)
-            pins = ground.pins()
-            if not pins:
-                print_info("no pins")
-                return
+        from ghoshell_moss.ground._l0 import load_l0
 
-            anchor = Anchor(ground=ground_root, cwd=root)
-            rows: list[list[str]] = []
-            for p in pins:
-                obs = observe_sync(p, anchor)
-                target = _pin_target_display(p, anchor)
-                status, size = _obs_status_and_size(p, obs)
-                rows.append([p.label, p.verb, status, target, size])
-            print_simple_table(
-                rows, headers=["label", "verb", "status", "target", "size"]
-            )
+        pins = (await asyncio.to_thread(load_l0, ground_root)).pins
+        if not pins:
+            print_info("no pins")
+            return
+
+        anchor = Anchor(ground=ground_root, cwd=root)
+        rows: list[list[str]] = []
+        for p in pins:
+            obs = observe_sync(p, anchor)
+            target = _pin_target_display(p, anchor)
+            status, size = _obs_status_and_size(p, obs)
+            rows.append([p.label, p.verb, status, target, size])
+        print_simple_table(rows, headers=["label", "verb", "status", "target", "size"])
 
     asyncio.run(_op())
 

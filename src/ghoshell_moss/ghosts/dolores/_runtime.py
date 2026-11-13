@@ -26,7 +26,7 @@ from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.ground import DefaultGroundSet, Ground
+from ghoshell_moss.ground import DefaultGroundSet
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -294,7 +294,6 @@ class Dolores(Ghost):
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
-        self._root_ground: Ground | None = None
         # ghost home root frame — rendered once at boot, carried by the instruction slot.
         self._ground_text: str | None = None
         # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
@@ -406,10 +405,9 @@ class Dolores(Ghost):
         ghost-ground-governance rework moves the render into ``memories()`` so it rides the
         memento clock instead.
         """
-        if self._root_ground is None:
+        if self._ground_set is None:
             return None
-        view = await self._root_ground.render()
-        return str(view)
+        return await self._ground_set.render()
 
     def _frame_root(self) -> "Path | None":
         """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.
@@ -642,10 +640,7 @@ class Dolores(Ghost):
         # 这一层正在重做 (ghost-ground-governance FEATURE): ghost home 只作为 cognition 渲染,
         # 不挂 channel; project home 的场等 step 5 以新的 channel 形态回来, 现在不构造.
         if self._home is not None:
-            self._ground_set = await self._exit_stack.enter_async_context(
-                DefaultGroundSet(workspace_root=self._home, root_label="ghost_home")
-            )
-            self._root_ground = self._ground_set.root
+            self._ground_set = DefaultGroundSet(root=self._home)
         # render the ground text, cached for synchronous read by memories() (ego create_session consumes it via closure).
         self._ground_text = await self.ground_instruction()
         if self._matrix is not None:

@@ -29,9 +29,7 @@ class TestRootGroundDisclosure:
         """root 场只披露子件类别身份, 不穿透披露具体人物."""
 
         async def scenario():
-            async with DefaultGroundSet(workspace_root=STUBS) as gs:
-                ground = await gs.open(STUBS)
-                return str(await ground.render())
+            return await DefaultGroundSet(root=STUBS).render()
 
         text = run(scenario())
         # 子件类别身份被渐进披露.
@@ -50,9 +48,7 @@ class TestExistenceGroundDisclosure:
         """existence 场: identity 走 file pin (warm), purpose/behaviors 走 @ (冷层)."""
 
         async def scenario():
-            async with DefaultGroundSet(workspace_root=STUBS) as gs:
-                ground = await gs.open(STUBS / "existence")
-                return str(await ground.render())
+            return await DefaultGroundSet(root=STUBS / "existence").render()
 
         text = run(scenario())
         # identity 经 file pin 装载 (事实自我内容).

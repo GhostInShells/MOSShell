@@ -149,6 +149,17 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 
 ## 3. 执行顺序（严格串行，每步可重启）
 
+> **进度（2026-11-13 18:5x）**
+> - ✅ -1 本记录 + commit
+> - ✅ 0 dolores 摘掉 ghost ground channel（`320f987d`）
+> - ✅ 1 SPEC 0.3.0（`13df968e` + `e6382f27` 修 16 处自解释缺陷）
+> - ✅ 2 契约 + 实现：`ca2a4030` 改名、`3a5cac9f` 位置渲染器、`e92e60a0` PathSpec 修复；
+>   `DefaultGround` / `Ground` ABC / open-close-sediment-snapshot / RenderedView / TemplateInfo 全删
+> - ✅ 3 `moss ground` CLI 可用（render/meta/observe/templates/validate/init）
+> - ⬜ 4 ghost home 进 `<memory>`
+> - ⬜ 5 project ground channel
+
+
 - **-1 本记录 + commit。** 破坏性重启丢了上下文还能从这里恢复。
 - **0 筹备：dolores ghost 先拿掉 ghost ground channel。** 避免改到一半重启爆炸——先让它
   回到"没有 ground 也能活"的状态。

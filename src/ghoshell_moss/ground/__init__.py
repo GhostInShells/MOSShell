@@ -1,21 +1,23 @@
 """Ground — Ghost 的文件系统认知场.
 
 公开契约: ``ghoshell_moss.ground.contract``.
-进程内默认实现: ``DefaultGroundSet`` + ``DefaultGround``.
+进程内默认实现: ``DefaultGroundSet`` (根 + 边界, 按位置渲染).
 
 内部模块:
-- contract.py      契约 (ABC + 数据模型)
+- contract.py      契约 (数据模型 + GroundSet ABC)
 - _addr.py         路径锚点解析 ($GROUND / $CWD / $HOME)
 - _hash.py         pin 观察 (per-class 多态)
-- _l0.py           GROU.md 读写
-- _chain.py        内容链 (祖先 GROU.md body 收集)
-- _render.py       frame 渲染 (SPEC §6 布局)
-- _ground.py       DefaultGround
+- _l0.py           GROUND.md 读写
+- _chain.py        内容文件链 (content pin 向上收集)
+- _edit.py         GROUND.md 的 pin 增删与校验 (纯文件操作)
+- _render.py       渲染: 位置 → 自解释 XML 面
 - _grounds.py      DefaultGroundSet
 """
 
 from ghoshell_moss.ground.contract import (
     PIN_LABEL_MAX_LEN,
+    ContentArguments,
+    ContentPin,
     ExecArguments,
     ExecPin,
     FileArguments,
@@ -24,30 +26,21 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
-    Ground,
     GroundConvention,
     GroundError,
     GroundSet,
-    ContentArguments,
-    ContentPin,
     LsArguments,
     LsPin,
     PathOutsideRootError,
     Pin,
-    RenderedView,
-    Snapshot,
-    TemplateInfo,
-    ViewBlock,
-    ViewHeader,
 )
 from ghoshell_moss.ground._grounds import DefaultGroundSet
-from ghoshell_moss.ground._ground import DefaultGround
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME
+from ghoshell_moss.ground._render import RenderLimits, render_position
 
 __all__ = [
     # contract
     "GroundSet",
-    "Ground",
     "Pin",
     "FilePin",
     "FileArguments",
@@ -62,18 +55,13 @@ __all__ = [
     "ContentPin",
     "ContentArguments",
     "GroundConvention",
-    "TemplateInfo",
-    "ViewHeader",
-    "ViewBlock",
-    "RenderedView",
-    "Snapshot",
     "GroundError",
     "PathOutsideRootError",
     # constants
     "PIN_LABEL_MAX_LEN",
+    "DEFAULT_L0_FILENAME",
     # concrete
     "DefaultGroundSet",
-    "DefaultGround",
-    # L0
-    "DEFAULT_L0_FILENAME",
+    "RenderLimits",
+    "render_position",
 ]

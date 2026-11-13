@@ -1,7 +1,6 @@
-"""Ground rendering — produces RenderedView (header + blocks).
+"""Ground rendering — a position becomes one self-explaining XML face.
 
-RenderedView carries both structured data (--json) and self-explanatory
-markdown (str/view.to_markdown()).  Layout per user format:
+布局 (SPEC §6.4):
 
     ---
     name: <ground name>
@@ -60,91 +59,29 @@ from ghoshell_moss.ground.contract import (
     FilePin,
     FrontmatterPin,
     GlobPin,
-    ContentPin,
-    Ground,
     LsPin,
     PathOutsideRootError,
     Pin,
-    RenderedView,
-    ViewBlock,
-    ViewHeader,
 )
 
 __all__ = [
-    "render_context", "render_meta", "render_walk", "ground_meta",
+    "render_meta", "render_meta_at",
     "render_position", "RenderLimits", "find_ground",
 ]
 
 
-async def render_context(
-    body: str,
-    pins: list[Pin],
-    anchor: Anchor,
-    *,
-    ground_name: str | None = None,
-    ground_description: str | None = None,
-    ground_id: str | None = None,
-    ignore: PathSpec | None = None,
-) -> RenderedView:
-    """Render a ground at its root → RenderedView.
+@dataclass
+class _AtBlock:
+    """@-reference 展开出来的一段内容 (渲染期的中间态, 不是契约模型)."""
 
-    Body 和 pin 结果各自成 ViewBlock, @-ref 展开为独立 at 块.
-    观察并行 (asyncio.gather); 内容构建整体卸载到线程池, 不阻塞 loop.
-    """
-    header = ViewHeader(
-        id=ground_id,
-        name=ground_name or anchor.ground.name,
-        description=ground_description,
-        ground_path=str(anchor.ground),
-    )
-
-    observations: dict[str, Observation] = {}
-    if pins:
-        tasks = {p.label: observe(p, anchor, ignore=ignore) for p in pins}
-        results = await asyncio.gather(*tasks.values())
-        observations = dict(zip(tasks.keys(), results))
-
-    blocks = await asyncio.to_thread(
-        _assemble_context_blocks, body, pins, anchor, observations, ignore,
-    )
-    return RenderedView(header=header, blocks=blocks)
-
-
-def _assemble_context_blocks(
-    body: str,
-    pins: list[Pin],
-    anchor: Anchor,
-    observations: dict[str, Observation],
-    ignore: PathSpec | None,
-) -> list[ViewBlock]:
-    """同步组装 body + pin 块 — 含文件 IO, 由 to_thread 调用."""
-    blocks: list[ViewBlock] = []
-
-    if body.strip():
-        body_content, at_children = _build_body_with_at(body, anchor.ground)
-        blocks.append(ViewBlock(kind="body", label="body", content=body_content.rstrip()))
-        blocks.extend(at_children)
-
-    for p in pins:
-        obs = observations.get(p.label)
-        content, at_children = _pin_block_content(p, anchor, obs, ignore=ignore)
-
-        blocks.append(ViewBlock(
-            kind="pin",
-            label=p.label,
-            verb=p.verb,
-            description=p.description or None,
-            content=content.strip(),
-        ))
-        blocks.extend(at_children)
-
-    return blocks
+    label: str
+    content: str
 
 
 def render_meta(
     root: Path,
     doc_path: Path,
-    chain: str,
+    body: str,
     pins: list[Pin],
     *,
     id_: str | None = None,
@@ -164,11 +101,8 @@ def render_meta(
         lines.append(f"cd {root}")
         lines.append(f"ground: {doc_path}")
 
-    # content — 本场 body 是否存在 (法 = 本场 body, 不向上合并)
-    if chain:
-        lines.append("content: present")  # body
-    else:
-        lines.append("content: none")
+    # content — 本场正文是否存在 (body 不向上合并)
+    lines.append("content: present" if body else "content: none")
 
     # id
     if id_:
@@ -188,24 +122,22 @@ def render_meta(
     return "\n".join(lines)
 
 
-async def ground_meta(ground: Ground) -> str:
-    """场身份 (``cd`` / ``$id``) + pin TOC + 内容链 — 给一个 Ground, 不关心它住在哪个场集.
-
-    无驻留态版本 (``GroundSet.peek_meta``) 与 channel 的 ``stats``/帧缓存共用这一条,
-    免得"同一种呈现"在两处各写一遍。
-    """
-    chain = await ground.body_text()
+async def render_meta_at(root: str | Path) -> str:
+    """一个目录的场身份 + pin TOC — 无驻留态, 只读盘 (给 ``moss ground meta``)."""
+    target = Path(root).expanduser().resolve()
+    if not (target / DEFAULT_L0_FILENAME).is_file():
+        return f"no GROUND.md under {target}"
+    contents = await asyncio.to_thread(load_l0, target)
     return render_meta(
-        root=ground.root,
-        doc_path=ground.doc_path,
-        chain=chain,
-        pins=ground.pins(),
-        id_=ground.convention.id,
-        label=ground.label,
+        root=target,
+        doc_path=target / DEFAULT_L0_FILENAME,
+        body=contents.body,
+        pins=contents.pins,
+        id_=contents.convention.id,
     )
 
 
-# -- walk (场内移动) ----------------------------------------------------------
+# -- pin targeting ------------------------------------------------------------
 
 
 def _pin_target_raw(pin: Pin) -> str:
@@ -215,120 +147,6 @@ def _pin_target_raw(pin: Pin) -> str:
     if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
         return pin.arguments.path
     return ""
-
-
-async def render_walk(
-    cwd: Path,
-    ground_root: Path,
-    doc_path: Path,
-    pins: list[Pin],
-    *,
-    label: str | None = None,
-    ground_id: str | None = None,
-    ignore: PathSpec | None = None,
-) -> RenderedView:
-    """场内移动视图 → RenderedView.
-
-    - 场根 + 站立位置进入 header ($CWD 字段)
-    - $CWD 锚 pins 展开为 pin 块
-    - 内容链 (content) walk 时默认只列路径
-    - 其余 pins 折叠为一个 folded 块 (TOC)
-    """
-    anchor = Anchor(ground=ground_root, cwd=cwd)
-    display = label or ground_root.name
-
-    header = ViewHeader(
-        id=ground_id,
-        name=display,
-        ground_path=str(ground_root),
-        cwd=str(cwd),
-    )
-
-    # $CWD 锚 pins 展开; 其余折叠
-    cwd_pins = [
-        p for p in pins
-        if p.is_cwd_anchored or anchor_kind(_pin_target_raw(p)) == "cwd"
-    ]
-    folded = [p for p in pins if p not in cwd_pins]
-
-    content_full = [p for p in cwd_pins if isinstance(p, ContentPin) and p.always_show]
-    other = [p for p in cwd_pins if not isinstance(p, ContentPin)]
-    full_pins = content_full + other
-
-    observations: dict[str, Observation] = {}
-    if full_pins:
-        tasks = {p.label: observe(p, anchor, ignore=ignore) for p in full_pins}
-        results = await asyncio.gather(*tasks.values())
-        observations = dict(zip(tasks.keys(), results))
-
-    blocks = await asyncio.to_thread(
-        _assemble_walk_blocks, anchor, cwd_pins, folded, full_pins, observations, display, ignore,
-    )
-    return RenderedView(header=header, blocks=blocks)
-
-
-def _assemble_walk_blocks(
-    anchor: Anchor,
-    cwd_pins: list[Pin],
-    folded: list[Pin],
-    full_pins: list[Pin],
-    observations: dict[str, Observation],
-    display: str,
-    ignore: PathSpec | None,
-) -> list[ViewBlock]:
-    """同步组装 walk 视图块 — content_compact + full_pins + folded TOC."""
-    blocks: list[ViewBlock] = []
-
-    if cwd_pins:
-        content_compact = [p for p in cwd_pins if isinstance(p, ContentPin) and not p.always_show]
-
-        for p in content_compact:
-            law_files = collect_content_files(anchor, p.arguments.filename)
-            if law_files:
-                rels = [
-                    str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f)
-                    for f in law_files
-                ]
-                content = "\n".join(rels)
-            else:
-                content = "(no files)"
-            blocks.append(ViewBlock(
-                kind="pin",
-                label=p.label,
-                verb=p.verb,
-                description=p.description or None,
-                content=content,
-                meta={
-                    "filename": p.arguments.filename,
-                    "files": len(law_files),
-                },
-            ))
-
-        for p in full_pins:
-            obs = observations.get(p.label)
-            content, at_children = _pin_block_content(p, anchor, obs, ignore=ignore)
-
-            blocks.append(ViewBlock(
-                kind="pin",
-                label=p.label,
-                verb=p.verb,
-                description=p.description or None,
-                content=content.strip(),
-            ))
-            blocks.extend(at_children)
-
-    if folded:
-        toc_lines = [f"pins at {display}:"]
-        for p in folded:
-            desc = f"  # {p.description}" if p.description else ""
-            toc_lines.append(f"  {p.label}:{p.verb}({_pin_kwargs(p)}){desc}")
-        blocks.append(ViewBlock(
-            kind="folded",
-            label="pins",
-            content="\n".join(toc_lines),
-        ))
-
-    return blocks
 
 
 def _render_pin_content(
@@ -542,21 +360,16 @@ def _content_ls(
     return result
 
 
-# -- ViewBlock construction ---------------------------------------------------
+# -- block construction ---------------------------------------------------
 
 
-def _build_body_with_at(body: str, ground_dir: Path) -> tuple[str, list[ViewBlock]]:
+def _build_body_with_at(body: str, ground_dir: Path) -> tuple[str, list[_AtBlock]]:
     """Body → (raw_content, @-children). @ref 保留在文本, 展开结果在 children."""
-    children: list[ViewBlock] = []
+    children: list[_AtBlock] = []
     for at_ref in _scan_at_refs(body):
         resolved = _resolve_at_ref(at_ref, ground_dir)
         if resolved is not None:
-            children.append(ViewBlock(
-                kind="at",
-                label=at_ref,
-                content=resolved,
-                meta={"from": "GROUND.md"},
-            ))
+            children.append(_AtBlock(label=at_ref, content=resolved))
     return body, children
 
 
@@ -566,7 +379,7 @@ def _pin_block_content(
     obs: Observation | None,
     *,
     ignore: PathSpec | None = None,
-) -> tuple[str, list[ViewBlock]]:
+) -> tuple[str, list[_AtBlock]]:
     """把一枚 pin 的观察结果渲染成 (content, @-children).
 
     observe 层的结构化状态在此统一分流 — 这是 render 与 observe 的接缝,
@@ -591,7 +404,7 @@ def _build_pin_content(
     obs: Observation | None,
     *,
     ignore: PathSpec | None = None,
-) -> tuple[str, list[ViewBlock]]:
+) -> tuple[str, list[_AtBlock]]:
     """Pin → (content, @-children). 按 pin 类型分发."""
     if isinstance(pin, ExecPin):
         return _content_exec(pin, obs), []
@@ -606,14 +419,14 @@ def _build_pin_content(
     return _render_pin_content(pin, anchor, obs, ignore=ignore), []
 
 
-def _build_content_with_at(pin: ContentPin, anchor: Anchor) -> tuple[str, list[ViewBlock]]:
+def _build_content_with_at(pin: ContentPin, anchor: Anchor) -> tuple[str, list[_AtBlock]]:
     """Content pin: 收集文件内容 + 每文件的 @-ref 解析为子 ViewBlock."""
     files = collect_content_files(anchor, pin.arguments.filename)
     if not files:
         return "(no files)", []
 
     blocks: list[str] = []
-    children: list[ViewBlock] = []
+    children: list[_AtBlock] = []
     for f in files:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
@@ -625,12 +438,7 @@ def _build_content_with_at(pin: ContentPin, anchor: Anchor) -> tuple[str, list[V
         for at_ref in _scan_at_refs(text):
             resolved = _resolve_at_ref(at_ref, f.parent)
             if resolved is not None:
-                children.append(ViewBlock(
-                    kind="at",
-                    label=at_ref,
-                    content=resolved,
-                    meta={"from": str(rel)},
-                ))
+                children.append(_AtBlock(label=at_ref, content=resolved))
 
     content = "\n\n".join(blocks)
     return content, children
@@ -959,6 +767,9 @@ async def render_position(
     budget = _budget or _Budget(limits)
     pos = Path(position).expanduser().resolve()
     edge = Path(boundary).expanduser().resolve()
+
+    if not pos.is_relative_to(edge):
+        return _error_face(pos, f"outside boundary: {edge}")
 
     ground = find_ground(pos, edge)
     if ground is None and not template:

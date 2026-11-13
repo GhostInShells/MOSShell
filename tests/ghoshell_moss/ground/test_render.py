@@ -16,8 +16,6 @@ from ghoshell_moss.ground._render import (
     _content_glob,
     _content_ls,
     _fmt_size,
-    render_context,
-    render_walk,
 )
 from ghoshell_moss.ground._hash import Observation
 from ghoshell_moss.ground.contract import (
@@ -278,89 +276,64 @@ class TestContentPinRender:
         assert any("NOTES CONTENT" in c.content for c in children)
 
     def test_lines_cap(self, tmp_path):
-        root = tmp_path.resolve()
-        (root / "CLAUDE.md").write_text("l1\nl2\nl3\nl4\n")
-        anchor = Anchor(ground=root, cwd=root)
-        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md", lines=2))
-        view = run(render_context(
-            body="", pins=[pin], anchor=anchor,
-        ))
-        assert len(view.blocks) == 1
-        assert "[truncated at 2 lines]" in view.blocks[0].content
+        from ghoshell_moss.ground._render import render_position
+
+        (tmp_path / "GROUND.md").write_text(
+            "---\nname: g\npins:\n- label: l\n  verb: content\n"
+            "  arguments:\n    filename: CLAUDE.md\n    lines: 2\n---\n\nbody\n"
+        )
+        (tmp_path / "CLAUDE.md").write_text("l1\nl2\nl3\nl4\n")
+        out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+        assert "[truncated at 2 lines]" in out
 
     def test_budget_cap(self, tmp_path):
-        root = tmp_path.resolve()
-        (root / "CLAUDE.md").write_text("a" * 100)
-        anchor = Anchor(ground=root, cwd=root)
-        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md", budget=30))
-        view = run(render_context(
-            body="", pins=[pin], anchor=anchor,
-        ))
-        assert "[truncated at 30 chars]" in view.blocks[0].content
+        from ghoshell_moss.ground._render import render_position
 
-    def test_walk_shows_law_paths_not_content(self, tmp_path):
-        root = tmp_path.resolve()
-        (root / "GROUND.md").write_text("# g\n")
-        (root / "CLAUDE.md").write_text("# root content\n")
-        (root / "sub").mkdir()
-        (root / "sub" / "CLAUDE.md").write_text("# sub content\n")
-        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
-        view = run(render_walk(
-            cwd=root / "sub",
-            ground_root=root,
-            doc_path=root / "GROUND.md",
-            pins=[pin],
-        ))
-        # content pin 在 walk 时只列路径, 不展开内容 — 根部已展示过
-        law_blocks = [b for b in view.blocks if b.verb == "content"]
-        assert len(law_blocks) == 1
-        # 内容只是文件路径, 不含文件内文
-        assert law_blocks[0].content == "CLAUDE.md\nsub/CLAUDE.md"
-        assert "# sub content" not in law_blocks[0].content
-        assert "# root content" not in law_blocks[0].content
-
-    def test_walk_law_always_show_expands_content(self, tmp_path):
-        """always_show=True 的 content pin 在 walk 时仍然展开完整内容."""
-        root = tmp_path.resolve()
-        (root / "GROUND.md").write_text("# g\n")
-        (root / "CLAUDE.md").write_text("# root content\n")
-        (root / "sub").mkdir()
-        (root / "sub" / "CLAUDE.md").write_text("# sub content\n")
-        pin = ContentPin(
-            label="l",
-            arguments=ContentArguments(filename="CLAUDE.md"),
-            always_show=True,
+        (tmp_path / "GROUND.md").write_text(
+            "---\nname: g\npins:\n- label: l\n  verb: content\n"
+            "  arguments:\n    filename: CLAUDE.md\n    budget: 30\n---\n\nbody\n"
         )
-        view = run(render_walk(
-            cwd=root / "sub",
-            ground_root=root,
-            doc_path=root / "GROUND.md",
-            pins=[pin],
-        ))
-        law_blocks = [b for b in view.blocks if b.verb == "content"]
-        assert len(law_blocks) == 1
-        assert "sub content" in law_blocks[0].content
-        assert "root content" in law_blocks[0].content
+        (tmp_path / "CLAUDE.md").write_text("a" * 100)
+        out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+        assert "[truncated at 30 chars]" in out
+
+    def test_walk_expands_positional_and_folds_ground_pins(self, tmp_path):
+        """walk 面: $CWD/内容 pin 展开, $GROUND 锚的 pin 折叠成 TOC (SPEC §6.3)."""
+        from ghoshell_moss.ground._render import render_position
+
+        root = tmp_path.resolve()
+        (root / "GROUND.md").write_text(
+            "---\nname: g\npins:\n"
+            "- label: here\n  verb: file\n  arguments:\n    path: $CWD/CLAUDE.md\n"
+            "- label: rootonly\n  verb: file\n  arguments:\n    path: GROUND.md\n"
+            "---\n\nbody\n"
+        )
+        (root / "CLAUDE.md").write_text("# root content\n")
+        (root / "sub").mkdir()
+        (root / "sub" / "CLAUDE.md").write_text("# sub content\n")
+
+        out = asyncio.run(render_position(root / "sub", boundary=root))
+
+        assert "# sub content" in out          # positional pin 展开
+        assert "<folded>" in out
+        assert 'label="rootonly"' in out        # 场锚 pin 只留一行
+        assert "<body>" not in out              # walk 不重发正文
 
 
 # -- frame rendering (integration) -----------------------------------------
 
 
 class TestFrameBudget:
-    @pytest.fixture
-    def anchor(self, tmp_path):
-        (tmp_path / "readme.md").write_text("# Hello\n\nThis is a test file.\n" * 100)
-        return Anchor(ground=tmp_path, cwd=tmp_path)
+    def test_file_pin_truncated_in_frame(self, tmp_path):
+        from ghoshell_moss.ground._render import render_position
 
-    def test_file_pin_truncated_in_frame(self, anchor):
-        pin = FilePin(
-            label="readme",
-            arguments=FileArguments(path="readme.md", budget=50),
+        (tmp_path / "readme.md").write_text("# Hello\n\nThis is a test file.\n" * 100)
+        (tmp_path / "GROUND.md").write_text(
+            "---\nname: g\npins:\n- label: readme\n  verb: file\n"
+            "  arguments:\n    path: readme.md\n    budget: 50\n---\n\nbody\n"
         )
-        view = run(render_context(
-            body="", pins=[pin], anchor=anchor,
-        ))
-        assert "[truncated at 50 chars]" in view.blocks[0].content
+        out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+        assert "[truncated at 50 chars]" in out
 
 
 # -- position rendering (SPEC 0.3.0) -----------------------------------------
