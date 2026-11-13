@@ -69,7 +69,7 @@ A directory without `GROUND.md` is not a ground.
 | `$id` | string | Identity claim, URI-shaped. The ground *claims* an identity; resolution is upper-layer's job. Optional; any string accepted. |
 | `name` | string | Display name. Defaults to the directory basename. |
 | `description` | string | One-line description of this ground. Optional. |
-| `pins` | list | Pin declarations per §4. Each entry has the fixed envelope: `label`, `verb`, `arguments`, `description`. |
+| `pins` | list | Pin declarations per §4. Each entry has the fixed envelope: `label`, `verb`, `arguments`, `description`, `always_show`. |
 | `inline` | list of strings | Child grounds **this ground renders inside its own face** (§6.6). Paths are relative to the ground root; each must carry its own `GROUND.md`. Consumed by the ground that declares it. Optional; absent = no children rendered. |
 | `ignore` | list of strings | Ground-level ignore patterns — `.gitignore` semantics, relative to ground root. All discovery pins (glob, frontmatter pattern, ls) automatically respect these rules. Optional. |
 | `ignore_file` | string | Path to a file (relative to ground root) containing additional ignore patterns, one per line. Merged with `ignore` inline list. `.gitignore` or `.groundignore` are expected names. Optional. |
@@ -149,13 +149,15 @@ Every pin MAY carry three optional budget fields in `arguments`:
 |-------|------|-----------|
 | `budget` | int | Content character limit. When exceeded, output is truncated with a visible marker. Applies to content-emitting verbs (`file`, `frontmatter`, `exec`). |
 | `limit` | int | Entry count limit. When exceeded, output shows `N of M` entries. Applies to list-emitting verbs (`glob`, `ls`, `frontmatter` with pattern). |
-| `max_depth` | int | Recursion depth in directory levels below the pattern's static base. `1` = one layer of sub-fields (the filename is not counted). When absent, recursion is unbounded. |
+| `max_depth` | int | How many directory levels below the pattern's static base may be searched. `1` = the base directory itself (its direct children that match); `2` = base and one level down. When absent, recursion is unbounded. |
 
 All three are optional. Each verb declares which of these it supports in §5.
 
-`max_depth` is a pure depth cap. Field-boundary stop (防穿透 — do not recurse
-into a directory that directly contains a match) is a separate, per-verb
-semantic: `frontmatter` pattern mode applies it, `glob` does not.
+`max_depth` is a pure depth cap. **Ground-boundary stop** (防穿透 — do not
+recurse into a directory that directly contains a match) is a separate,
+per-verb semantic: `frontmatter` pattern mode applies it, `glob` does not.
+When both apply, the shallower of the two wins: a search stops at the first
+directory that produced a match, even if `max_depth` would allow going deeper.
 
 ## 5. Known Pin Types
 
@@ -290,7 +292,7 @@ process per pin. Renders are cold reads (§7.1): a second render runs it again.
 |-----|------|----------|-----------|
 | `filename` | string | yes | Convention file name (e.g. `CLAUDE.md`, `AGENT.md`). Collected from `$CWD` upward. |
 | `budget` | int | no | Total char limit across collected files. Truncates with marker (§4.1). |
-| `lines` | int | no | Total line limit across collected files. Truncates with marker. |
+| `lines` | int | no | Total line limit across collected files. Truncates with marker. This is a fourth budget field, local to `content`: it counts lines, not characters or entries, because a convention file chain is read as prose. |
 
 **Semantics**: this pin pulls *documents*, so the argument is a **filename**,
 not a path. From the current `$CWD`, it walks upward collecting every
@@ -356,16 +358,30 @@ Rendered when the position is inside a ground but is not its root:
 1. **header** — identity plus `$CWD` (the position)
 2. **no body** — walking one directory deeper must not re-deliver the whole
    body; the body belongs to the ground's own root face
-3. **`$CWD`-anchored pins** — expanded full (this is the point of the walk:
-   pins declared at the root follow the viewer)
+3. **positional pins** — expanded full (this is the point of the walk: pins
+   declared at the root follow the viewer)
 4. **`$GROUND`-anchored pins** — folded into a compact table of contents
    (label, verb, arguments one-liner, description), unless `always_show`
-5. **`content` pins** — compact by default: the collected paths only,
-   unless `always_show`
-6. **children** — `inline` is still rendered (§6.6): the children belong to
+5. **children** — `inline` is still rendered (§6.6): the children belong to
    the ground, not to the position
 
-No new ground is opened by walking. The law anchor is untouched.
+No new ground is opened by walking: the ground root, its body, and its pins are
+unchanged — only `$CWD` moved.
+
+#### 6.3.1 What counts as a positional pin
+
+A pin is **positional** (it follows the viewer, and expands in the walk face)
+when either:
+
+- its path argument is explicitly anchored at `$CWD` (`$CWD/…` or `$CWD/…/*`),
+  or
+- the verb is positional by definition. Only `content` is: its `filename` is
+  resolved from `$CWD` upward by definition (§5.6).
+
+Everything else is `$GROUND`-anchored, including bare relative paths (which
+default to `$GROUND`, §8), `exec` (`ref` is always ground-relative), and pins
+with no path argument. `always_show: true` keeps any pin expanded in the walk
+face regardless of its class — it does not change the class.
 
 ### 6.4 Reference rendering: the self-explaining container
 
@@ -383,12 +399,12 @@ container: nesting is expressed structurally, and content is escaped
   <pin verb="frontmatter" label="subfields" desc="子认知场存在性">
     …pin result…
   </pin>
-  <ground path="existence" name="existence" description="…">
-    …this child's own face, recursively…
-  </ground>
   <folded>
     <pin verb="glob" label="scratch" desc="…"/>
   </folded>
+  <ground path="/abs/ground/root/existence" name="existence" description="…">
+    …this child's own face, recursively…
+  </ground>
   <templates>
     <template name="review" desc="…"/>
   </templates>
@@ -406,7 +422,14 @@ Rules that make it self-explaining:
   A truncation is `<truncated/>`. Nothing is "a block" that could be any of
   them.
 - **Every stopping point says why.** A node that did not render says so, and
-  the reason is data (`reason="budget"`, `reason="timeout"`), not prose.
+  the reason is data (`reason="budget"`, `reason="timeout"`, `reason="cycle"`),
+  not prose.
+- **Block order is fixed.** `header` attributes, then `body` (field-root only),
+  then `pin` nodes in declaration order, then `folded` (walk only), then child
+  `ground` nodes in `inline` order, then `templates`, then any `truncated`
+  marker. Two faces differ in *what* they contain, never in *where* it sits.
+- **Every `path` is absolute.** Nesting changes the attribute value, never its
+  form; `path` is always the resolved absolute directory.
 - **Escaping is mandatory.** Ground content is data. It never becomes structure.
 
 ### 6.5 `@`-reference Expansion
@@ -435,10 +458,16 @@ A ground's `inline` (§3.1) lists the child grounds it draws inside its own
 face. For each entry, in declaration order:
 
 1. Render the child's own face (field-root face — the child is a root of its
-   own face, regardless of where the viewer is standing).
+   own face, regardless of where the viewer is standing). **The child's
+   `$CWD` is the child's own root**, not the viewer's position: otherwise the
+   "nested == standalone" invariant (§6.4) would not hold, and a `content` pin
+   in the child would collect from a directory the child does not own.
 2. Nest that face inside the parent's container (§6.4).
 3. A missing or broken child renders as a `<truncated>` node with its reason;
    it does not abort the parent's render.
+4. **Cycles stop.** A ground already open in the current render stack is not
+   re-entered; it renders as `<truncated reason="cycle" path="…"/>`. The budget
+   is not the only terminator.
 
 Recursion is bounded by the **budget**, not by a depth constant: a render
 carries a byte budget (§7.2), and when it runs out the last node is a
@@ -471,8 +500,12 @@ directory it is used against.
   (§6.1). Template content is copied, never referenced.
 - **Nothing is written**: rendering through a table is a lens, not a patch.
 
-Identity comes from the target directory when it is a ground; otherwise from
-the directory basename.
+**Identity comes from the target, never from the table.** When the position is
+a ground, its `$id` / `name` / `description` are used; otherwise the directory
+basename is. A template's own `name` / `description` frontmatter names *the
+template* (that is what `<templates>` lists) — it does not rename the ground it
+is used on. The `<templates>` node is discovered from the ground being viewed,
+and is still emitted when a template is in use.
 
 **Failures are results.** A render never raises out to the caller. If the table
 cannot be used — file missing, YAML broken, template name unknown, path outside
@@ -503,11 +536,12 @@ single pin:
 
 - **byte budget** — total rendered characters. When exhausted, the current node
   is replaced by `<truncated reason="budget" path="…"/>` and rendering stops.
-- **wall-clock budget** — total render time. When exhausted, **running pins are
-  not cancelled mid-node**: each `exec` pin still obeys its own `timeout`, and
-  a pin that cannot answer within the remaining render budget renders as
-  `<pin … status="timeout"/>`. The render as a whole still completes and
-  delivers what it has.
+- **wall-clock budget** — total render time. When it expires, pins that have
+  not started are not started, and pins still running are **cancelled**; both
+  render as `<pin … status="timeout"/>`. A per-pin `timeout` (§5.5) is a
+  *tighter* bound that applies first when it is smaller — whichever fires
+  first wins, and the outcome is the same marker. The render as a whole still
+  completes and delivers what it has.
 
 Both defaults are implementation-defined but MUST be finite.
 
