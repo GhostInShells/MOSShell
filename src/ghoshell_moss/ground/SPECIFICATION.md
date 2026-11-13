@@ -45,7 +45,7 @@ pins:
   verb: <verb>
   arguments: {<key>: <value>, ...}
   description: <optional one-line why>
-inline:
+imports:
 - <relative directory path>
 ---
 
@@ -53,7 +53,7 @@ inline:
 ```
 
 1. **frontmatter** — YAML between the `---` fences. Reserved keys: `$id`,
-   `name`, `description`, `pins`, `inline`, `ignore`, `ignore_file`.
+   `name`, `description`, `pins`, `imports`, `ignore`, `ignore_file`.
    Unknown keys are preserved on write.
 2. **body** — everything after the closing frontmatter fence. Open set.
 
@@ -70,24 +70,33 @@ A directory without `GROUND.md` is not a ground.
 | `name` | string | Display name. Defaults to the directory basename. |
 | `description` | string | One-line description of this ground. Optional. |
 | `pins` | list | Pin declarations per §4. Each entry has the fixed envelope: `label`, `verb`, `arguments`, `description`, `always_show`. |
-| `inline` | list of strings | Child grounds **this ground renders inside its own face** (§6.6). Paths are relative to the ground root; each must carry its own `GROUND.md`. Consumed by the ground that declares it. Optional; absent = no children rendered. |
+| `imports` | list of strings | The subdirectories **this ground imports into its own face** (§6.6). Paths are relative to the ground root; an entry need **not** be a ground. The name is Python's: writing an entry is the act of confirming that directory is part of this ground. Optional; absent = nothing imported. |
 | `ignore` | list of strings | Ground-level ignore patterns — `.gitignore` semantics, relative to ground root. All discovery pins (glob, frontmatter pattern, ls) automatically respect these rules. Optional. |
 | `ignore_file` | string | Path to a file (relative to ground root) containing additional ignore patterns, one per line. Merged with `ignore` inline list. `.gitignore` or `.groundignore` are expected names. Optional. |
 
 Implementations MUST NOT reject unknown frontmatter keys.
 
-### 3.1 `inline` is a render directive, not a registration
+### 3.1 `imports` is a self-declaration, not a render directive
 
-`inline` answers exactly one question: *which of my child grounds do I draw
-inside my own face?*
+`imports` answers one question: *which subdirectories make up my face?*
 
-- It is **not** "all child grounds". A subdirectory with `GROUND.md` that is
-  not listed is not rendered by its parent — it is still a ground, reachable by
-  rendering it directly. Presence on disk is not presence in the face.
-- It is **not** a container registration. There is no separate object that
-  "materializes" children; the declaring ground renders them.
-- It is one level: the listed child renders *its own* face, which may in turn
-  render *its* `inline`. Recursion is per-ground, not a container's sweep.
+It is written by the ground about itself, the way a module names what it
+imports. Listing a directory is the declaration that it is part of this
+ground's presentation — not a hint the renderer may take or leave.
+
+- **Not discovery.** The renderer never scans for child grounds. A
+  subdirectory with its own `GROUND.md` that is not listed does not appear in
+  the parent's face; it is still a ground, reachable by rendering it directly.
+- **Not all children.** Only what is named is imported. Presence on disk is
+  not presence in the face.
+- **Entries need not be grounds.** A plain directory can be imported; it is
+  rendered at that position (SPEC §6.1), which resolves to the nearest
+  `GROUND.md` — usually this very ground.
+- **Recursion follows the declaration.** An imported directory that is itself
+  a ground renders its own face, and that face imports what *it* declares. The
+  tree is bounded by the render budget (§6.6), never by a depth constant.
+- **A render table replaces the list** (§6.7): the table's `imports` is the one
+  used, and a table that declares none imports nothing.
 
 ### 3.2 Ground-Level Ignore
 
@@ -351,8 +360,8 @@ Rendered when the position is a ground's own root:
 1. **header** — identity: `$id`, `name`, `description`, `$GROUND`
 2. **body** — the `GROUND.md` body verbatim (§6.5 for `@`-references)
 3. **pins** — every pin expanded per its verb, in declaration order
-4. **children** — every ground listed in `inline`, rendered recursively
-   (§6.6), in declaration order
+4. **imports** — every directory listed in `imports`, rendered recursively
+   (§6.6), in declaration order, inside one `<imports>` container
 5. **templates** — the discovered template list (§6.7), when non-empty
 
 Every result is labeled by its pin's `label` and carries its `description` as
@@ -370,8 +379,8 @@ Rendered when the position is inside a ground but is not its root:
    declared at the root follow the viewer)
 4. **`$GROUND`-anchored pins** — folded into a compact table of contents
    (label, verb, arguments one-liner, description), unless `always_show`
-5. **children** — `inline` is still rendered (§6.6): the children belong to
-   the ground, not to the position
+5. **imports** — the `imports` list is still rendered (§6.6): the imported
+   directories belong to the ground, not to the position
 
 No new ground is opened by walking: the ground root, its body, and its pins are
 unchanged — only `$CWD` moved.
@@ -410,9 +419,12 @@ container: nesting is expressed structurally, and content is escaped
   <folded>
     <pin verb="glob" label="scratch" desc="…"/>
   </folded>
-  <ground path="/abs/ground/root/existence" name="existence" description="…">
-    …this child's own face, recursively…
-  </ground>
+  <imports>
+    <ground path="/abs/ground/root/existence" name="existence" description="…">
+      …this imported directory's own face…
+    </ground>
+    <ground path="/abs/ground/root/existence/identity" …/>
+  </imports>
   <templates>
     <template name="review" desc="…"/>
   </templates>
@@ -434,7 +446,7 @@ Rules that make it self-explaining:
   not prose.
 - **Block order is fixed.** `header` attributes, then `body` (field-root only),
   then `pin` nodes in declaration order, then `folded` (walk only), then child
-  `ground` nodes in `inline` order, then `templates`, then any `truncated`
+  `ground` nodes in `imports` order, then `templates`, then any `truncated`
   marker. Two faces differ in *what* they contain, never in *where* it sits.
 - **Every `path` is absolute.** Nesting changes the attribute value, never its
   form; `path` is always the resolved absolute directory.
@@ -460,16 +472,17 @@ special characters: `@"path with spaces.md"`.
 
 **Failure modes**: doc not found; path escapes the ground root.
 
-### 6.6 Recursive child rendering
+### 6.6 Imported directories
 
-A ground's `inline` (§3.1) lists the child grounds it draws inside its own
-face. For each entry, in declaration order:
+A ground's `imports` (§3.1) lists the directories it draws inside its own face.
+For each entry, in declaration order:
 
-1. Render the child's own face (field-root face — the child is a root of its
-   own face, regardless of where the viewer is standing). **The child's
-   `$CWD` is the child's own root**, not the viewer's position: otherwise the
-   "nested == standalone" invariant (§6.4) would not hold, and a `content` pin
-   in the child would collect from a directory the child does not own.
+1. Render that directory **as a position** (§6.1). If it carries its own
+   `GROUND.md` that is its field-root face, and the imported directory's `$CWD`
+   is its own root — not the viewer's position; otherwise the "nested ==
+   standalone" invariant (§6.4) would not hold, and a `content` pin in it would
+   collect from a directory it does not own. If it has no `GROUND.md`, the
+   nearest ancestor ground renders it as a walk face.
 2. Nest that face inside the parent's container (§6.4).
 3. A missing or broken child renders as a `<truncated>` node with its reason;
    it does not abort the parent's render.
@@ -596,7 +609,8 @@ A compliant implementation must:
 - Consume reserved frontmatter keys per §3; preserve unknown keys
 - Read and write pins per §4 with the fixed envelope; preserve unknown verbs
   and arguments keys
-- Read `inline` as a render directive and render exactly the listed children
+- Read `imports` as the ground's own declaration and render exactly the listed
+  directories, as one `<imports>` container
   recursively (§3.1, §6.6); never render an unlisted child
 - Resolve the face by position, bounded by the renderer's boundary (§6.1)
 - Render the field-root face (§6.2) and the walk face (§6.3) with the

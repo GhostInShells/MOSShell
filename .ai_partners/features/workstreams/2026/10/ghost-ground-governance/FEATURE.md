@@ -25,7 +25,7 @@ channel + 子场挂成只带 notice 的空 channel。那套东西已经落地又
 偏差的形状：**每一次迭代都在 channel 层补协议缺的洞，协议始终保持"一个目录一张面"，
 于是 channel 长出树、门（gate）、行政面（admin）去模拟"多目录多面"。**
 
-- `inline` 是容器私事写进了场的 frontmatter（`contract.py:77` 自述"Ground 自身不
+- `imports` 是容器私事写进了场的 frontmatter（`contract.py:77` 自述"Ground 自身不
   消费"），而 SPEC §7.2 前半说子目录自带 GROUND.md 就是**平级场**——同一节里两种子场观。
 - walk 面（SPEC §7.4，位置决定视角）只在 `moss ground render <dir>` 与 `admin.ground_run`
   的子进程里可达；`ground_channel._build_leaf` 永远 `render()` 无 cwd。**机制存在，但不在
@@ -71,10 +71,10 @@ confinement），收成**解析器持有 root**：解析器自己知道边界。
 
 ### D3 — 子场是点名渲染，不是自动铺开
 
-父场的 `inline:` 列出**要在父场渲染的那几个子场**。没点名的子场不出现在父场的渲染里——
+父场的 `imports:` 列出**要在父场渲染的那几个子场**。没点名的子场不出现在父场的渲染里——
 它们仍在磁盘上，可由一次显式的 render 到达。
 
-### D4 — `inline:` 由 Ground 消费，是渲染指令
+### D4 — `imports:` 由 Ground 消费，是渲染指令
 
 不是"容器物化指令"。`contract.py` 里"Ground 自身不消费"那句要删——它即将变成假话。
 一个字段住在一个场的 frontmatter 里，就该由那个场执行。
@@ -133,7 +133,7 @@ render(path: str = "", template: str = "") -> str
 
 ```xml
 <memory instanced_at="...">
-  <ground .../>      <!-- ghost home，inline 点名渲染 -->
+  <ground .../>      <!-- ghost home，imports 点名渲染 -->
   <memento .../>
 </memory>
 ```
@@ -177,7 +177,7 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 
 1. `moss ground render <dir>` 对"有 GROUND.md / 无 GROUND.md 但在场内 / 在边界外"三种
    位置给出三种正确的面。
-2. 父场渲染里只出现 `inline:` 点名的子场；未点名的子场不在其中。
+2. 父场渲染里只出现 `imports:` 点名的子场；未点名的子场不在其中。
 3. 截断点可见（路径 + 原因），不是静默丢。
 4. `<templates>` 节自动出现在有 `.grounds/` 的场渲染里。
 5. ghost 的 memory 段形状 `<memory><ground/><memento/></memory>`，instruction 里没有场内容。

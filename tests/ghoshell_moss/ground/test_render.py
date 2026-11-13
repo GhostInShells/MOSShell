@@ -364,8 +364,8 @@ def test_render_position_honors_ground_ignore(tmp_path: Path):
     assert "hidden.txt" not in out
 
 
-def test_render_position_names_only_the_inlined_children(tmp_path: Path):
-    """`inline` 点名的子场递归渲染, 未点名的不出现 (SPEC §3.1/§6.6)."""
+def test_render_position_renders_only_imported_directories(tmp_path: Path):
+    """`imports` 点名的目录被渲染, 未点名的不出现 (SPEC §3.1/§6.6)."""
     from ghoshell_moss.ground._render import render_position
 
     for name in ("shown", "hidden"):
@@ -374,7 +374,7 @@ def test_render_position_names_only_the_inlined_children(tmp_path: Path):
         _write_ground(child, f"---\nname: {name}\n---\n\n{name} body\n")
     _write_ground(
         tmp_path,
-        "---\nname: root\ninline:\n- shown\n---\n\nroot body\n",
+        "---\nname: root\nimports:\n- shown\n---\n\nroot body\n",
     )
 
     out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
@@ -398,14 +398,14 @@ def test_render_position_walk_face_has_cwd_and_no_body(tmp_path: Path):
 
 
 def test_render_position_cycle_is_a_result_not_a_hang(tmp_path: Path):
-    """A inline B, B inline A: 环渲染成 truncated, 不是无限递归 (SPEC §6.6)."""
+    """A imports B, B imports A: 环渲染成 truncated, 不是无限递归 (SPEC §6.6)."""
     from ghoshell_moss.ground._render import render_position
 
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    _write_ground(a, "---\nname: a\ninline:\n- ../b\n---\n\na\n")
-    _write_ground(b, "---\nname: b\ninline:\n- ../a\n---\n\nb\n")
+    _write_ground(a, "---\nname: a\nimports:\n- ../b\n---\n\na\n")
+    _write_ground(b, "---\nname: b\nimports:\n- ../a\n---\n\nb\n")
 
     out = asyncio.run(render_position(a, boundary=tmp_path))
 

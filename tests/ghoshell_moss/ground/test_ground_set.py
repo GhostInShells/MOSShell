@@ -98,3 +98,41 @@ class TestRender:
         out = run(DefaultGroundSet(root=tmp_path).render(template="nope"))
         assert 'status="error"' in out
         assert "template not found" in out
+
+
+class TestImports:
+    def test_imported_directories_are_wrapped_in_one_container(self, tmp_path: Path):
+        _ground(tmp_path, "---\nname: root\nimports:\n- shown\n---\n\nroot\n")
+        _ground(tmp_path / "shown", "---\nname: shown\n---\n\nshown body\n")
+        out = run(DefaultGroundSet(root=tmp_path).render())
+        assert "<imports>" in out
+        assert out.index("<imports>") < out.index('name="shown"') < out.index("</imports>")
+
+    def test_an_import_need_not_be_a_ground(self, tmp_path: Path):
+        """清单里可以是普通目录: 按位置渲染 (最近祖先 = 本场), 不是错误 (SPEC §3.1)."""
+        _ground(tmp_path, "---\nname: root\nimports:\n- plain\n---\n\nroot\n")
+        (tmp_path / "plain").mkdir()
+        (tmp_path / "plain" / "note.txt").write_text("x", encoding="utf-8")
+        out = run(DefaultGroundSet(root=tmp_path).render())
+        assert 'reason="not-a-ground"' not in out
+        assert "<imports>" in out
+        assert f'<cwd path="{(tmp_path / "plain").resolve()}"/>' in out
+
+    def test_unlisted_directories_are_not_discovered(self, tmp_path: Path):
+        _ground(tmp_path, "---\nname: root\nimports:\n- a\n---\n\nroot\n")
+        _ground(tmp_path / "a", "---\nname: a\n---\n\na\n")
+        _ground(tmp_path / "b", "---\nname: b\n---\n\nb\n")
+        out = run(DefaultGroundSet(root=tmp_path).render())
+        assert 'name="a"' in out
+        assert 'name="b"' not in out
+
+    def test_a_table_replaces_the_imports_list(self, tmp_path: Path):
+        """模板换的是整张面: 它不声明 imports, 就一个子目录都不 import (SPEC §6.7)."""
+        _ground(tmp_path, "---\nname: root\nimports:\n- a\n---\n\nroot\n")
+        _ground(tmp_path / "a", "---\nname: a\n---\n\na\n")
+        tables = tmp_path / ".grounds"
+        tables.mkdir()
+        (tables / "lens.md").write_text("---\nname: lens\n---\n\nLENS\n", encoding="utf-8")
+        out = run(DefaultGroundSet(root=tmp_path).render(template="lens"))
+        assert "LENS" in out
+        assert "<imports>" not in out

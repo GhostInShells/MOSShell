@@ -67,10 +67,11 @@ class GroundConvention(BaseModel):
     name: str | None = None
     description: str | None = None
     pins: list[dict] = Field(default_factory=list)
-    inline: list[str] | None = Field(
+    imports: list[str] | None = Field(
         default=None,
-        description="要展开的子场 — 相对场根的目录路径清单, 每个目录自带 GROUND.md. "
-        "由 GroundSet 物化 (一层, 不递归), Ground 自身不消费.",
+        description="本场呈现 import 进来的子目录 — 相对场根的路径清单, 不必是场. "
+        "动机对齐 Python 的 import: 写下来就是确认这些目录构成本场的一部分; "
+        "没写的目录不会被发现, 也不会出现. None = 没有声明.",
     )
     ignore: list[str] | None = Field(
         default=None,

@@ -860,33 +860,38 @@ async def render_position(
             budget.charge(node)
             parts.append(node)
 
-    # children — 只渲染 inline 点名的子场, 递归, 带环检测
-    for entry in (source.convention.inline or convention.inline or []):
+    # imports — 本场声明要 import 的子目录 (SPEC §3.1/§6.6).
+    # 只按声明走: 不发现, 不猜测; 声明里没有的目录不会出现. 子目录不必是场.
+    # 记账: 子渲染自己扣预算, 这里不再重复扣 (否则同一段内容记两次).
+    imports_rows: list[str] = []
+    for entry in (source.convention.imports or []):
         child_dir = (ground_dir / str(entry)).resolve()
-        if child_dir in _stack or child_dir == ground_dir:
-            node = f'  <truncated reason="cycle" path="{_attr(str(child_dir))}"/>'
-        elif not child_dir.is_relative_to(edge):
-            node = f'  <truncated reason="outside" path="{_attr(str(child_dir))}"/>'
-        elif not (child_dir / DEFAULT_L0_FILENAME).is_file():
-            node = f'  <truncated reason="not-a-ground" path="{_attr(str(child_dir))}"/>'
-        else:
-            # 预算在渲染前不可知: 先记账, 放不下就回滚, 不留下半截子树.
-            before = budget.used
-            inner = await render_position(
-                child_dir,
-                boundary=edge,
-                limits=limits,
-                _budget=budget,
-                _stack=_stack + (ground_dir,),
+        if budget.used >= budget.total:
+            imports_rows.append(
+                f'  <truncated reason="budget" path="{_attr(str(child_dir))}"/>'
             )
-            node = "\n".join("  " + ln for ln in inner.splitlines())
-            if not budget.fits(len(node) + 1):
-                budget.used = before
-                parts.append(f'  <truncated reason="budget" path="{_attr(str(child_dir))}"/>')
-                break
-        if not budget.fits(len(node) + 1):
-            parts.append(f'  <truncated reason="budget" path="{_attr(str(child_dir))}"/>')
             break
+        if child_dir in _stack or child_dir == ground_dir:
+            imports_rows.append(
+                f'  <truncated reason="cycle" path="{_attr(str(child_dir))}"/>'
+            )
+            continue
+        if not child_dir.is_relative_to(edge):
+            imports_rows.append(
+                f'  <truncated reason="outside" path="{_attr(str(child_dir))}"/>'
+            )
+            continue
+        inner = await render_position(
+            child_dir,
+            boundary=edge,
+            limits=limits,
+            _budget=budget,
+            _stack=_stack + (ground_dir,),
+        )
+        imports_rows.append("\n".join("  " + ln for ln in inner.splitlines()))
+
+    if imports_rows:
+        node = "  <imports>\n" + "\n".join(imports_rows) + "\n  </imports>"
         budget.charge(node)
         parts.append(node)
 
