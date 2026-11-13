@@ -265,6 +265,14 @@ deliberately narrow:
   this command"; it can only reference a script the ground author has committed
   to the ground subtree.
 
+**Side effects are allowed.** An `exec` pin runs a real program, so a render can
+create files, materialize directories, or otherwise change the tree. "Cold read"
+(§7.1) describes how inputs are obtained, not a promise that the world stands
+still: the same pin will run again next time and may produce a different result.
+Authors are expected to make a pin idempotent when re-running it would be
+disruptive — a journal pin that materializes today's placeholder is the normal
+case, not an abuse.
+
 **Execution environment**: `cwd` = `$GROUND`; `GROUND` and `CWD` injected as
 absolute paths; `stdin` = `/dev/null`.
 
