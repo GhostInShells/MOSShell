@@ -361,3 +361,79 @@ class TestFrameBudget:
             body="", pins=[pin], anchor=anchor,
         ))
         assert "[truncated at 50 chars]" in view.blocks[0].content
+
+
+# -- position rendering (SPEC 0.3.0) -----------------------------------------
+
+
+def _write_ground(root: Path, text: str) -> None:
+    (root / "GROUND.md").write_text(text, encoding="utf-8")
+
+
+def test_render_position_honors_ground_ignore(tmp_path: Path):
+    """ground 级的 ignore 必须真的生效 —— 这是渲染路径里唯一会构造 PathSpec 的
+    分支, 一个只在 TYPE_CHECKING 里导入的 PathSpec 曾在这里抛 NameError。"""
+    from ghoshell_moss.ground._render import render_position
+
+    (tmp_path / "seen.txt").write_text("x", encoding="utf-8")
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "hidden.txt").write_text("y", encoding="utf-8")
+    _write_ground(
+        tmp_path,
+        "---\nname: g\nignore:\n- secret/\npins:\n"
+        "- label: all\n  verb: glob\n  arguments:\n    path: '**/*'\n---\n\nbody\n",
+    )
+
+    out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+
+    assert "seen.txt" in out
+    assert "hidden.txt" not in out
+
+
+def test_render_position_names_only_the_inlined_children(tmp_path: Path):
+    """`inline` 点名的子场递归渲染, 未点名的不出现 (SPEC §3.1/§6.6)."""
+    from ghoshell_moss.ground._render import render_position
+
+    for name in ("shown", "hidden"):
+        child = tmp_path / name
+        child.mkdir()
+        _write_ground(child, f"---\nname: {name}\n---\n\n{name} body\n")
+    _write_ground(
+        tmp_path,
+        "---\nname: root\ninline:\n- shown\n---\n\nroot body\n",
+    )
+
+    out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+
+    assert 'name="shown"' in out
+    assert 'name="hidden"' not in out
+
+
+def test_render_position_walk_face_has_cwd_and_no_body(tmp_path: Path):
+    """walk 面: 位置在场内子目录, 出 <cwd>, 不出 body (SPEC §6.3)."""
+    from ghoshell_moss.ground._render import render_position
+
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    _write_ground(tmp_path, "---\nname: root\n---\n\nROOT BODY\n")
+
+    out = asyncio.run(render_position(inner, boundary=tmp_path))
+
+    assert f'<cwd path="{inner.resolve()}"/>' in out
+    assert "ROOT BODY" not in out
+
+
+def test_render_position_cycle_is_a_result_not_a_hang(tmp_path: Path):
+    """A inline B, B inline A: 环渲染成 truncated, 不是无限递归 (SPEC §6.6)."""
+    from ghoshell_moss.ground._render import render_position
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _write_ground(a, "---\nname: a\ninline:\n- ../b\n---\n\na\n")
+    _write_ground(b, "---\nname: b\ninline:\n- ../a\n---\n\nb\n")
+
+    out = asyncio.run(render_position(a, boundary=tmp_path))
+
+    assert 'reason="cycle"' in out

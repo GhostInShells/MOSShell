@@ -1135,6 +1135,9 @@ async def _render_pin_node(
 
 
 def _ignore_spec_from(convention, ground_dir: Path) -> PathSpec | None:
+    # pathspec 只在真配了 ignore 时才需要 (TYPE_CHECKING 的导入是给注解用的)
+    from pathspec import PathSpec as _PathSpec
+
     patterns: list[str] = list(convention.ignore or [])
     if convention.ignore_file:
         path = ground_dir / convention.ignore_file
@@ -1148,4 +1151,4 @@ def _ignore_spec_from(convention, ground_dir: Path) -> PathSpec | None:
             )
     if not patterns:
         return None
-    return PathSpec.from_lines("gitignore", patterns)
+    return _PathSpec.from_lines("gitignore", patterns)
