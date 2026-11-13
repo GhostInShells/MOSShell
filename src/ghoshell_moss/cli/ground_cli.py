@@ -116,73 +116,6 @@ async def _run_one_with_template(root: Path, coro_fn, template: str):
         await coro_fn(gs, ground)
 
 
-async def _template_preview(root: Path, template: str, *, json_flag: bool = False) -> None:
-    """只读模板预览 — 用模板的 body + pins 渲染, 不写 GROUND.md.
-
-    兼容场景: 一个只有 CLAUDE.md 的 Claude 项目, 看它作为
-    claude-project 场会长什么样, 而不落任何盘.
-
-    从子目录预览时, 先向上搜寻模板的约定文件 (content pin 的 filename),
-    找到祖先场根, 再 walk 进去 — 保证 content 链不会因 boundary 太窄而空.
-    """
-    from ghoshell_moss.ground._render import render_walk
-    from ghoshell_moss.ground._l0 import load_l0
-
-    workspace = _probe_workspace(root)
-    gs = DefaultGroundSet(workspace_root=workspace, materialize=False)
-
-    names = [t.name for t in gs.templates()]
-    if template not in names:
-        print_error(f"template '{template}' not found")
-        if names:
-            print_info("available templates: " + ", ".join(names))
-        else:
-            print_info("no templates found (.grounds/ empty or missing)")
-        raise typer.Exit(code=2)
-
-    # 找出模板的 content filename(s), 向上搜寻真实的场根边界
-    tmpl_info = gs._find_template(template)
-    law_filenames: set[str] = set()
-    if tmpl_info is not None:
-        try:
-            tmpl_data = load_l0(tmpl_info.path.parent, filename=tmpl_info.path.name)
-            for p in tmpl_data.pins:
-                if hasattr(p, 'verb') and p.verb == 'content':
-                    law_filenames.add(p.arguments.filename)
-        except Exception:
-            pass
-
-    # 搜寻有约定文件的祖先目录做场根
-    ground_root = root.resolve()
-    if law_filenames:
-        current = ground_root.parent
-        while current != current.parent:
-            if any((current / fname).is_file() for fname in law_filenames):
-                ground_root = current
-            current = current.parent
-
-    ground = await gs.open(ground_root, template=template, override=True)
-
-    if root.resolve() == ground_root:
-        view = await ground.render()
-    else:
-        # 子目录预览: walk 从 root 在场根内
-        view = await render_walk(
-            cwd=root,
-            ground_root=ground_root,
-            doc_path=ground_root / DEFAULT_L0_FILENAME,
-            pins=ground.pins(),
-            label=ground.convention.name,
-            ignore=ground.ignore_spec,
-        )
-
-    if json_flag:
-        echo(view.model_dump_json(indent=2, exclude_none=True))
-    else:
-        echo(str(view))
-    # 只读: 不 close → 不触发 sediment → GROUND.md 不落盘
-
-
 # -- spec -----------------------------------------------------------------
 
 
@@ -253,21 +186,37 @@ def cmd_init(
 # -- templates ------------------------------------------------------------
 
 
-@ground_app.command("templates", short_help="List available templates from .grounds/.")
-def cmd_templates() -> None:
-    """List all templates discovered from .grounds/ directories."""
-    workspace = _probe_workspace(Path.cwd())
-    gs = DefaultGroundSet(workspace_root=workspace, materialize=False)
-    tmpls = gs.templates()
-    if not tmpls:
-        print_info("no templates found")
-        return
+@ground_app.command("templates", short_help="List the render tables a position discovers.")
+def cmd_templates(
+    path: Path | None = typer.Argument(
+        None, help="Directory to inspect (defaults to cwd)."
+    ),
+    root: Path | None = typer.Option(
+        None, "--root", help="Boundary of the upward search (defaults to $HOME)."
+    ),
+) -> None:
+    """List templates discovered under the ground's own `.grounds/`.
 
-    rows = [
-        [t.name, t.source, t.description[:80] if t.description else "-"]
-        for t in tmpls
-    ]
-    print_simple_table(rows, headers=["name", "source", "description"])
+    Discovery is per-ground (SPEC §6.7): a template is something the ground you
+    are standing in offers, not a global shelf.
+    """
+    from ghoshell_moss.ground._render import _discover_templates, find_ground
+
+    position = (path or Path.cwd()).resolve()
+    boundary = (root or _default_boundary()).resolve()
+    ground = find_ground(position, boundary)
+    if ground is None:
+        print_info(f"no ground: no GROUND.md from {position} up to {boundary}")
+        raise typer.Exit(code=1)
+
+    found = _discover_templates(ground)
+    if not found:
+        print_info(f"no templates under {ground / '.grounds'}")
+        return
+    print_simple_table(
+        [[name, desc or "-"] for name, desc in found],
+        headers=["name", "description"],
+    )
 
 
 # -- verbs ----------------------------------------------------------------
@@ -329,61 +278,30 @@ def cmd_render(
     ),
     template: str | None = typer.Option(
         None, "--template", "-t",
-        help="Read-only preview using a template's body + pins (no GROUND.md written).",
+        help="Render table: a template name from .grounds/, or a .md file path.",
     ),
-    json_flag: bool = typer.Option(
-        False, "-j", "--json",
-        help="Output as JSON (RenderedView schema) instead of markdown.",
+    root: Path | None = typer.Option(
+        None, "--root",
+        help="Boundary of the upward search (defaults to $HOME).",
     ),
 ) -> None:
-    """Render the ground view for a directory.
+    """Render the face of a position.
 
-    - Directory has GROUND.md: ground-root mode — body + all pins expanded.
-    - No GROUND.md but an ancestor has one: walk mode — $CWD-anchored pins
-      (e.g. ls/file) expanded, other pins folded to a TOC. No automatic
-      directory listing — that comes only from a $CWD-anchored ls pin.
-    - No ground up to $HOME: hint to init.
-    - --template <name>: read-only preview — open with the template's body
-      and pins, render, and do NOT write GROUND.md.
-    - -j / --json: output RenderedView as JSON instead of markdown.
+    The position decides the face: its own GROUND.md -> field-root face;
+    otherwise the nearest GROUND.md inside the boundary -> walk face.
+    Children named by `inline` render recursively; failures are results
+    (`status="empty"` / `status="error"`), never exceptions.
     """
-    root = _resolve_root(path)
+    from ghoshell_moss.ground._render import render_position
 
-    if template is not None:
-        asyncio.run(_template_preview(root, template, json_flag=json_flag))
-        return
+    position = (path or Path.cwd()).resolve()
+    boundary = (root or _default_boundary()).resolve()
+    echo(asyncio.run(render_position(position, boundary=boundary, template=template)))
 
-    if (root / DEFAULT_L0_FILENAME).is_file():
-        # ground-root mode
-        async def _op(gs: GroundSet, ground: Ground) -> None:
-            view = await ground.render()
-            if json_flag:
-                echo(view.model_dump_json(indent=2, exclude_none=True))
-            else:
-                echo(str(view))
 
-        _run_async(_run_one(root, _op))
-        return
-
-    ground_root = _find_ancestor_ground(root)
-    if ground_root is None:
-        print_info(f"no ground: no GROUND.md from {root} up to $HOME")
-        print_info("run 'moss ground init' to create one here")
-        raise typer.Exit(code=1)
-
-    # walk mode — render from ancestor ground, cwd = root
-    async def _walk_op() -> None:
-        doc_path = ground_root / DEFAULT_L0_FILENAME
-        workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-            ground = await gs.open(root, doc=doc_path)
-            view = await ground.render(cwd=root)
-            if json_flag:
-                echo(view.model_dump_json(indent=2, exclude_none=True))
-            else:
-                echo(str(view))
-
-    asyncio.run(_walk_op())
+def _default_boundary() -> Path:
+    home = os.environ.get("HOME")
+    return Path(home) if home else Path("/")
 
 
 # -- meta -----------------------------------------------------------------

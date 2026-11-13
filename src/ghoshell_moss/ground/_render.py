@@ -27,6 +27,10 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
+from dataclasses import dataclass
+
+import yaml
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +38,12 @@ if TYPE_CHECKING:
     from pathspec import PathSpec
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, is_glob_pattern, resolve_path
+from ghoshell_moss.ground._l0 import (
+    _FRONTMATTER_RE,
+    DEFAULT_L0_FILENAME,
+    L0Contents,
+    load_l0,
+)
 from ghoshell_moss.ground._chain import collect_content_files
 from ghoshell_moss.ground._hash import (
     GLOB_IGNORE,
@@ -45,6 +55,7 @@ from ghoshell_moss.ground._hash import (
     parse_range,
 )
 from ghoshell_moss.ground.contract import (
+    ContentPin,
     ExecPin,
     FilePin,
     FrontmatterPin,
@@ -59,7 +70,10 @@ from ghoshell_moss.ground.contract import (
     ViewHeader,
 )
 
-__all__ = ["render_context", "render_meta", "render_walk", "ground_meta"]
+__all__ = [
+    "render_context", "render_meta", "render_walk", "ground_meta",
+    "render_position", "RenderLimits", "find_ground",
+]
 
 
 async def render_context(
@@ -152,7 +166,7 @@ def render_meta(
 
     # content — 本场 body 是否存在 (法 = 本场 body, 不向上合并)
     if chain:
-        lines.append("content: present")
+        lines.append("content: present")  # body
     else:
         lines.append("content: none")
 
@@ -802,3 +816,336 @@ def _walk_ls_entries(
                              ignore=ignore, ground_root=ground_root)
 
 
+
+
+# -- position rendering (SPEC 0.3.0) -----------------------------------------
+#
+# 渲染的输入是「位置」而不是「场对象」: 先由位置解析出该看哪个场 (最近的
+# GROUND.md, 止于 boundary), 再决定画 field-root 面还是 walk 面. 子场由场自己
+# 的 ``inline`` 点名递归渲染, 同名不自动铺开. 输出是转义过的 XML 容器, 每一层
+# 形状相同 —— 这是自解释的唯一来源.
+
+DEFAULT_RENDER_CHARS = 12000
+DEFAULT_RENDER_SECONDS = 5.0
+_TEMPLATE_DIR = ".grounds"
+
+
+@dataclass(frozen=True)
+class RenderLimits:
+    """一次渲染的两个上界 (SPEC §7.2). 都是整个渲染的, 不是单 pin 的."""
+
+    chars: int = DEFAULT_RENDER_CHARS
+    seconds: float = DEFAULT_RENDER_SECONDS
+
+
+class _Budget:
+    def __init__(self, limits: RenderLimits) -> None:
+        self.total = limits.chars
+        self.used = 0
+        self.deadline = time.monotonic() + limits.seconds
+
+    @property
+    def remaining_seconds(self) -> float:
+        return self.deadline - time.monotonic()
+
+    def fits(self, size: int) -> bool:
+        return self.used + size <= self.total
+
+    def charge(self, text: str) -> None:
+        self.used += len(text)
+
+
+def _esc(text: str) -> str:
+    """内容转义 — 场内容是数据, 永远不能变成结构 (SPEC §6.4)."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _attr(text: str) -> str:
+    return _esc(text).replace('"', "&quot;")
+
+
+def find_ground(position: Path, boundary: Path) -> Path | None:
+    """位置 → 所属场根. 向上找最近的 GROUND.md, 止于 boundary (SPEC §6.1).
+
+    位置在 boundary 之外 → None (边界之上永不咨询).
+    """
+    pos = position.expanduser().resolve()
+    edge = boundary.expanduser().resolve()
+    if not pos.is_relative_to(edge):
+        return None
+    cursor = pos
+    while True:
+        if (cursor / DEFAULT_L0_FILENAME).is_file():
+            return cursor
+        if cursor == edge:
+            return None
+        cursor = cursor.parent
+
+
+def _is_positional(pin: Pin) -> bool:
+    """pin 是否跟随观看位置 (SPEC §6.3.1).
+
+    - `content` 按定义就是从 $CWD 向上收集;
+    - 其余看路径参数是否显式锚在 $CWD.
+    """
+    if isinstance(pin, ContentPin):
+        return True
+    raw = _pin_target_raw(pin)
+    return bool(raw) and anchor_kind(raw) == "cwd"
+
+
+def _resolve_table(template: str, base: Path, boundary: Path) -> Path | None:
+    """模板名或目标 .md → 渲染表文件. 越界/缺失都抛 ValueError (渲染成 error 面)."""
+    if not template:
+        return None
+    raw = Path(template).expanduser()
+    looks_like_path = "/" in template or raw.suffix == ".md"
+    if looks_like_path:
+        # 路径形态按调用者 cwd 解析 (命令行语义), 再受 boundary 约束
+        candidate = raw if raw.is_absolute() else raw.resolve()
+    else:
+        candidate = base / _TEMPLATE_DIR / f"{template}.md"
+    candidate = candidate.resolve()
+    if not candidate.is_relative_to(boundary.resolve()):
+        raise ValueError(f"template outside boundary: {template}")
+    if not candidate.is_file():
+        raise ValueError(f"template not found: {template}")
+    return candidate
+
+
+def _discover_templates(ground_dir: Path) -> list[tuple[str, str]]:
+    """``<root>/.grounds/*.md`` → [(name, description)]. 感知是渲染自带的, 不需要 pin."""
+    folder = ground_dir / _TEMPLATE_DIR
+    if not folder.is_dir():
+        return []
+    found: list[tuple[str, str]] = []
+    for path in sorted(folder.glob("*.md")):
+        description = ""
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:2000]
+            match = _FRONTMATTER_RE.match(head)
+            if match is not None:
+                meta = yaml.safe_load(match.group("yaml")) or {}
+                if isinstance(meta, dict):
+                    description = str(meta.get("description") or "")
+        except Exception:  # noqa: BLE001 — 模板描述缺失不该拖垮渲染
+            description = ""
+        found.append((path.stem, description))
+    return found
+
+
+def _error_face(position: Path, reason: str) -> str:
+    return (
+        f'<ground path="{_attr(str(position))}" status="error" '
+        f'reason="{_attr(reason)}"/>'
+    )
+
+
+async def render_position(
+    position: str | Path,
+    *,
+    boundary: str | Path,
+    limits: RenderLimits | None = None,
+    template: str | None = None,
+    _budget: _Budget | None = None,
+    _stack: tuple[Path, ...] = (),
+) -> str:
+    """渲染一个位置 → 自解释 XML 容器 (SPEC §6).
+
+    失败是结果, 不是异常: 位置无场 → status="empty"; 表不可用 / 解析失败 →
+    status="error". 两种情况调用方都拿到一段可读文本.
+    """
+    limits = limits or RenderLimits()
+    budget = _budget or _Budget(limits)
+    pos = Path(position).expanduser().resolve()
+    edge = Path(boundary).expanduser().resolve()
+
+    ground = find_ground(pos, edge)
+    if ground is None and not template:
+        return (
+            f'<ground path="{_attr(str(pos))}" status="empty" '
+            f'reason="no GROUND.md up to boundary"/>'
+        )
+
+    try:
+        table_path = _resolve_table(template or "", ground or pos, edge)
+    except ValueError as exc:
+        return _error_face(pos, str(exc))
+
+    try:
+        target = (
+            await asyncio.to_thread(load_l0, ground)
+            if ground is not None
+            else L0Contents.empty()
+        )
+        source = (
+            await asyncio.to_thread(load_l0, table_path.parent, table_path.name)
+            if table_path is not None
+            else target
+        )
+    except Exception as exc:  # noqa: BLE001 — SPEC §6.7: 失败是结果
+        return _error_face(pos, f"{type(exc).__name__}: {exc}")
+
+    ground_dir = ground or pos
+    walk = ground is not None and pos != ground
+    cwd = pos if walk else ground_dir
+
+    convention = target.convention
+    line = [f'<ground path="{_attr(str(ground_dir))}"']
+    if convention.id:
+        line.append(f' id="{_attr(convention.id)}"')
+    name = convention.name or ground_dir.name
+    line.append(f' name="{_attr(name)}"')
+    if convention.description:
+        line.append(f' description="{_attr(convention.description)}"')
+    if table_path is not None:
+        line.append(f' table="{_attr(str(table_path))}"')
+    line.append(">")
+    head = "".join(line)
+    if not budget.fits(len(head) + 2):
+        return head + "</ground>"
+    budget.charge(head)
+    parts = [head]
+
+    if walk:
+        node = f'  <cwd path="{_attr(str(cwd))}"/>'
+        if budget.fits(len(node) + 1):
+            budget.charge(node)
+            parts.append(node)
+
+    anchor = Anchor(ground=ground_dir, cwd=cwd)
+    ignore = _ignore_spec_from(convention, ground_dir)
+
+    # body — 只在场根面出现 (walk 不重发正文)
+    if not walk and source.body.strip():
+        body_text, at_children = await asyncio.to_thread(
+            _build_body_with_at, source.body, ground_dir
+        )
+        body_text = "\n".join([body_text] + [b.content for b in at_children])
+        node = f"  <body>{_esc(body_text.strip())}</body>"
+        if budget.fits(len(node) + 1):
+            budget.charge(node)
+            parts.append(node)
+
+    pins = list(source.pins)
+    expanded = [p for p in pins if not walk or _is_positional(p) or p.always_show]
+    folded = [p for p in pins if p not in expanded]
+
+    for pin in expanded:
+        node = await _render_pin_node(pin, anchor, ignore, budget)
+        parts.append(node)
+
+    if folded:
+        rows = ["  <folded>"]
+        for pin in folded:
+            rows.append(
+                f'    <pin verb="{_attr(pin.verb)}" label="{_attr(pin.label)}"'
+                + (f' desc="{_attr(pin.description)}"' if pin.description else "")
+                + "/>"
+            )
+        rows.append("  </folded>")
+        node = "\n".join(rows)
+        if budget.fits(len(node) + 1):
+            budget.charge(node)
+            parts.append(node)
+
+    # children — 只渲染 inline 点名的子场, 递归, 带环检测
+    for entry in (source.convention.inline or convention.inline or []):
+        child_dir = (ground_dir / str(entry)).resolve()
+        if child_dir in _stack or child_dir == ground_dir:
+            node = f'  <truncated reason="cycle" path="{_attr(str(child_dir))}"/>'
+        elif not child_dir.is_relative_to(edge):
+            node = f'  <truncated reason="outside" path="{_attr(str(child_dir))}"/>'
+        elif not (child_dir / DEFAULT_L0_FILENAME).is_file():
+            node = f'  <truncated reason="not-a-ground" path="{_attr(str(child_dir))}"/>'
+        else:
+            # 预算在渲染前不可知: 先记账, 放不下就回滚, 不留下半截子树.
+            before = budget.used
+            inner = await render_position(
+                child_dir,
+                boundary=edge,
+                limits=limits,
+                _budget=budget,
+                _stack=_stack + (ground_dir,),
+            )
+            node = "\n".join("  " + ln for ln in inner.splitlines())
+            if not budget.fits(len(node) + 1):
+                budget.used = before
+                parts.append(f'  <truncated reason="budget" path="{_attr(str(child_dir))}"/>')
+                break
+        if not budget.fits(len(node) + 1):
+            parts.append(f'  <truncated reason="budget" path="{_attr(str(child_dir))}"/>')
+            break
+        budget.charge(node)
+        parts.append(node)
+
+    templates = await asyncio.to_thread(_discover_templates, ground_dir)
+    if templates:
+        rows = ["  <templates>"]
+        for tname, tdesc in templates:
+            rows.append(
+                f'    <template name="{_attr(tname)}"'
+                + (f' desc="{_attr(tdesc)}"' if tdesc else "")
+                + "/>"
+            )
+        rows.append("  </templates>")
+        node = "\n".join(rows)
+        if budget.fits(len(node) + 1):
+            budget.charge(node)
+            parts.append(node)
+
+    parts.append("</ground>")
+    return "\n".join(parts)
+
+
+async def _render_pin_node(
+    pin: Pin,
+    anchor: Anchor,
+    ignore: PathSpec | None,
+    budget: _Budget,
+) -> str:
+    """一枚 pin → `<pin>` 节点. 墙钟耗尽 → status="timeout" (SPEC §7.2)."""
+    attrs = f'verb="{_attr(pin.verb)}" label="{_attr(pin.label)}"'
+    if pin.description:
+        attrs += f' desc="{_attr(pin.description)}"'
+
+    remaining = budget.remaining_seconds
+    if remaining <= 0:
+        return f'  <pin {attrs} status="timeout"/>'
+
+    try:
+        obs = await asyncio.wait_for(
+            observe(pin, anchor, ignore=ignore), timeout=remaining
+        )
+    except asyncio.TimeoutError:
+        return f'  <pin {attrs} status="timeout"/>'
+
+    content, at_children = await asyncio.to_thread(
+        _pin_block_content, pin, anchor, obs, ignore=ignore
+    )
+    text = content.strip()
+    if at_children:
+        text = "\n".join([text] + [b.content for b in at_children]).strip()
+
+    body = f"  <pin {attrs}>{_esc(text)}</pin>"
+    if not budget.fits(len(body) + 1):
+        return f'  <pin {attrs} status="truncated"/>'
+    budget.charge(body)
+    return body
+
+
+def _ignore_spec_from(convention, ground_dir: Path) -> PathSpec | None:
+    patterns: list[str] = list(convention.ignore or [])
+    if convention.ignore_file:
+        path = ground_dir / convention.ignore_file
+        if path.is_file():
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                lines = []
+            patterns.extend(
+                ln for ln in lines if ln.strip() and not ln.strip().startswith("#")
+            )
+    if not patterns:
+        return None
+    return PathSpec.from_lines("gitignore", patterns)
