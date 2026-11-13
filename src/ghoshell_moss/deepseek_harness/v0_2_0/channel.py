@@ -30,7 +30,7 @@ from ghoshell_moss.agents.blueprint.agent import (
 )
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.message import Message
-from ghoshell_moss.message.prompt import Prompt
+from ghoshell_moss.message.prompt import message_from_prompt
 
 from .hive import DshAgents
 
@@ -286,4 +286,8 @@ def _prompt_messages(text: str, path: str, project_root: str) -> list[Message]:
     base = Path(project_root) if project_root else Path.cwd()
     # A file reference the protocol refuses is a failed send, not a text-only one: silently
     # downgrading would deliver something the caller believes carried a file.
-    return Prompt(text, base_dir=base).messages()
+    #
+    # Not `Prompt`: that class is a *usage* — a handle bound to the process cwd, and it refuses
+    # any base_dir outside it (message/prompt.py). Here the anchor is the project home, which is
+    # a fact of the hive, not of the process: pass it explicitly.
+    return message_from_prompt(text, base_dir=base)
