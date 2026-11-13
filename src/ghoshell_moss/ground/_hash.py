@@ -9,7 +9,7 @@ observe 不读内容 — 内容读取全交 render (_render.py). 对账 (感知 
 - FrontmatterPin: stat → exists + 命中数. 不读内容.
 - LsPin: 展开目录树 + 条目列表 (不读内容). 过 GLOB_IGNORE 过滤.
 - ExecPin: observe 即执行, payload = 渲染就绪的结果文本.
-- LawPin: 收集约定文件 → 命中数.
+- ContentPin: 收集约定文件 → 命中数.
 
 文件不存在 → Observation(exists=False).
 
@@ -32,13 +32,13 @@ if TYPE_CHECKING:
     from pathspec import PathSpec
 
 from ghoshell_moss.ground._addr import Anchor, is_glob_pattern, resolve_path
-from ghoshell_moss.ground._chain import collect_law_files
+from ghoshell_moss.ground._chain import collect_content_files
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
-    LawPin,
+    ContentPin,
     LsPin,
     PathOutsideRootError,
     Pin,
@@ -126,7 +126,7 @@ def observe_sync(
         return _observe_ls(pin, anchor, ignore=ignore)
     if isinstance(pin, ExecPin):
         return _observe_exec(pin, anchor)
-    if isinstance(pin, LawPin):
+    if isinstance(pin, ContentPin):
         return _observe_law(pin, anchor)
     raise TypeError(f"unknown pin type: {type(pin).__name__}")
 
@@ -301,12 +301,12 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     return Observation(exists=True, payload=payload, size=len(payload), unit="chars")
 
 
-def _observe_law(pin: LawPin, anchor: Anchor) -> Observation:
-    """law pin 观察 — 收集 cwd 向上到 ground root 的约定文件清单.
+def _observe_law(pin: ContentPin, anchor: Anchor) -> Observation:
+    """content pin 观察 — 收集 cwd 向上到 ground root 的约定文件清单.
 
     内容由渲染层读取 (render-time, 与 file/glob 同构).
     """
-    files = collect_law_files(anchor, pin.arguments.filename)
+    files = collect_content_files(anchor, pin.arguments.filename)
     if not files:
         return Observation(exists=True, size=0, unit="entries")
     return Observation(exists=True, size=len(files), unit="entries")

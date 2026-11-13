@@ -12,8 +12,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
-    LawArguments,
-    LawPin,
+    ContentArguments,
+    ContentPin,
     LsArguments,
     LsPin,
     Pin,
@@ -161,12 +161,12 @@ class TestDumpL0:
             "---\n"
             '$id: "moss:test"\n'
             "---\n"
-            "\n# Body\n\nlaw text\n"
+            "\n# Body\n\nbody text\n"
         )
         dump_l0_pins(tmp_path, [FilePin(label="x", arguments=FileArguments(path="x.py"))])
         text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
         assert 'moss:test' in text  # re-serialized, quotes may change
-        assert "law text" in text
+        assert "body text" in text
         assert "x.py" in text
 
     def test_replaces_existing_pin_section(self, tmp_path):
@@ -211,18 +211,18 @@ class TestDumpL0:
         assert "path: a.py" in text  # inside arguments
         assert "range: 1-5" in text  # inside arguments
 
-    def test_law_pin_roundtrip(self, tmp_path):
+    def test_content_pin_roundtrip(self, tmp_path):
         dump_l0_pins(
             tmp_path,
-            [LawPin(label="claude", arguments=LawArguments(filename="CLAUDE.md", budget=500, lines=20))],
+            [ContentPin(label="claude", arguments=ContentArguments(filename="CLAUDE.md", budget=500, lines=20))],
         )
         text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-        assert "verb: law" in text
+        assert "verb: content" in text
         assert "filename: CLAUDE.md" in text
         loaded = load_l0(tmp_path)
         assert len(loaded.pins) == 1
         pin = loaded.pins[0]
-        assert isinstance(pin, LawPin)
+        assert isinstance(pin, ContentPin)
         assert pin.arguments.filename == "CLAUDE.md"
         assert pin.arguments.budget == 500
         assert pin.arguments.lines == 20
@@ -230,7 +230,7 @@ class TestDumpL0:
     def test_always_show_roundtrip(self, tmp_path):
         dump_l0_pins(
             tmp_path,
-            [LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"), always_show=True)],
+            [ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"), always_show=True)],
         )
         text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
         assert "always_show: true" in text

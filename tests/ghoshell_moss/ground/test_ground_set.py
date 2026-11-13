@@ -136,7 +136,7 @@ class TestOpenClose:
 
         run(scenario())
 
-    def test_two_groundsets_independent(self, tmp_path):
+    def test_two_inlines_independent(self, tmp_path):
         """Different GroundSet instances have independent label spaces."""
         sub = tmp_path / "sub"
         sub.mkdir()
@@ -506,7 +506,7 @@ class TestSnapshot:
         run(scenario())
 
 
-# -- root + groundset 物化 ---------------------------------------------------
+# -- root + inline 物化 ---------------------------------------------------
 
 
 class TestRootAndGroundset:
@@ -519,7 +519,7 @@ class TestRootAndGroundset:
         assert gs.root.label in gs.active()
 
     def test_root_materializes_declared_children(self, tmp_path):
-        (tmp_path / "GROUND.md").write_text("---\ngroundset: [a, b]\n---\n")
+        (tmp_path / "GROUND.md").write_text("---\ninline: [a, b]\n---\n")
         (tmp_path / "a").mkdir()
         (tmp_path / "a" / "GROUND.md").write_text("---\nname: A\n---\n")
         (tmp_path / "b").mkdir()
@@ -529,13 +529,13 @@ class TestRootAndGroundset:
         assert gs.materialize_errors() == []
 
     def test_materialize_skips_non_ground_entry(self, tmp_path):
-        (tmp_path / "GROUND.md").write_text("---\ngroundset: [missing]\n---\n")
+        (tmp_path / "GROUND.md").write_text("---\ninline: [missing]\n---\n")
         gs = DefaultGroundSet(workspace_root=tmp_path)
         assert "missing" not in gs.active()
         assert any("missing" in e for e in gs.materialize_errors())
 
     def test_materialize_false_does_not_expand(self, tmp_path):
-        (tmp_path / "GROUND.md").write_text("---\ngroundset: [a]\n---\n")
+        (tmp_path / "GROUND.md").write_text("---\ninline: [a]\n---\n")
         (tmp_path / "a").mkdir()
         (tmp_path / "a" / "GROUND.md").write_text("---\n---\n")
         gs = DefaultGroundSet(workspace_root=tmp_path, materialize=False)

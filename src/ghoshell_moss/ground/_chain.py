@@ -1,4 +1,4 @@
-"""Law chain — 向上找最近的 GROUND.md 返回其 body (单层, 不合并).
+"""Content chain — 向上找最近的 GROUND.md 返回其 body (单层, 不合并).
 
 场的法 = 场自身的 body。无 GROUND.md 的目录向上找最近的场 (walk 定位),
 但场与场之间不合并 body——每个子场渲染自己的根, 向上合并会造成大量重复。
@@ -15,7 +15,7 @@ from pathlib import Path
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._l0 import load_l0
 
-__all__ = ["collect_chain", "collect_law_files"]
+__all__ = ["collect_chain", "collect_content_files"]
 
 
 def collect_chain(
@@ -42,8 +42,8 @@ def collect_chain(
     return ""
 
 
-def collect_law_files(anchor: Anchor, filename: str) -> list[Path]:
-    """law pin 的收集逻辑 — 从 cwd 向上到 ground root, 收集存在的 filename 文件.
+def collect_content_files(anchor: Anchor, filename: str) -> list[Path]:
+    """content pin 的收集逻辑 — 从 cwd 向上到 ground root, 收集存在的 filename 文件.
 
     - 边界 = ground root (不越出场, SPEC §8 subtree confinement).
     - cwd 在场根外 → 只收 cwd 一个 (与 _walk_upward 同语义).

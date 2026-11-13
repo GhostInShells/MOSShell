@@ -146,7 +146,7 @@ class DefaultGround(Ground):
         """场级 ignore 规则 — 从 convention 的 ignore + ignore_file 合并."""
         return self._ignore_spec
 
-    async def chain_text(self) -> str:
+    async def body_text(self) -> str:
         """返回本场 body (法), 供 meta / instruction 使用."""
         return await asyncio.to_thread(collect_chain, self._doc_path.parent)
 

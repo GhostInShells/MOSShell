@@ -9,7 +9,7 @@ pins:
     keys: [name, description]
     limit: 20
   description: 子认知场存在性
-groundset:
+inline:
 - existence
 - people
 - journal

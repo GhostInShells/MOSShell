@@ -31,13 +31,13 @@ __all__ = [
     "FrontmatterPin",
     "LsPin",
     "ExecPin",
-    "LawPin",
+    "ContentPin",
     "FileArguments",
     "GlobArguments",
     "FrontmatterArguments",
     "LsArguments",
     "ExecArguments",
-    "LawArguments",
+    "ContentArguments",
     "GroundConvention",
     "TemplateInfo",
     "GroundError",
@@ -74,7 +74,7 @@ class GroundConvention(BaseModel):
     name: str | None = None
     description: str | None = None
     pins: list[dict] = Field(default_factory=list)
-    groundset: list[str] | None = Field(
+    inline: list[str] | None = Field(
         default=None,
         description="要展开的子场 — 相对场根的目录路径清单, 每个目录自带 GROUND.md. "
         "由 GroundSet 物化 (一层, 不递归), Ground 自身不消费.",
@@ -178,8 +178,8 @@ class ExecArguments(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class LawArguments(BaseModel):
-    """law verb 的 arguments — 约定文件法链.
+class ContentArguments(BaseModel):
+    """content verb 的 arguments — 约定文件内容链.
 
     参数是文件名而非路径: 从 cwd 向上逐层收集该文件 (CLAUDE.md /
     AGENT.md 等约定文件), 到场根为止. 收集到的是每个祖先目录里的
@@ -297,17 +297,17 @@ class ExecPin(Pin):
     arguments: ExecArguments
 
 
-@_register("law")
-class LawPin(Pin):
-    """约定文件法链注视 — 兼容外部项目约定 (CLAUDE.md / AGENT.md).
+@_register("content")
+class ContentPin(Pin):
+    """约定文件内容链注视 — 兼容外部项目约定 (CLAUDE.md / AGENT.md).
 
     拉的是文档, 参数是文件名而非路径: 从 cwd 向上逐层收集该文件,
     到场根为止 (边界 = ground root). 父级向下展示, 最多一层 @ 解析,
     有 budget/lines 截断语义. 位置依赖 cwd — walk 时随站立位置变化.
     """
 
-    verb: Literal["law"] = "law"
-    arguments: LawArguments
+    verb: Literal["content"] = "content"
+    arguments: ContentArguments
 
     @property
     def is_cwd_anchored(self) -> bool:
@@ -454,7 +454,7 @@ class Ground(ABC):
 
         显式调用无条件写盘; dirty 检查是 close 的职责."""
 
-    # -- 法链 -----------------------------------------------------------------
+    # -- 内容链 -----------------------------------------------------------------
 
     @property
     @abstractmethod
@@ -466,7 +466,7 @@ class Ground(ABC):
         """
 
     @abstractmethod
-    async def chain_text(self) -> str:
+    async def body_text(self) -> str:
         """返回本场的 body (法) — 单层, 不向上合并祖先."""
 
 
@@ -500,7 +500,7 @@ class GroundSet(ABC):
         - dir: 场根目录 (pin 锚点). 相对路径按 workspace_root 解析.
         - label: 本 GroundSet 内唯一标识. None = dir basename, 冲突加 -2/-3.
         - doc: 显式 GROUND.md 路径 (法锚点). None = dir/GROUND.md.
-          doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 — 法随 doc, pin 随 dir.
+          doc ≠ dir/GROUND.md 时, content anchor 与 pin anchor 解耦 — 法随 doc, pin 随 dir.
         - template: .grounds/ 中的模板名. 指定时用模板的 body + pins 初始化
           Ground. 模板内容复制, 非引用.
         - override: template 定义全权接管 (body + pins), 忽略现有 GROUND.md
@@ -521,7 +521,7 @@ class GroundSet(ABC):
         """锚点场 — 场集的根.
 
         构造期即建立 (GroundSet 本就带启动代价), 是非 None 的一等成员。
-        它是 ``groundset`` 字段的声明来源, 物化子场的入口。
+        它是 ``inline`` 字段的声明来源, 物化子场的入口。
         对外是"根"而非"被挂载的子场" —— 消费方 (如 channel) 按身份把它从
         子场列表里排除。
         """
@@ -641,7 +641,7 @@ class ViewBlock(BaseModel):
     label: str = Field(description="块标识: body / pin label / @文件名.")
     verb: str | None = Field(
         default=None,
-        description="pin 动词 (file|glob|frontmatter|ls|exec|law). kind=pin 时必选, 其余为 None.",
+        description="pin 动词 (file|glob|frontmatter|ls|exec|content). kind=pin 时必选, 其余为 None.",
     )
     description: str | None = Field(
         default=None,

@@ -8,7 +8,7 @@
 - _addr.py         路径锚点解析 ($GROUND / $CWD / $HOME)
 - _hash.py         pin 观察 (per-class 多态)
 - _l0.py           GROU.md 读写
-- _chain.py        法链 (祖先 GROU.md body 收集)
+- _chain.py        内容链 (祖先 GROU.md body 收集)
 - _render.py       frame 渲染 (SPEC §6 布局)
 - _ground.py       DefaultGround
 - _grounds.py      DefaultGroundSet
@@ -28,8 +28,8 @@ from ghoshell_moss.ground.contract import (
     GroundConvention,
     GroundError,
     GroundSet,
-    LawArguments,
-    LawPin,
+    ContentArguments,
+    ContentPin,
     LsArguments,
     LsPin,
     PathOutsideRootError,
@@ -59,8 +59,8 @@ __all__ = [
     "LsArguments",
     "ExecPin",
     "ExecArguments",
-    "LawPin",
-    "LawArguments",
+    "ContentPin",
+    "ContentArguments",
     "GroundConvention",
     "TemplateInfo",
     "ViewHeader",

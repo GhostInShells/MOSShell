@@ -30,7 +30,7 @@ __all__ = [
 
 _PIN_LABEL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 
-_KNOWN_VERBS = {"file", "glob", "frontmatter", "ls", "exec", "law"}
+_KNOWN_VERBS = {"file", "glob", "frontmatter", "ls", "exec", "content"}
 
 _REQUIRED_ARGS: dict[str, set[str]] = {
     "file": {"path"},
@@ -38,7 +38,7 @@ _REQUIRED_ARGS: dict[str, set[str]] = {
     "frontmatter": {"path"},
     "ls": {"path"},
     "exec": {"ref"},
-    "law": {"filename"},
+    "content": {"filename"},
 }
 
 

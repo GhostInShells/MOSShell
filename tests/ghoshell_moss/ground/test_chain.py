@@ -1,4 +1,4 @@
-"""Tests for _chain.py — law chain collection from ancestor GROUND.md bodies."""
+"""Tests for _chain.py — content chain collection from ancestor GROUND.md bodies."""
 
 from pathlib import Path
 
@@ -19,9 +19,9 @@ class TestCollectChain:
         assert result == ""
 
     def test_collects_body_from_ground_md(self, tmp_path):
-        _write_ground(tmp_path, "law in root")
+        _write_ground(tmp_path, "content in root")
         result = collect_chain(tmp_path)
-        assert "law in root" in result
+        assert "content in root" in result
 
     def test_returns_nearest_ground_only(self, tmp_path):
         outer = tmp_path
@@ -65,11 +65,11 @@ class TestCollectChain:
         # dump_l0_pins creates a fresh GROUND.md; add body manually
         text = (root / DEFAULT_L0_FILENAME).read_text()
         (root / DEFAULT_L0_FILENAME).write_text(
-            "---\n$id: test\n---\n\n# My Body\n\nlaw here\n"
+            "---\n$id: test\n---\n\n# My Body\n\nbody here\n"
         )
         result = collect_chain(root)
         assert "# My Body" in result
-        assert "law here" in result
+        assert "body here" in result
         assert "ground:pins" not in result
         assert "$id" not in result  # frontmatter excluded
 

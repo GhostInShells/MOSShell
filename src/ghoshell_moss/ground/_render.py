@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from pathspec import PathSpec
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, is_glob_pattern, resolve_path
-from ghoshell_moss.ground._chain import collect_law_files
+from ghoshell_moss.ground._chain import collect_content_files
 from ghoshell_moss.ground._hash import (
     GLOB_IGNORE,
     Observation,
@@ -49,7 +49,7 @@ from ghoshell_moss.ground.contract import (
     FilePin,
     FrontmatterPin,
     GlobPin,
-    LawPin,
+    ContentPin,
     Ground,
     LsPin,
     PathOutsideRootError,
@@ -150,11 +150,11 @@ def render_meta(
         lines.append(f"cd {root}")
         lines.append(f"ground: {doc_path}")
 
-    # law — 本场 body 是否存在 (法 = 本场 body, 不向上合并)
+    # content — 本场 body 是否存在 (法 = 本场 body, 不向上合并)
     if chain:
-        lines.append("law: present")
+        lines.append("content: present")
     else:
-        lines.append("law: none")
+        lines.append("content: none")
 
     # id
     if id_:
@@ -175,12 +175,12 @@ def render_meta(
 
 
 async def ground_meta(ground: Ground) -> str:
-    """场身份 (``cd`` / ``$id``) + pin TOC + 法链 — 给一个 Ground, 不关心它住在哪个场集.
+    """场身份 (``cd`` / ``$id``) + pin TOC + 内容链 — 给一个 Ground, 不关心它住在哪个场集.
 
     无驻留态版本 (``GroundSet.peek_meta``) 与 channel 的 ``stats``/帧缓存共用这一条,
     免得"同一种呈现"在两处各写一遍。
     """
-    chain = await ground.chain_text()
+    chain = await ground.body_text()
     return render_meta(
         root=ground.root,
         doc_path=ground.doc_path,
@@ -195,7 +195,7 @@ async def ground_meta(ground: Ground) -> str:
 
 
 def _pin_target_raw(pin: Pin) -> str:
-    """Pin 的目标路径原文 (锚判定用). exec/law 无路径概念, 返回空."""
+    """Pin 的目标路径原文 (锚判定用). exec/content 无路径概念, 返回空."""
     if isinstance(pin, GlobPin):
         return pin.arguments.path
     if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
@@ -217,7 +217,7 @@ async def render_walk(
 
     - 场根 + 站立位置进入 header ($CWD 字段)
     - $CWD 锚 pins 展开为 pin 块
-    - 法链 (law) walk 时默认只列路径
+    - 内容链 (content) walk 时默认只列路径
     - 其余 pins 折叠为一个 folded 块 (TOC)
     """
     anchor = Anchor(ground=ground_root, cwd=cwd)
@@ -237,9 +237,9 @@ async def render_walk(
     ]
     folded = [p for p in pins if p not in cwd_pins]
 
-    law_full = [p for p in cwd_pins if isinstance(p, LawPin) and p.always_show]
-    other = [p for p in cwd_pins if not isinstance(p, LawPin)]
-    full_pins = law_full + other
+    content_full = [p for p in cwd_pins if isinstance(p, ContentPin) and p.always_show]
+    other = [p for p in cwd_pins if not isinstance(p, ContentPin)]
+    full_pins = content_full + other
 
     observations: dict[str, Observation] = {}
     if full_pins:
@@ -262,14 +262,14 @@ def _assemble_walk_blocks(
     display: str,
     ignore: PathSpec | None,
 ) -> list[ViewBlock]:
-    """同步组装 walk 视图块 — law_compact + full_pins + folded TOC."""
+    """同步组装 walk 视图块 — content_compact + full_pins + folded TOC."""
     blocks: list[ViewBlock] = []
 
     if cwd_pins:
-        law_compact = [p for p in cwd_pins if isinstance(p, LawPin) and not p.always_show]
+        content_compact = [p for p in cwd_pins if isinstance(p, ContentPin) and not p.always_show]
 
-        for p in law_compact:
-            law_files = collect_law_files(anchor, p.arguments.filename)
+        for p in content_compact:
+            law_files = collect_content_files(anchor, p.arguments.filename)
             if law_files:
                 rels = [
                     str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f)
@@ -581,8 +581,8 @@ def _build_pin_content(
     """Pin → (content, @-children). 按 pin 类型分发."""
     if isinstance(pin, ExecPin):
         return _content_exec(pin, obs), []
-    if isinstance(pin, LawPin):
-        content, children = _build_law_with_at(pin, anchor)
+    if isinstance(pin, ContentPin):
+        content, children = _build_content_with_at(pin, anchor)
         if pin.arguments.lines is not None:
             content = _apply_lines_cap(content, pin.arguments.lines)
         if pin.arguments.budget is not None:
@@ -592,9 +592,9 @@ def _build_pin_content(
     return _render_pin_content(pin, anchor, obs, ignore=ignore), []
 
 
-def _build_law_with_at(pin: LawPin, anchor: Anchor) -> tuple[str, list[ViewBlock]]:
-    """Law pin: 收集文件内容 + 每文件的 @-ref 解析为子 ViewBlock."""
-    files = collect_law_files(anchor, pin.arguments.filename)
+def _build_content_with_at(pin: ContentPin, anchor: Anchor) -> tuple[str, list[ViewBlock]]:
+    """Content pin: 收集文件内容 + 每文件的 @-ref 解析为子 ViewBlock."""
+    files = collect_content_files(anchor, pin.arguments.filename)
     if not files:
         return "(no files)", []
 
@@ -702,7 +702,7 @@ def _pin_kwargs(pin: Pin) -> str:
             parts.append(f"timeout={pin.arguments.timeout:g}")
         if pin.arguments.budget is not None:
             parts.append(f"budget={pin.arguments.budget}")
-    elif isinstance(pin, LawPin):
+    elif isinstance(pin, ContentPin):
         parts.append(f'filename="{pin.arguments.filename}"')
         if pin.arguments.budget is not None:
             parts.append(f"budget={pin.arguments.budget}")

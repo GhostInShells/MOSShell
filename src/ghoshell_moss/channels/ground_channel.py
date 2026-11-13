@@ -4,7 +4,7 @@ Ground 是 Ghost 的目录级认知场: 一个被 GROUND.md 标记的目录就�
 (frontmatter 身份 + body 法 + pins 注视).
 
 **一个 home 一个 channel**. 每个实例独占一个 ``GroundSet``: 它的 root 是身份, 它
-``groundset:`` 声明的子场是内容. 多 home 不在这一个 channel 里消歧 —— 每个 home 各
+``inline:`` 声明的子场是内容. 多 home 不在这一个 channel 里消歧 —— 每个 home 各
 挂一个实例, 路径本身就是命名空间, 没有任何 ``ground=`` 参数可供猜错.
 
 **场树按需披露**. 子场默认关闭 (``gate``), 目录经 notice 交付, 只有 ``mount_child``
@@ -66,8 +66,8 @@ from ghoshell_moss.ground.contract import (
     GlobPin,
     Ground,
     GroundSet,
-    LawArguments,
-    LawPin,
+    ContentArguments,
+    ContentPin,
     LsArguments,
     LsPin,
     Pin,
@@ -76,10 +76,10 @@ from ghoshell_moss.ground.contract import (
 __all__ = ["new_ground_channel", "build_ground_channel_factory", "build_project_ground_channel"]
 
 _PIN_LABEL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
-_KNOWN_VERBS = {"file", "glob", "frontmatter", "ls", "exec", "law"}
+_KNOWN_VERBS = {"file", "glob", "frontmatter", "ls", "exec", "content"}
 _REQUIRED_ARGS = {
     "file": {"path"}, "glob": {"path"}, "frontmatter": {"path"},
-    "ls": {"path"}, "exec": {"ref"}, "law": {"filename"},
+    "ls": {"path"}, "exec": {"ref"}, "content": {"filename"},
 }
 
 
@@ -93,7 +93,7 @@ def _instruction_prose() -> str:
     """
     return (
         "## Ground (cognitive field)\n"
-        "A field is a directory marked by GROUND.md: identity + pins in the frontmatter, law in "
+        "A field is a directory marked by GROUND.md: identity + pins in the frontmatter, content in "
         "the body. Fields are mounted on demand — mount a child to read its frame, and call "
         "`refresh` after editing a file. Administration (open/close, stats, pin editing, the "
         "`moss ground` CLI) lives under the `admin` child."
@@ -124,7 +124,7 @@ async def _unpin_at(ground_file: str | Path, label: str) -> str:
 
 
 def new_ground_channel(
-    groundset: GroundSet,
+    inline: GroundSet,
     *,
     open_on_start: list[str | Path] | None = None,
     render_root: bool = False,
@@ -141,8 +141,8 @@ def new_ground_channel(
     一个 home 一个 channel. 多 home 不在这里消歧: 每个 home 各挂一个实例, 路径就是
     命名空间; 没有任何一个实例需要 ``ground=`` 这种参数, 猜错另一家的风险因此不存在.
 
-    :param groundset: 本 channel 独占的场集, 同时是 **边界** —— ``open`` 只接受落在
-        ``groundset.root.root`` 之内的目录, 跨家的场由另一个 channel 持有.
+    :param inline: 本 channel 独占的场集, 同时是 **边界** —— ``open`` 只接受落在
+        ``inline.root.root`` 之内的目录, 跨家的场由另一个 channel 持有.
     :param open_on_start: 启动时额外 open 的场目录 (子场声明之外).
     :param render_root: 是否把 root 场的帧渲染进本 channel 的 notice. 内容另有去处的
         home (ghost home 走 instruction) 设 False, 不在两处各放一份.
@@ -158,7 +158,7 @@ def new_ground_channel(
     :param name: CTML 标签名.
     :param description: 覆盖默认描述.
     """
-    root = groundset.root
+    root = inline.root
     home = root.root.resolve()
 
     # 场帧缓存 — ground.id -> {"meta", "frame", "at"}. 用 id 不用 label.
@@ -168,7 +168,7 @@ def new_ground_channel(
 
     if description is None:
         description = (
-            "Ground — a cognitive field: a directory marked by GROUND.md whose law survives "
+            "Ground — a cognitive field: a directory marked by GROUND.md whose content survives "
             "compaction. Fields are mounted on demand."
         )
 
@@ -237,7 +237,7 @@ def new_ground_channel(
         doc_abs: str | None = None
         if doc is not None:
             doc_abs = str(_inside(doc, field="doc"))
-        ground = await groundset.open(dir_abs, label=label, doc=doc_abs, template=template)
+        ground = await inline.open(dir_abs, label=label, doc=doc_abs, template=template)
         if ground is not root:
             children[ground.label] = _build_leaf(ground)
         await _refresh_ground(ground)
@@ -254,7 +254,7 @@ def new_ground_channel(
 
     @chan.build.startup
     async def _startup() -> None:
-        for ground in groundset.active().values():
+        for ground in inline.active().values():
             if ground is root:
                 if root_frame is not None:
                     import time as _t
@@ -280,7 +280,7 @@ def new_ground_channel(
 
     @chan.build.notice
     async def _notice() -> str:
-        parts = [f"[ground] {e}" for e in groundset.materialize_errors()]
+        parts = [f"[ground] {e}" for e in inline.materialize_errors()]
         if render_root:
             parts.append(_cached.get(root.id, {}).get("frame", ""))
         return "\n\n".join(parts)
@@ -293,7 +293,7 @@ def new_ground_channel(
 
     @chan.build.command(name="refresh", always_observe=False)
     async def refresh(label: str | None = None) -> str:
-        """Re-read a field's law and re-render its frame — an explicit refresh of the field.
+        """Re-read a field's content and re-render its frame — an explicit refresh of the field.
 
         Nothing updates by itself: a refresh is a command, not a clock. After editing a field
         file, this is what makes the change visible.
@@ -301,9 +301,9 @@ def new_ground_channel(
         :param label: Which field. None = every field in this home.
         """
         if label is None:
-            targets = list(groundset.active().values())
+            targets = list(inline.active().values())
         else:
-            found = groundset.get(label)
+            found = inline.get(label)
             if found is None:
                 return f"[ground] no such field: {label}"
             targets = [found]
@@ -328,7 +328,7 @@ def new_ground_channel(
         :param directory: The field directory, inside this channel's home. A relative path
             resolves there; a path outside is refused.
         :param label: Unique label inside this channel. None = the directory basename.
-        :param doc: Explicit GROUND.md path (the law anchor). None = directory/GROUND.md.
+        :param doc: Explicit GROUND.md path (the content anchor). None = directory/GROUND.md.
         :param template: Template name from .grounds/; its body + pins seed the field.
         """
         ground_obj = await _open_ground(directory, label, doc, template)
@@ -344,10 +344,10 @@ def new_ground_channel(
 
         :param label: The field label (as returned by ``open``).
         """
-        found = groundset.get(label)
+        found = inline.get(label)
         if found is None:
             return f"[ground] no such open ground: {label}"
-        await groundset.close(label)
+        await inline.close(label)
         children.pop(label, None)
         _cached.pop(found.id, None)
         return f"[ground] closed {label}"
@@ -377,7 +377,7 @@ def new_ground_channel(
             return f"rendered at {stamp}, source changed: {'yes' if moved else 'no'}"
 
         lines = [f"{home} — {_state(root)}"]
-        for ground in groundset.active().values():
+        for ground in inline.active().values():
             if ground is root:
                 continue
             lines.append(f"  {ground.label}: {_state(ground)}")
@@ -568,19 +568,19 @@ def new_ground_channel(
         budget: int | None = None, lines: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """Add or replace a law pin in a GROUND.md (a law file the field stands on).
+        """Add or replace a content pin in a GROUND.md (a content file the field stands on).
 
         :param ground_file: Absolute path of the target GROUND.md (or its directory).
         :param label: Unique label; replaces any pin with the same label.
-        :param filename: The law file, relative to the field root.
+        :param filename: The content file, relative to the field root.
         :param budget: Cap on rendered characters.
         :param lines: Cap on rendered lines.
         :param always_show: Keep it expanded even in walk mode.
         :param description: One line on why this is watched.
         """
-        pin = LawPin(
+        pin = ContentPin(
             label=label,
-            arguments=LawArguments(filename=filename, budget=budget, lines=lines),
+            arguments=ContentArguments(filename=filename, budget=budget, lines=lines),
             always_show=always_show,
             description=description,
         )
@@ -603,9 +603,9 @@ def build_ground_channel_factory(
     """IoC 集成工厂 — 建 DefaultGroundSet + ground channel."""
     def factory(container: IoCContainer) -> Channel:
         root = Path(workspace_root).resolve()
-        groundset = DefaultGroundSet(workspace_root=root)
+        inline = DefaultGroundSet(workspace_root=root)
         return new_ground_channel(
-            groundset,
+            inline,
             open_on_start=open_on_start,
             render_root=render_root,
             instruction=instruction,
@@ -632,9 +632,9 @@ def build_project_ground_channel(
         from ghoshell_moss.core.blueprint.project import Project
 
         project_root = Path(Project.discover().root).resolve()
-        groundset = DefaultGroundSet(workspace_root=project_root)
+        inline = DefaultGroundSet(workspace_root=project_root)
         return new_ground_channel(
-            groundset,
+            inline,
             open_on_start=open_on_start,
             render_root=render_root,
             instruction=instruction,

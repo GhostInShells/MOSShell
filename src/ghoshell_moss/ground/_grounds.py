@@ -3,7 +3,7 @@
 每个 GroundSet 实例有独立 label 空间 — 多实例, 非单例.
 不同 channel 各自创建自己的 GroundSet, label 冲突天然隔离.
 
-构造期即建 root (锚点场) 并按 root 的 ``groundset`` 字段物化子场 —
+构造期即建 root (锚点场) 并按 root 的 ``inline`` 字段物化子场 —
 GroundSet 本就有启动代价, 子场展开是它的一部分 (一层, 不递归).
 materialize=False 可关掉物化 (一次性 peek 场景)。
 
@@ -341,12 +341,12 @@ class DefaultGroundSet(GroundSet):
     # -- 子场物化 ---------------------------------------------------------
 
     def _materialize_children(self) -> None:
-        """按 root 的 ``groundset`` 字段展开子场 (一层, 不递归).
+        """按 root 的 ``inline`` 字段展开子场 (一层, 不递归).
 
         字段值是相对 root 目录 ($GROUND) 的路径. 路径不是场或打开失败 →
         记入 materialize_errors 并告警, 不抛 — 一个坏条目不该拖垮整个场集.
         """
-        declared = self._root.convention.groundset
+        declared = self._root.convention.inline
         if not declared:
             return
         root_dir = self._root.root
@@ -356,18 +356,18 @@ class DefaultGroundSet(GroundSet):
                 continue
             child_dir = (root_dir / rel).resolve()
             if child_dir == root_dir:
-                self._note_error(f"groundset entry {rel!r} points at the root itself")
+                self._note_error(f"inline entry {rel!r} points at the root itself")
                 continue
             if not (child_dir / DEFAULT_L0_FILENAME).is_file():
                 self._note_error(
-                    f"groundset entry {rel!r} is not a ground "
+                    f"inline entry {rel!r} is not a ground "
                     f"(no {DEFAULT_L0_FILENAME} under {child_dir})"
                 )
                 continue
             try:
                 self._construct(child_dir)
             except Exception as e:
-                self._note_error(f"groundset entry {rel!r} failed to open: {e}")
+                self._note_error(f"inline entry {rel!r} failed to open: {e}")
 
     def _note_error(self, message: str) -> None:
         self._materialize_errors.append(message)

@@ -16,8 +16,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
-    LawArguments,
-    LawPin,
+    ContentArguments,
+    ContentPin,
     LsArguments,
     LsPin,
 )
@@ -379,8 +379,8 @@ class TestExecPinObservation:
         assert "deep" not in obs.payload.strip().split("\n")[-1]
 
 
-class TestLawPinObservation:
-    """law pin — 从 cwd 向上收集约定文件."""
+class TestContentPinObservation:
+    """content pin — 从 cwd 向上收集约定文件."""
 
     def _make_tree(self, tmp_path) -> Path:
         (tmp_path / "CLAUDE.md").write_text("# root\n")
@@ -391,7 +391,7 @@ class TestLawPinObservation:
     def test_at_root_collects_only_root(self, tmp_path):
         root = self._make_tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.size == 1
@@ -400,7 +400,7 @@ class TestLawPinObservation:
     def test_from_subdir_collects_root_first(self, tmp_path):
         root = self._make_tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root / "sub")
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.size == 2
@@ -408,7 +408,7 @@ class TestLawPinObservation:
     def test_no_matching_file_renders_empty(self, tmp_path):
         root = self._make_tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="AGENT.md"))
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="AGENT.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.size == 0

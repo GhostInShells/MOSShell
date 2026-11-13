@@ -1,7 +1,7 @@
 """Tests for ground_channel — 认知场的运行时落点 (one set, one channel).
 
 Covers:
-- 一个 channel 一个 GroundSet: 子面是 root 的 ``groundset:``, 根帧按 render_root 决定去处
+- 一个 channel 一个 GroundSet: 子面是 root 的 ``inline:``, 根帧按 render_root 决定去处
 - gate: 子场默认只进目录, ``mount_child`` 才进 facade
 - 命令面分两层: 主面只有 ``refresh`` (读侧), 落盘/诊断收在 ``admin`` 子通道
 - open 的边界 = home: 越界目录拒绝
@@ -116,7 +116,7 @@ def _with_child(ground):
     (ground / "child").mkdir()
     (ground / "child" / "GROUND.md").write_text("---\nname: child\n---\n# Child Ground\n")
     (ground / "GROUND.md").write_text(
-        "---\nname: test\ngroundset: [child]\n---\n# Test Ground\nbody line\n"
+        "---\nname: test\ninline: [child]\n---\n# Test Ground\nbody line\n"
     )
 
 
@@ -378,7 +378,7 @@ async def test_instruction_override(ground):
 
 @pytest.mark.asyncio
 async def test_materialize_error_surfaced_in_notice(ground):
-    (ground / "GROUND.md").write_text("---\ngroundset: [missing]\n---\n# Test Ground\n")
+    (ground / "GROUND.md").write_text("---\ninline: [missing]\n---\n# Test Ground\n")
     chan = _chan(ground)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()

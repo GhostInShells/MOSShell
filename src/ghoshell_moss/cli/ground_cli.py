@@ -122,8 +122,8 @@ async def _template_preview(root: Path, template: str, *, json_flag: bool = Fals
     兼容场景: 一个只有 CLAUDE.md 的 Claude 项目, 看它作为
     claude-project 场会长什么样, 而不落任何盘.
 
-    从子目录预览时, 先向上搜寻模板的约定文件 (law pin 的 filename),
-    找到祖先场根, 再 walk 进去 — 保证 law 链不会因 boundary 太窄而空.
+    从子目录预览时, 先向上搜寻模板的约定文件 (content pin 的 filename),
+    找到祖先场根, 再 walk 进去 — 保证 content 链不会因 boundary 太窄而空.
     """
     from ghoshell_moss.ground._render import render_walk
     from ghoshell_moss.ground._l0 import load_l0
@@ -140,14 +140,14 @@ async def _template_preview(root: Path, template: str, *, json_flag: bool = Fals
             print_info("no templates found (.grounds/ empty or missing)")
         raise typer.Exit(code=2)
 
-    # 找出模板的 law filename(s), 向上搜寻真实的场根边界
+    # 找出模板的 content filename(s), 向上搜寻真实的场根边界
     tmpl_info = gs._find_template(template)
     law_filenames: set[str] = set()
     if tmpl_info is not None:
         try:
             tmpl_data = load_l0(tmpl_info.path.parent, filename=tmpl_info.path.name)
             for p in tmpl_data.pins:
-                if hasattr(p, 'verb') and p.verb == 'law':
+                if hasattr(p, 'verb') and p.verb == 'content':
                     law_filenames.add(p.arguments.filename)
         except Exception:
             pass
@@ -243,7 +243,7 @@ def cmd_init(
             "\n"
             "Ground body — free-form markdown.  Pins are declared in\n"
             "frontmatter above.  Available verbs: file, glob, frontmatter,\n"
-            "ls, exec, law.  Run `moss ground verbs` for argument reference.\n"
+            "ls, exec, content.  Run `moss ground verbs` for argument reference.\n"
             "Edit this file, then `moss ground validate` to check.\n"
         )
         dump_l0_pins(root, [], body=body)
@@ -302,10 +302,10 @@ _VERB_HELP: dict[str, dict[str, str]] = {
         "timeout": "seconds. default 10, max 60.",
         "budget": "stdout char limit.",
     },
-    "law": {
+    "content": {
         "filename": "convention filename (CLAUDE.md, AGENT.md...). Collected upward from cwd to ground root (required).",
-        "budget": "total char limit across collected law, truncates with marker.",
-        "lines": "total line limit across collected law, truncates with marker.",
+        "budget": "total char limit across collected content, truncates with marker.",
+        "lines": "total line limit across collected content, truncates with marker.",
     },
 }
 
@@ -395,7 +395,7 @@ def cmd_meta(
         None, help="Ground root (defaults to cwd)."
     ),
 ) -> None:
-    """Show ground location, law chain, $id, and pin table of contents.
+    """Show ground location, content chain, $id, and pin table of contents.
 
     Separated from ``render`` so consumers who don't need ground protocol
     get a clean content-only view.
@@ -417,7 +417,7 @@ def cmd_meta(
         workspace = _probe_workspace(root)
         async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(root, doc=doc_path)
-            chain = await ground.chain_text()
+            chain = await ground.body_text()
             text = render_meta(
                 root=ground.root,
                 doc_path=ground.doc_path,
@@ -490,9 +490,9 @@ def cmd_observe(
 def _pin_target_display(pin, anchor) -> str:
     """Resolved absolute path/spec — makes MISSING self-explanatory."""
     from ghoshell_moss.ground._addr import resolve_path
-    from ghoshell_moss.ground._chain import collect_law_files
+    from ghoshell_moss.ground._chain import collect_content_files
     from ghoshell_moss.ground.contract import (
-        ExecPin, FilePin, FrontmatterPin, GlobPin, LawPin, LsPin,
+        ExecPin, FilePin, FrontmatterPin, GlobPin, ContentPin, LsPin,
     )
 
     try:
@@ -505,8 +505,8 @@ def _pin_target_display(pin, anchor) -> str:
             # missing 时用户一眼看清是哪个文件缺
             resolved = (anchor.ground / pin.arguments.ref).resolve()
             return str(resolved)
-        if isinstance(pin, LawPin):
-            files = collect_law_files(anchor, pin.arguments.filename)
+        if isinstance(pin, ContentPin):
+            files = collect_content_files(anchor, pin.arguments.filename)
             if not files:
                 return f"{pin.arguments.filename} (none from cwd up to ground root)"
             return f"{pin.arguments.filename} x{len(files)} (cwd → ground root)"
@@ -549,7 +549,7 @@ _REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "frontmatter": frozenset({"path"}),
     "ls": frozenset({"path"}),
     "exec": frozenset({"ref"}),
-    "law": frozenset({"filename"}),
+    "content": frozenset({"filename"}),
 }
 _KNOWN_VERBS = frozenset(_REQUIRED_ARGS.keys())
 

@@ -10,7 +10,7 @@ import pytest
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._render import (
     _apply_budget,
-    _build_law_with_at,
+    _build_content_with_at,
     _content_file,
     _content_frontmatter,
     _content_glob,
@@ -27,8 +27,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
-    LawArguments,
-    LawPin,
+    ContentArguments,
+    ContentPin,
     LsArguments,
     LsPin,
 )
@@ -229,11 +229,11 @@ class TestContentFrontmatterSingle:
         assert "error" in result
 
 
-# -- law pin rendering ------------------------------------------------------
+# -- content pin rendering ------------------------------------------------------
 
 
-class TestLawPinRender:
-    """law pin — 文件名向上收集, root-first, 一层 @-展开, 截断."""
+class TestContentPinRender:
+    """content pin — 文件名向上收集, root-first, 一层 @-展开, 截断."""
 
     def _tree(self, tmp_path) -> Path:
         (tmp_path / "CLAUDE.md").write_text("# root\n\nroot body\n")
@@ -244,8 +244,8 @@ class TestLawPinRender:
     def test_at_root_renders_only_root(self, tmp_path):
         root = self._tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
-        out = _build_law_with_at(pin, anchor)[0]
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
+        out = _build_content_with_at(pin, anchor)[0]
         assert "-- CLAUDE.md" in out
         assert "root body" in out
         assert "sub body" not in out
@@ -253,8 +253,8 @@ class TestLawPinRender:
     def test_walk_renders_root_first_chain(self, tmp_path):
         root = self._tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root / "sub")
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
-        out = _build_law_with_at(pin, anchor)[0]
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
+        out = _build_content_with_at(pin, anchor)[0]
         # 父级向下: root 块在前, cwd 块在后
         assert out.index("-- CLAUDE.md") < out.index("-- sub/CLAUDE.md")
         assert "root body" in out
@@ -263,17 +263,17 @@ class TestLawPinRender:
     def test_no_matching_file(self, tmp_path):
         root = self._tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="AGENT.md"))
-        assert _build_law_with_at(pin, anchor)[0] == "(no files)"
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="AGENT.md"))
+        assert _build_content_with_at(pin, anchor)[0] == "(no files)"
 
     def test_one_level_at_expansion(self, tmp_path):
         root = tmp_path.resolve()
         (root / "CLAUDE.md").write_text("# root\n\nsee @notes.md here\n")
         (root / "notes.md").write_text("NOTES CONTENT\n")
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
         # @-ref 在 children 里, 不在 content 里展开
-        content, children = _build_law_with_at(pin, anchor)
+        content, children = _build_content_with_at(pin, anchor)
         assert "@notes.md" in content
         assert any("NOTES CONTENT" in c.content for c in children)
 
@@ -281,7 +281,7 @@ class TestLawPinRender:
         root = tmp_path.resolve()
         (root / "CLAUDE.md").write_text("l1\nl2\nl3\nl4\n")
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", lines=2))
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md", lines=2))
         view = run(render_context(
             body="", pins=[pin], anchor=anchor,
         ))
@@ -292,7 +292,7 @@ class TestLawPinRender:
         root = tmp_path.resolve()
         (root / "CLAUDE.md").write_text("a" * 100)
         anchor = Anchor(ground=root, cwd=root)
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", budget=30))
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md", budget=30))
         view = run(render_context(
             body="", pins=[pin], anchor=anchor,
         ))
@@ -301,34 +301,34 @@ class TestLawPinRender:
     def test_walk_shows_law_paths_not_content(self, tmp_path):
         root = tmp_path.resolve()
         (root / "GROUND.md").write_text("# g\n")
-        (root / "CLAUDE.md").write_text("# root law\n")
+        (root / "CLAUDE.md").write_text("# root content\n")
         (root / "sub").mkdir()
-        (root / "sub" / "CLAUDE.md").write_text("# sub law\n")
-        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        (root / "sub" / "CLAUDE.md").write_text("# sub content\n")
+        pin = ContentPin(label="l", arguments=ContentArguments(filename="CLAUDE.md"))
         view = run(render_walk(
             cwd=root / "sub",
             ground_root=root,
             doc_path=root / "GROUND.md",
             pins=[pin],
         ))
-        # law pin 在 walk 时只列路径, 不展开内容 — 根部已展示过
-        law_blocks = [b for b in view.blocks if b.verb == "law"]
+        # content pin 在 walk 时只列路径, 不展开内容 — 根部已展示过
+        law_blocks = [b for b in view.blocks if b.verb == "content"]
         assert len(law_blocks) == 1
         # 内容只是文件路径, 不含文件内文
         assert law_blocks[0].content == "CLAUDE.md\nsub/CLAUDE.md"
-        assert "# sub law" not in law_blocks[0].content
-        assert "# root law" not in law_blocks[0].content
+        assert "# sub content" not in law_blocks[0].content
+        assert "# root content" not in law_blocks[0].content
 
     def test_walk_law_always_show_expands_content(self, tmp_path):
-        """always_show=True 的 law pin 在 walk 时仍然展开完整内容."""
+        """always_show=True 的 content pin 在 walk 时仍然展开完整内容."""
         root = tmp_path.resolve()
         (root / "GROUND.md").write_text("# g\n")
-        (root / "CLAUDE.md").write_text("# root law\n")
+        (root / "CLAUDE.md").write_text("# root content\n")
         (root / "sub").mkdir()
-        (root / "sub" / "CLAUDE.md").write_text("# sub law\n")
-        pin = LawPin(
+        (root / "sub" / "CLAUDE.md").write_text("# sub content\n")
+        pin = ContentPin(
             label="l",
-            arguments=LawArguments(filename="CLAUDE.md"),
+            arguments=ContentArguments(filename="CLAUDE.md"),
             always_show=True,
         )
         view = run(render_walk(
@@ -337,10 +337,10 @@ class TestLawPinRender:
             doc_path=root / "GROUND.md",
             pins=[pin],
         ))
-        law_blocks = [b for b in view.blocks if b.verb == "law"]
+        law_blocks = [b for b in view.blocks if b.verb == "content"]
         assert len(law_blocks) == 1
-        assert "sub law" in law_blocks[0].content
-        assert "root law" in law_blocks[0].content
+        assert "sub content" in law_blocks[0].content
+        assert "root content" in law_blocks[0].content
 
 
 # -- frame rendering (integration) -----------------------------------------
