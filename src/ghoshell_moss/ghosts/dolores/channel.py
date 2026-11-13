@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ghoshell_moss.channels.frame_channel import Frame, new_frame_channel
+from ghoshell_moss.channels.ground_channel import new_ground_channel
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 
 from ._ego_memento import EgoMementoManager
@@ -32,6 +33,7 @@ __all__ = ["build_dolores_channel"]
 
 def build_dolores_channel(
     *,
+    project_ground: str | Path | None = None,
     memento_manager: EgoMementoManager | None = None,
     prompt_manager: PromptManager | None = None,
     memento_root: str | Path | None = None,
@@ -44,6 +46,8 @@ def build_dolores_channel(
 ) -> MutableChannel:
     """组装 Dolores 的 ghost 根 channel.
 
+    :param project_ground: 项目根的场目录. 给了就挂 ``ghost.project_ground``; None = 项目根
+        没有 GROUND.md, 不挂. 边界就是项目根本身, 不是 ghost home.
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
     :param prompt_manager: prompt registry — memento 子 channel 读 ``memento.note``
@@ -72,6 +76,19 @@ def build_dolores_channel(
             "not restated here."
         )
 
+    if project_ground is not None:
+        # 项目场是环境，不是器官: 用 channel 是因为要能随时拉一张项目面的渲染，
+        # 而它不该占 ghost home 的那份 instruction 预算.
+        chan.import_channels(
+            new_ground_channel(
+                project_ground,
+                name="project_ground",
+                description=(
+                    "The project's cognitive field — call `render` for a face of any "
+                    "position inside the project."
+                ),
+            )
+        )
     if memento_manager is not None:
         chan.import_channels(
             build_memento_channel(

@@ -13,24 +13,17 @@ imports:
 - existence
 - people
 - journal
+- skills
+- works
 ---
 
 # Dolores Ghost Home
 
-这是 Dolores ghost 的自我认知基建，用 MOSS ground 体系搭建。这里将维护
-**我是谁、我认识谁、我能做什么、我经历过什么**，由 ghost 自己治理、自己滚动更新。
-本 GROUND.md 只作原则性介绍，机制细节在各自子件的 `GROUND.md` / `PERSON.md`。
+这是 Dolores ghost 的自我认知基建：**我是谁、我认识谁、我能做什么、我做过什么、
+我经历过什么**，由 ghost 自己治理、自己滚动更新。
 
-## 子件
-
-| 子件 | 是什么 |
-|---|---|
-| `existence/` | 自我存在感 — identity(事实) / purpose(意义) / behaviors(风格) |
-| `journal/` | 时间线日记 — 按年/月/日分区，生命轨迹 |
-| `people/` | 我认识的人 — 目录化，每人一个单元（`PERSON.md`） |
-| `skills/` | 能力面 — 存在性标记 |
-| `startup/` | 开机启动文档 |
-| `features/` | 开发工作流 — moss features 体系 |
+`imports` 里的五个目录构成本场的面，直接渲染在下面。另有 `startup/`（开机首动作）
+与 `features/`（开发工作流）不在面里 —— 它们是操作性的，需要时单独渲染那个目录。
 
 ## 记录纪律
 

@@ -26,7 +26,7 @@ from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.ground import DefaultGroundSet
+from ghoshell_moss.ground import DefaultGroundSet, RenderLimits
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -357,13 +357,15 @@ class Dolores(Ghost):
 
         parts.append(dolores_terminology())
         parts.append(dolores_memory())
-        # The ghost home's own law. It is content, not a channel description — the ground
-        # channel only carries the control surface. Rendered once at boot (see __aenter__).
-        if self._ground_text:
-            parts.append("<!-- ground: ghost home -->\n" + self._ground_text.strip())
         parts.append(self._dolores_inception())
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
+        # The ghost home — the cognitive field itself, after "who I am" and before the
+        # operational sections: identity is one line, this is the world that line lives in.
+        # It is content, not a channel description; the ground channel carries the surface
+        # only. Rendered once at boot (see __aenter__).
+        if self._ground_text:
+            parts.append("<!-- ground: ghost home -->\n" + self._ground_text.strip())
         if self._base_instruction:
             parts.append(self._base_instruction)
 
@@ -407,7 +409,9 @@ class Dolores(Ghost):
         """
         if self._ground_set is None:
             return None
-        return await self._ground_set.render()
+        # The home is cognition, so it gets more room than a generic render: it grows as
+        # the ghost writes, and a truncated "who am I" is worse than a longer prompt.
+        return await self._ground_set.render(limits=RenderLimits(chars=16000))
 
     def _frame_root(self) -> "Path | None":
         """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.
@@ -475,7 +479,13 @@ class Dolores(Ghost):
                 self._container.force_fetch(PromptManager)
                 if self._container is not None else None
             )
+            project_ground = None
+            if self._matrix is not None:
+                candidate = Path(self._matrix.env.project_path)
+                if (candidate / "GROUND.md").is_file():
+                    project_ground = candidate
             self._channel = build_dolores_channel(
+                project_ground=project_ground,
                 memento_manager=self._memento_manager,
                 prompt_manager=prompt_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
