@@ -635,6 +635,10 @@ DEFAULT_RENDER_CHARS = 12000
 DEFAULT_RENDER_SECONDS = 5.0
 _TEMPLATE_DIR = ".grounds"
 
+# 给"收尾"留的余量: `</imports>`、`</ground>` 以及可能的截断标记。子场拿到的额度
+# 永远是父剩余减去这一块, 所以父层永远装得下自己的容器标签 (SPEC §7.2)。
+_CLOSING_RESERVE = 256
+
 
 @dataclass(frozen=True)
 class RenderLimits:
@@ -752,9 +756,10 @@ def render_status(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _error_face(position: Path, reason: str) -> str:
+def _error_face(position: Path, reason: str, pad: int = 0) -> str:
     return (
-        f'<ground path="{_attr(str(position))}" status="error" '
+        " " * pad
+        + f'<ground path="{_attr(str(position))}" status="error" '
         f'reason="{_attr(reason)}"/>'
     )
 
@@ -765,35 +770,40 @@ async def render_position(
     boundary: str | Path,
     limits: RenderLimits | None = None,
     template: str | None = None,
-    _budget: _Budget | None = None,
     _stack: tuple[Path, ...] = (),
+    pad: int = 0,
 ) -> str:
     """渲染一个位置 → 自解释 XML 容器 (SPEC §6).
 
     失败是结果, 不是异常: 位置无场 → status="empty"; 表不可用 / 解析失败 →
     status="error". 两种情况调用方都拿到一段可读文本.
+
+    ``pad`` 是这一层在父容器里的绝对缩进: 先缩进再记账, 嵌进去的每一层都由
+    自己的预算承担自己的缩进, 父只按子交回的字节扣一次。
+
+    字符预算由场自己声明 (frontmatter ``budget``): 不声明才落到渲染器的默认值;
+    显式传入的 ``limits`` 是调用方的硬上限, 与声明取小 (SPEC §7.2)。
     """
-    limits = limits or RenderLimits()
-    budget = _budget or _Budget(limits)
     pos = Path(position).expanduser().resolve()
     edge = Path(boundary).expanduser().resolve()
 
     if not pos.is_dir():
-        return _error_face(pos, f"not a directory: {pos}")
+        return _error_face(pos, f"not a directory: {pos}", pad)
     if not pos.is_relative_to(edge):
-        return _error_face(pos, f"outside boundary: {edge}")
+        return _error_face(pos, f"outside boundary: {edge}", pad)
 
     ground = find_ground(pos, edge)
     if ground is None and not template:
         return (
-            f'<ground path="{_attr(str(pos))}" status="empty" '
+            " " * pad
+            + f'<ground path="{_attr(str(pos))}" status="empty" '
             f'reason="no GROUND.md up to boundary"/>'
         )
 
     try:
         table_path = _resolve_table(template or "", ground or pos, edge)
     except ValueError as exc:
-        return _error_face(pos, str(exc))
+        return _error_face(pos, str(exc), pad)
 
     try:
         target = (
@@ -807,11 +817,32 @@ async def render_position(
             else target
         )
     except Exception as exc:  # noqa: BLE001 — SPEC §6.7: 失败是结果
-        return _error_face(pos, f"{type(exc).__name__}: {exc}")
+        return _error_face(pos, f"{type(exc).__name__}: {exc}", pad)
 
     ground_dir = ground or pos
     walk = ground is not None and pos != ground
     cwd = pos if walk else ground_dir
+
+    # 预算属于场, 不属于渲染器: 场声明多少就是多少, 没声明才用默认值;
+    # 调用方传进来的 limits 是硬上限, 和声明取小 —— 两条上限同时生效.
+    declared = target.convention.budget
+    if limits is None:
+        limits = RenderLimits(chars=declared or DEFAULT_RENDER_CHARS)
+    elif declared is not None:
+        limits = RenderLimits(chars=min(limits.chars, declared), seconds=limits.seconds)
+    budget = _Budget(limits)
+
+    pad_s = " " * pad
+    child_pad = " " * (pad + 2)
+
+    def emit(text: str) -> bool:
+        """记一个子节点 — 缩进先加、预算按最终字节扣. 不装下就不发."""
+        block = "\n".join(child_pad + ln for ln in text.splitlines())
+        if not budget.fits(len(block) + 1):
+            return False
+        budget.charge(block + "\n")
+        parts.append(block)
+        return True
 
     convention = target.convention
     line = [f'<ground path="{_attr(str(ground_dir))}"']
@@ -824,17 +855,17 @@ async def render_position(
     if table_path is not None:
         line.append(f' table="{_attr(str(table_path))}"')
     line.append(">")
-    head = "".join(line)
-    if not budget.fits(len(head) + 2):
-        return head + "</ground>"
-    budget.charge(head)
+    head = pad_s + "".join(line)
+    if not budget.fits(len(head) + 1):
+        # 头是这一面的身份, 必发; 但它单独就把预算撑破了 —— 明说, 别装作还有内容.
+        return "\n".join(
+            [head, child_pad + '<truncated reason="budget"/>', pad_s + "</ground>"]
+        )
+    budget.charge(head + "\n")
     parts = [head]
 
     if walk:
-        node = f'  <cwd path="{_attr(str(cwd))}"/>'
-        if budget.fits(len(node) + 1):
-            budget.charge(node)
-            parts.append(node)
+        emit(f'<cwd path="{_attr(str(cwd))}"/>')
 
     anchor = Anchor(ground=ground_dir, cwd=cwd)
     ignore = _ignore_spec_from(convention, ground_dir)
@@ -845,84 +876,103 @@ async def render_position(
             _build_body_with_at, source.body, ground_dir
         )
         body_text = "\n".join([body_text] + [b.content for b in at_children])
-        node = f"  <body>{_esc(body_text.strip())}</body>"
-        if budget.fits(len(node) + 1):
-            budget.charge(node)
-            parts.append(node)
+        if not emit(f"<body>{_esc(body_text.strip())}</body>"):
+            emit('<truncated reason="budget"/>')
 
     pins = list(source.pins)
     expanded = [p for p in pins if not walk or _is_positional(p) or p.always_show]
     folded = [p for p in pins if p not in expanded]
 
     for pin in expanded:
-        node = await _render_pin_node(pin, anchor, ignore, budget)
-        parts.append(node)
+        node = await _render_pin_node(pin, anchor, ignore, budget, pad + 2)
+        if budget.fits(len(node) + 1):
+            budget.charge(node + "\n")
+            parts.append(node)
 
     if folded:
-        rows = ["  <folded>"]
+        rows = ["<folded>"]
         for pin in folded:
             rows.append(
-                f'    <pin verb="{_attr(pin.verb)}" label="{_attr(pin.label)}"'
+                f'  <pin verb="{_attr(pin.verb)}" label="{_attr(pin.label)}"'
                 + (f' desc="{_attr(pin.description)}"' if pin.description else "")
                 + "/>"
             )
-        rows.append("  </folded>")
-        node = "\n".join(rows)
-        if budget.fits(len(node) + 1):
-            budget.charge(node)
-            parts.append(node)
+        rows.append("</folded>")
+        emit("\n".join(rows))
 
     # imports — 本场声明要 import 的子目录 (SPEC §3.1/§6.6).
     # 只按声明走: 不发现, 不猜测; 声明里没有的目录不会出现. 子目录不必是场.
-    # 记账: 子渲染自己扣预算, 这里不再重复扣 (否则同一段内容记两次).
+    # 只在场根面渲染: imports 是 GROUND.md 所在目录的机制, walk 面重画它既是
+    # 重复 (整棵导入树在父场内部再出现一遍), 也必然成环 (父场 import 的子目录
+    # 走的就是父场自己). 预算: 父往下过滤 — 子拿到的额度 = 父剩余 - 收尾保留,
+    # 子渲染时按最终缩进记账, 父只按子交回的字节数扣一次.
     imports_rows: list[str] = []
-    for entry in (source.convention.imports or []):
-        child_dir = (ground_dir / str(entry)).resolve()
-        if budget.used >= budget.total:
-            imports_rows.append(
-                f'  <truncated reason="budget" path="{_attr(str(child_dir))}"/>'
+    inner_pad = " " * (pad + 2)
+
+    def push(row: str) -> bool:
+        """记一行 imports 内容 — 装得下才发, 所以标记也不会把预算撞破."""
+        if not budget.fits(len(row) + 1):
+            return False
+        budget.charge(row + "\n")
+        imports_rows.append(row)
+        return True
+
+    def marker(reason: str, path: Path) -> str:
+        return f'{inner_pad}<truncated reason="{reason}" path="{_attr(str(path))}"/>'
+
+    if not walk:
+        for entry in (source.convention.imports or []):
+            child_dir = (ground_dir / str(entry)).resolve()
+            allowance = budget.total - budget.used - _CLOSING_RESERVE
+            if allowance <= 0:
+                push(marker("budget", child_dir))
+                break
+            if child_dir in _stack or child_dir == ground_dir:
+                if not push(marker("cycle", child_dir)):
+                    break
+                continue
+            if not child_dir.is_relative_to(edge):
+                if not push(marker("outside", child_dir)):
+                    break
+                continue
+            inner = await render_position(
+                child_dir,
+                boundary=edge,
+                limits=RenderLimits(
+                    chars=allowance,
+                    seconds=max(budget.remaining_seconds, 0.0),
+                ),
+                _stack=_stack + (ground_dir,),
+                pad=pad + 2,
             )
-            break
-        if child_dir in _stack or child_dir == ground_dir:
-            imports_rows.append(
-                f'  <truncated reason="cycle" path="{_attr(str(child_dir))}"/>'
-            )
-            continue
-        if not child_dir.is_relative_to(edge):
-            imports_rows.append(
-                f'  <truncated reason="outside" path="{_attr(str(child_dir))}"/>'
-            )
-            continue
-        inner = await render_position(
-            child_dir,
-            boundary=edge,
-            limits=limits,
-            _budget=budget,
-            _stack=_stack + (ground_dir,),
-        )
-        imports_rows.append("\n".join("  " + ln for ln in inner.splitlines()))
+            if not push(inner):
+                push(marker("budget", child_dir))
+                break
 
     if imports_rows:
-        node = "  <imports>\n" + "\n".join(imports_rows) + "\n  </imports>"
-        budget.charge(node)
-        parts.append(node)
+        # 子场已经按自己的额度记过账, 这里只记容器自己那两行.
+        open_tag = inner_pad + "<imports>"
+        close_tag = inner_pad + "</imports>"
+        if budget.fits(len(open_tag) + len(close_tag) + 2):
+            budget.charge(open_tag + "\n")
+            parts.append(open_tag)
+            parts.extend(imports_rows)
+            budget.charge(close_tag + "\n")
+            parts.append(close_tag)
 
     templates = await asyncio.to_thread(_discover_templates, ground_dir)
     if templates:
-        rows = ["  <templates>"]
+        rows = ["<templates>"]
         for tname, tdesc in templates:
             rows.append(
-                f'    <template name="{_attr(tname)}"'
+                f'  <template name="{_attr(tname)}"'
                 + (f' desc="{_attr(tdesc)}"' if tdesc else "")
                 + "/>"
             )
-        rows.append("  </templates>")
-        node = "\n".join(rows)
-        if budget.fits(len(node) + 1):
-            budget.charge(node)
-            parts.append(node)
+        rows.append("</templates>")
+        emit("\n".join(rows))
 
-    parts.append("</ground>")
+    parts.append(pad_s + "</ground>")
     return "\n".join(parts)
 
 
@@ -931,22 +981,24 @@ async def _render_pin_node(
     anchor: Anchor,
     ignore: PathSpec | None,
     budget: _Budget,
+    pad: int = 0,
 ) -> str:
     """一枚 pin → `<pin>` 节点. 墙钟耗尽 → status="timeout" (SPEC §7.2)."""
+    indent = " " * pad
     attrs = f'verb="{_attr(pin.verb)}" label="{_attr(pin.label)}"'
     if pin.description:
         attrs += f' desc="{_attr(pin.description)}"'
 
     remaining = budget.remaining_seconds
     if remaining <= 0:
-        return f'  <pin {attrs} status="timeout"/>'
+        return f'{indent}<pin {attrs} status="timeout"/>'
 
     try:
         obs = await asyncio.wait_for(
             observe(pin, anchor, ignore=ignore), timeout=remaining
         )
     except asyncio.TimeoutError:
-        return f'  <pin {attrs} status="timeout"/>'
+        return f'{indent}<pin {attrs} status="timeout"/>'
 
     content, at_children = await asyncio.to_thread(
         _pin_block_content, pin, anchor, obs, ignore=ignore
@@ -955,10 +1007,18 @@ async def _render_pin_node(
     if at_children:
         text = "\n".join([text] + [b.content for b in at_children]).strip()
 
-    body = f"  <pin {attrs}>{_esc(text)}</pin>"
+    body = f"{indent}<pin {attrs}>{_esc(text)}</pin>"
     if not budget.fits(len(body) + 1):
-        return f'  <pin {attrs} status="truncated"/>'
-    budget.charge(body)
+        # 装不下就裁内容而不是丢掉整枚 pin: 半枚 pin 仍能用, 一个空标签什么也说明不了.
+        room = (
+            budget.total
+            - budget.used
+            - _CLOSING_RESERVE
+            - len(f"{indent}<pin {attrs}>...</pin>")
+        )
+        if room <= 0:
+            return f'{indent}<pin {attrs} status="truncated"/>'
+        return f"{indent}<pin {attrs}>{_esc(text)[:room]}</pin>"
     return body
 
 

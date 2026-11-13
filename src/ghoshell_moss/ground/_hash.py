@@ -127,7 +127,7 @@ def observe_sync(
     if isinstance(pin, ExecPin):
         return _observe_exec(pin, anchor)
     if isinstance(pin, ContentPin):
-        return _observe_law(pin, anchor)
+        return _observe_content(pin, anchor)
     raise TypeError(f"unknown pin type: {type(pin).__name__}")
 
 
@@ -301,7 +301,7 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     return Observation(exists=True, payload=payload, size=len(payload), unit="chars")
 
 
-def _observe_law(pin: ContentPin, anchor: Anchor) -> Observation:
+def _observe_content(pin: ContentPin, anchor: Anchor) -> Observation:
     """content pin 观察 — 收集 cwd 向上到 ground root 的约定文件清单.
 
     内容由渲染层读取 (render-time, 与 file/glob 同构).

@@ -53,7 +53,7 @@ imports:
 ```
 
 1. **frontmatter** — YAML between the `---` fences. Reserved keys: `$id`,
-   `name`, `description`, `pins`, `imports`, `ignore`, `ignore_file`.
+   `name`, `description`, `pins`, `imports`, `ignore`, `ignore_file`, `budget`.
    Unknown keys are preserved on write.
 2. **body** — everything after the closing frontmatter fence. Open set.
 
@@ -73,8 +73,14 @@ A directory without `GROUND.md` is not a ground.
 | `imports` | list of strings | The subdirectories **this ground imports into its own face** (§6.6). Paths are relative to the ground root; an entry need **not** be a ground. The name is Python's: writing an entry is the act of confirming that directory is part of this ground. Optional; absent = nothing imported. |
 | `ignore` | list of strings | Ground-level ignore patterns — `.gitignore` semantics, relative to ground root. All discovery pins (glob, frontmatter pattern, ls) automatically respect these rules. Optional. |
 | `ignore_file` | string | Path to a file (relative to ground root) containing additional ignore patterns, one per line. Merged with `ignore` inline list. `.gitignore` or `.groundignore` are expected names. Optional. |
+| `budget` | int | This face's character budget (§7.2) — how many characters one render of this ground may deliver. It is the ground's own declaration: the author writes the number, measures it, and changes it. Absent = the renderer's default. |
 
 Implementations MUST NOT reject unknown frontmatter keys.
+
+`budget` is the one field that is neither identity nor content but **policy the
+author sets about their own face**. It is written in characters, not bytes, to
+match the per-pin `budget` fields (§4.1). A renderer MUST honour it; a caller
+MAY pass a smaller explicit ceiling, and the smaller of the two applies.
 
 ### 3.1 `imports` is a self-declaration, not a render directive
 
@@ -91,7 +97,9 @@ ground's presentation — not a hint the renderer may take or leave.
   not presence in the face.
 - **Entries need not be grounds.** A plain directory can be imported; it is
   rendered at that position (SPEC §6.1), which resolves to the nearest
-  `GROUND.md` — usually this very ground.
+  `GROUND.md` — usually this very ground — and therefore draws a **walk face**:
+  `$CWD` and pins, no body, and no imports (§6.3). The imported tree is the
+  ground root's business; the walk face does not repeat it.
 - **Recursion follows the declaration.** An imported directory that is itself
   a ground renders its own face, and that face imports what *it* declares. The
   tree is bounded by the render budget (§6.6), never by a depth constant.
@@ -379,11 +387,17 @@ Rendered when the position is inside a ground but is not its root:
    declared at the root follow the viewer)
 4. **`$GROUND`-anchored pins** — folded into a compact table of contents
    (label, verb, arguments one-liner, description), unless `always_show`
-5. **imports** — the `imports` list is still rendered (§6.6): the imported
-   directories belong to the ground, not to the position
 
-No new ground is opened by walking: the ground root, its body, and its pins are
-unchanged — only `$CWD` moved.
+**No imports.** `imports` (§3.1) is a mechanism of the directory that holds the
+`GROUND.md`, and it draws the root face. A walk face is "I am already inside
+that root": re-rendering its import tree there would duplicate the whole face
+at every step down, and — since the ground's own imports usually include the
+subtree being walked — would not terminate. A walk face therefore never emits
+an `<imports>` node; a nested imported directory that is not itself a ground
+draws exactly this face.
+
+No new ground is opened by walking: the ground root, its body, its pins, and
+its imports are unchanged — only `$CWD` moved.
 
 #### 6.3.1 What counts as a positional pin
 
@@ -475,6 +489,7 @@ special characters: `@"path with spaces.md"`.
 ### 6.6 Imported directories
 
 A ground's `imports` (§3.1) lists the directories it draws inside its own face.
+It is rendered **only on the field-root face** — never on a walk face (§6.3).
 For each entry, in declaration order:
 
 1. Render that directory **as a position** (§6.1). If it carries its own
@@ -495,6 +510,15 @@ carries a byte budget (§7.2), and when it runs out the last node is a
 `<truncated reason="budget" path="…"/>`. Entries after the cut are not
 rendered — the marker names where the face stopped, so the reader knows exactly
 what to render next.
+
+**The budget filters downward.** A child is not given the parent's remaining
+budget; it is given that remaining minus a closing reserve (`</imports>`,
+`</ground>`, and any truncation marker the parent may still have to write). The
+child's output — indentation included, because a child's lines carry every
+ancestor's padding — is charged to the parent exactly once, at the bytes it
+actually returns. Indentation added after the fact is budget that was never
+counted: the guarantee is about the text delivered, so it must be counted on
+the delivered form.
 
 ### 6.7 Render tables — a template, or a target `.md`
 
@@ -553,10 +577,21 @@ pretend a stale face is current.
 ### 7.2 Render budgets
 
 Two budgets bound one render. Both are properties of the render, not of any
-single pin:
+single pin.
 
-- **byte budget** — total rendered characters. When exhausted, the current node
-  is replaced by `<truncated reason="budget" path="…"/>` and rendering stops.
+The **character budget is declared by the ground** (`budget`, §3). The renderer
+supplies a default only for a ground that declares none, and the default is a
+fallback, not a policy: two different numbers enforced for the same face (one in
+the renderer, one in whatever calls it) is how a face ends up "fitting" in one
+place and "truncating" in another. An explicit `limits` argument is a caller's
+own ceiling — a small context wanting less — and the effective budget is the
+smaller of the declaration and that ceiling.
+
+- **byte budget** — total rendered characters of the delivered text, indentation
+  included. When exhausted, the current node is replaced by
+  `<truncated reason="budget" path="…"/>` and rendering stops. A nested face is
+  allocated the parent's remaining minus a closing reserve (§6.6), so the
+  container tags of every open level always fit.
 - **wall-clock budget** — total render time. When it expires, pins that have
   not started are not started, and pins still running are **cancelled**; both
   render as `<pin … status="timeout"/>`. A per-pin `timeout` (§5.5) is a

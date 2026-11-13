@@ -1,6 +1,10 @@
 ---
 name: Ghost Ground
 description: file-based 认知场，由 ghost 自治
+# 这一面的字符预算. 它进 boot instruction, 每轮都随 system prompt 待在上下文里,
+# 所以按「我愿意每轮都带着这么多」来定, 不是按「最多能塞多少」. 超了会在渲染里留
+# <truncated reason="budget"/>, 用 `moss ground validate .moss/ghosts/moss --budget` 验.
+budget: 16000
 pins:
 - label: subfields
   verb: frontmatter

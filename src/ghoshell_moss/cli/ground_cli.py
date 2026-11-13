@@ -12,11 +12,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 import typer
 
-from ghoshell_moss.cli.utils import echo, print_error, print_info, print_simple_table, print_success
+from ghoshell_moss.cli.utils import (
+    echo,
+    print_error,
+    print_info,
+    print_simple_table,
+    print_success,
+    print_warning,
+)
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME
 from ghoshell_moss.ground._hash import observe_sync
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
@@ -26,9 +34,9 @@ __all__ = ["ground_app"]
 ground_app = typer.Typer(
     short_help="Cognitive ground — pin addresses to a directory.",
     help=(
-        "Cognitive ground: pin addresses (file/glob/frontmatter/ls) to a "
-        "directory, get a rendered view of pinned content with change tracking. "
-        "State persists in GROUND.md per directory."
+        "Cognitive ground: a directory marked by GROUND.md renders itself as a "
+        "position — body, pins, and the directories it imports, nested. Reads are "
+        "cold; the state lives in GROUND.md per directory."
     ),
     no_args_is_help=True,
 )
@@ -81,21 +89,14 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def _find_ancestor_ground(start: Path) -> Path | None:
-    """从 start 的父目录向上找最近的 GROUND.md, 边界 $HOME (SPEC §7.5).
+    """从 start 向上找最近的 GROUND.md, 边界是项目根 (SPEC §6.1).
 
-    返回 GROUND.md 所在目录 (场根), 找不到返回 None.
-    start 自身不查 — caller 已确认 start 无 GROUND.md.
+    与 ``render`` 用同一个解析器: 边界不是 $HOME, 而是本项目自己 — 项目之外
+    的场不归这里管. start 自身也查, 因为调用方未必先判过.
     """
-    import os
+    from ghoshell_moss.ground._render import find_ground
 
-    home = Path(os.environ.get("HOME", "/")).resolve()
-    current = start.resolve().parent
-    while True:
-        if (current / DEFAULT_L0_FILENAME).is_file():
-            return current
-        if current == home or current == current.parent:
-            return None
-        current = current.parent
+    return find_ground(start, _default_boundary())
 
 
 # -- spec -----------------------------------------------------------------
@@ -175,7 +176,7 @@ def cmd_templates(
         None, help="Directory to inspect (defaults to cwd)."
     ),
     root: Path | None = typer.Option(
-        None, "--root", help="Boundary of the upward search (defaults to $HOME)."
+        None, "--root", help="Boundary of the upward search (defaults to the project home)."
     ),
 ) -> None:
     """List templates discovered under the ground's own `.grounds/`.
@@ -272,7 +273,7 @@ def cmd_render(
     ),
     root: Path | None = typer.Option(
         None, "--root",
-        help="Boundary of the upward search (defaults to $HOME).",
+        help="Boundary of the upward search (defaults to the project home).",
     ),
 ) -> None:
     """Render the face of a position.
@@ -306,13 +307,71 @@ def cmd_render(
 
     out = asyncio.run(render_position(position, boundary=boundary, template=template))
     echo(out)
+    _report_truncations(out)
     if render_status(out) in ("empty", "error"):
         raise typer.Exit(code=1)
 
 
+_TRUNCATED_RE = re.compile(
+    r'<truncated reason="([^"]+)"(?: path="([^"]*)")?|status="truncated"'
+)
+
+
+def _report_face_budget(root: Path) -> None:
+    """按场自己声明的预算渲一遍 — 场装不下的时候, 写 GROUND.md 的人应该当场知道."""
+    from ghoshell_moss.ground._l0 import load_l0
+    from ghoshell_moss.ground._render import (
+        DEFAULT_RENDER_CHARS,
+        render_position,
+    )
+
+    declared = (asyncio.run(asyncio.to_thread(load_l0, root))).convention.budget
+    out = asyncio.run(render_position(root, boundary=_default_boundary()))
+    hits = _TRUNCATED_RE.findall(out)
+    if not hits:
+        source = "declared" if declared is not None else "renderer default"
+        print_info(
+            f"budget: {len(out)} / {declared or DEFAULT_RENDER_CHARS} chars "
+            f"({source}), no truncation"
+        )
+        return
+    _report_truncations(out)
+
+
+def _report_truncations(out: str) -> None:
+    """把截断点报到 stderr — stdout 只给面, 这一行是编写 GROUND.md 的反馈.
+
+    A face that silently loses content looks complete. The warning is what turns
+    "the ground got too big" from a mystery into a number you can act on.
+    """
+    hits = _TRUNCATED_RE.findall(out)
+    if not hits:
+        return
+    reasons: dict[str, int] = {}
+    first_path = ""
+    for reason, path in hits:
+        key = reason or "pin"
+        reasons[key] = reasons.get(key, 0) + 1
+        if path and not first_path:
+            first_path = path
+    detail = ", ".join(f"{key} × {count}" for key, count in reasons.items())
+    where = f" (first at {first_path})" if first_path else ""
+    print_warning(f"render truncated: {detail}{where}")
+
+
 def _default_boundary() -> Path:
-    home = os.environ.get("HOME")
-    return Path(home) if home else Path("/")
+    """CLI 的边界 — 项目根.
+
+    ground 属于一个项目, 不属于这台机器: 向上找最近的 ``.git``, 找不到时
+    才退回 ``$HOME`` (给不在项目里的临时目录用)。
+    """
+    from ghoshell_moss.core.codex.features import find_project_home
+
+    home = find_project_home()
+    if home is not None:
+        return home
+    env_home = os.environ.get("HOME")
+    return Path(env_home) if env_home else Path("/")
 
 
 # -- meta -----------------------------------------------------------------
@@ -473,6 +532,11 @@ def cmd_validate(
     path: Path | None = typer.Argument(
         None, help="Ground root (defaults to cwd)."
     ),
+    budget: bool = typer.Option(
+        False, "--budget",
+        help="Also render this ground with the default budget and report "
+             "truncation. Exec pins run, so this is a cold read, not a pure one.",
+    ),
 ) -> None:
     """Check GROUND.md frontmatter and pins for format errors."""
     import re
@@ -632,3 +696,6 @@ def cmd_validate(
         print_success(f"GROUND.md is valid ({len(warnings)} warning(s))")
     else:
         print_success("GROUND.md is valid")
+
+    if budget:
+        _report_face_budget(root)

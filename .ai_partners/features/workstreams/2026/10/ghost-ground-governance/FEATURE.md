@@ -131,16 +131,13 @@ render(path: str = "", template: str = "") -> str
 
 ### D12 — ghost home 的场进 **instruction**（原定的 `<memory>` 方案作废）
 
-```xml
-<memory instanced_at="...">
-  <ground .../>      <!-- ghost home，imports 点名渲染 -->
-  <memento .../>
-</memory>
-```
+`_runtime.system_prompt()` 在 `identity_instruction()` 之后、inception/base 之前插入一段
+`<!-- ground: ghost home -->` + 根场渲染，boot 时渲一次；`<memory>` 里只剩 memento。
 
-理由：ground 和 memento 是同一种东西——认知面。同生命周期的东西住同一个容器。副作用是
-顺手解决"ground 冻在 epoch baseline、refresh 改了缓存没人读"——memory 每次 refresh 就带
-新渲染。
+理由是位置而不是容器：identity 是一行"我是谁"，ground 是"这一行活在哪"，先有人再有世界，
+操作性的段落（protocol / concurrent mind）排在后面。原方案（ground + memento 同住 `<memory>`）
+作废——`<memory>` 每帧重发，而 ghost home 是 12k 量级的稳定内容，逐帧带上等于每轮重付一次
+prompt cache。
 
 ### D13 — ghost 只挂 project 级 ground channel
 
@@ -149,7 +146,7 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 
 ## 3. 执行顺序（严格串行，每步可重启）
 
-> **进度（2026-11-13 19:3x）**
+> **进度（2026-11-14 01:0x）**
 > - ✅ -1 本记录 + commit
 > - ✅ 0 dolores 摘掉 ghost ground channel（`320f987d`）
 > - ✅ 1 SPEC 0.3.0（`13df968e` + `e6382f27` 修 16 处自解释缺陷）
@@ -159,7 +156,11 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 > - ✅ 4 ghost home 进 instruction（`_runtime.system_prompt()`，位置在 identity 之后、
 >   inception 之前；home 渲染预算单独提到 16000）
 > - ✅ 5 project ground channel 挂回 `ghost.project_ground`（边界 = 项目根）
-> - 落地提交：`e27ed3fa` CLI 修正、`3941e5e9` imports 改名
+> - ✅ 6 验收（D14 重启后）：walk 面无 imports、预算父子过滤、CLI 边界改项目根、删 `_edit.py`
+> - ✅ 7 预算归场自声明（D15）：frontmatter `budget`、渲染器默认只兜底、`_runtime.py` 的
+>   16000 移进 `.moss/ghosts/moss/GROUND.md`
+> - 落地提交：`e27ed3fa` CLI 修正、`3941e5e9` imports 改名、`a11d4f16` dsh 锚点、
+>   `0d8d69a6` instruction + project 场、`40c3a646` CLI 二轮、`915412bb` 移出生成物
 
 
 - **-1 本记录 + commit。** 破坏性重启丢了上下文还能从这里恢复。
@@ -171,9 +172,9 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
   frame 转发）→ `_ground.py`（去生命周期，渲染带预算）→ `_grounds.py`（退化解析器）→
   `_render.py`（位置解析 + 递归 + `<templates>` + 截断标记）。
 - **3 改 `moss ground` CLI，用它做测试。** CLI 是这一层唯一能脱离 ghost 跑起来的验证面。
-- **4 把 ghost home ground 渲染进 memory。** `_runtime.memories()` 里 `<ground/>` 在
-  `<memento/>` 之前；`system_prompt()` 里的 ground 段删除。
-- **5 project ground channel** 等 0–4 全部完成后再考虑加。
+- **4 把 ghost home 渲染进 instruction。** `_runtime.system_prompt()` 在 identity 之后插
+  ground 段（boot 渲一次，预算 16000）；`memories()` 只留 memento，不再带 ground。
+- **5 挂 project ground channel。** `ghost.project_ground`，边界 = 项目根，只有一条 `render`。
 
 ## 4. 验收（重启后逐条对）
 
@@ -182,26 +183,58 @@ ghost home 不挂 channel（D12），mode home 不挂。project ground 由 chann
 2. 父场渲染里只出现 `imports:` 点名的子场；未点名的子场不在其中。
 3. 截断点可见（路径 + 原因），不是静默丢。
 4. `<templates>` 节自动出现在有 `.grounds/` 的场渲染里。
-5. ghost 的 memory 段形状 `<memory><ground/><memento/></memory>`，instruction 里没有场内容。
-6. facade 里没有 `ghost.ground`；只有 project 级 ground channel（step 5 之后）。
+5. instruction 里 ground 在 identity 之后、inception 之前；`<memory>` 里只有 memento。
+6. facade 里没有 `ghost.ground`；只有 project 级 ground channel。
 7. `grep -r "LawPin\|law pin" src/` 为空（D11 完成）。
+
+### D14 — 验收后修的三件事（2026-11-14）
+
+1. **walk 面不渲染 imports。** `imports` 是 GROUND.md 所在目录的机制，属于场根面。walk 面
+   重画它，既在每下一个目录时重复整棵导入树，又必然成环——父场 import 的子目录走的就是父场
+   自己。判环因此也改成"正在渲染的位置"，不只是"场"。
+2. **预算父子过滤。** 子拿的不是父的剩余，而是"剩余 − 收尾保留"；子输出的最终字节（含缩进）
+   记到父账上，且只记一次。缩进必须在记账前加——先发后缩，缩进就是没被数过的预算。
+   pin 装不下时裁内容保留标签，而不是整枚丢弃。
+3. **CLI 边界 = 项目根。** 不是 `$HOME`。`render`/`templates`/`meta`/`observe` 全部走
+   `find_ground(boundary=项目根)`；项目之外不归这里管。`render` 把截断报到 stderr，
+   `validate --budget` 按默认预算渲一遍并报截断——写 GROUND.md 的人当场知道场写胖了。
+
+### D15 — 预算是场的自声明，不是渲染器的闸门（2026-11-14）
+
+`budget` 不是渲染器的策略，是 GROUND.md frontmatter 里的一个槽：**场自己说"我这一面值多少
+字符"，自己填、自己测、自己改**。渲染器只做三件事：
+
+- 场声明了 → 按声明执行，超出处留 `<truncated reason="budget" path=…/>`；
+- 场没声明 → 用渲染器的默认值兜底（默认是 fallback，不是 policy）；
+- 调用方传了 `limits` → 与声明取小（小上下文想少要点，是它自己的上限）。
+
+来由：这是验收时我搞错的地方。上一轮我把整次渲染的字符预算做成渲染器常量
+`DEFAULT_RENDER_CHARS=12000`，又给 ghost home 单独写死 16000 —— 同一个场在两处得到两个
+答案，`moss ground render` 说截断、instruction 说没截断。更根本的是：场说什么都不生效，
+"自己填、自己测、自己分析"这个闭环根本不存在。
+
+历史事实（可复核）：改动前 ground **没有**总预算。`git show 7adb7ea5^:src/ghoshell_moss/ground/_ground.py`
+全文无 `budget`；旧 SPEC 只有 pin 级 `budget`。总预算来自 D5 那句"用一个整次渲染的字节预算"，
+但 D5 讲的是**递归怎么终止**，不是"预算归谁声明"——那一步是我自己加的引申。
 
 ## 5. 开放问题
 
 - ~~`law` verb 的新名字~~ 已定：`content`（D11）。
 - 渲染表的两种形态（`template=<name>` / `template=<path>.md`）是否还需要第三种"目录直挂"？
-- 字节预算的默认值（先按 8K 试，逐层递减？还是整次渲染一个总预算）。
-- 渲染墙钟预算默认值（先按 5s/整次）。
 - `.grounds/` 模板发现的搜索层级：只有 root 一层，还是边界内每层都看。
+- ~~ghost home 的 16000 与默认 12000 口径不一致~~ 已解决（D15）：ghost home 在
+  `GROUND.md` 里声明 `budget: 16000`，渲染器不再持有第二个数。当前是 11411 / 16000。
 
 ## 6. 参考（当前实现的位置，供 step 1–2 逐条对照）
 
 | 关注点 | 现在在哪 |
 |---|---|
-| 位置解析（walk vs field-root） | `_ground.py:102` `render(cwd=)`；`_find_ancestor_ground` 在 `cli/ground_cli.py:85` |
-| walk 面组装（折叠 TOC） | `_render.py:206` `render_walk` / `_render.py:256` `_assemble_walk_blocks` |
-| 子场物化 | `_grounds.py:343` `_materialize_children` |
-| 帧缓存 / refresh | `channels/ground_channel.py:177` `_refresh_ground` |
-| 根场进 instruction | `ghosts/dolores/_runtime.py:362-365`、`:673` |
-| 模板 | `_grounds.py:46` `scan_templates`、`.grounds/` |
-| 场级 ignore | `_ground.py:191` `_make_ignore_spec`、`contract.py` `GroundConvention.ignore` |
+| 位置解析（walk vs field-root） | `_render.py` `find_ground()` + `render_position()` |
+| 面组装（body / pins / folded / imports / templates） | `_render.py` `render_position()` 尾段 |
+| 预算（父子过滤 + 缩进记账） | `_render.py` `_Budget`、`_CLOSING_RESERVE`、imports 循环 |
+| 场容器 | `_grounds.py` `DefaultGroundSet`（root/boundary/ground_at/render，63 行） |
+| channel | `channels/ground_channel.py` `new_ground_channel()`（只有 `render`） |
+| 根场进 instruction | `ghosts/dolores/_runtime.py` `system_prompt()` / `__aenter__` |
+| 模板 | `_render.py` `_discover_templates()`、`_resolve_table()`、`.grounds/` |
+| 场级 ignore | `_render.py` `_ignore_spec_from()`、`contract.py` `GroundConvention.ignore` |
+| CLI | `cli/ground_cli.py`：边界 `_default_boundary()`（项目根）、截断报告 `_report_truncations()` |

@@ -26,7 +26,7 @@ from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.ground import DefaultGroundSet, RenderLimits
+from ghoshell_moss.ground import DefaultGroundSet
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -409,9 +409,10 @@ class Dolores(Ghost):
         """
         if self._ground_set is None:
             return None
-        # The home is cognition, so it gets more room than a generic render: it grows as
-        # the ghost writes, and a truncated "who am I" is worse than a longer prompt.
-        return await self._ground_set.render(limits=RenderLimits(chars=16000))
+        # The budget belongs to the home itself: GROUND.md declares `budget:`, and the renderer
+        # honours it. Nothing here may invent a second number — a hidden one here silently
+        # disagrees with what `moss ground render` reports for the same field.
+        return await self._ground_set.render()
 
     def _frame_root(self) -> "Path | None":
         """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.

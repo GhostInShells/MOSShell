@@ -9,7 +9,6 @@
 - _hash.py         pin 观察 (per-class 多态)
 - _l0.py           GROUND.md 读写
 - _chain.py        内容文件链 (content pin 向上收集)
-- _edit.py         GROUND.md 的 pin 增删与校验 (纯文件操作)
 - _render.py       渲染: 位置 → 自解释 XML 面
 - _grounds.py      DefaultGroundSet
 """

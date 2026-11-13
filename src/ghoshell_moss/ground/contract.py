@@ -81,6 +81,13 @@ class GroundConvention(BaseModel):
         default=None,
         description="场根下的 ignore 规则文件路径 (.gitignore / .groundignore).",
     )
+    budget: int | None = Field(
+        default=None,
+        ge=1,
+        description="这一面的字符预算 — 场自己声明: 一次渲染最多交付多少字符. "
+        "不声明 = 用渲染器的默认值. 超出的地方留给 <truncated reason=\"budget\"/>, "
+        "作者拿它当写作反馈.",
+    )
 
     model_config = {"extra": "allow"}
 

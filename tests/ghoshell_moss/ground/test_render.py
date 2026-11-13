@@ -410,3 +410,112 @@ def test_render_position_cycle_is_a_result_not_a_hang(tmp_path: Path):
     out = asyncio.run(render_position(a, boundary=tmp_path))
 
     assert 'reason="cycle"' in out
+
+
+def test_walk_face_does_not_render_imports(tmp_path: Path):
+    """imports 是 GROUND.md 所在目录的机制, walk 面不重画它 (SPEC §6.3)."""
+    from ghoshell_moss.ground._render import render_position
+
+    child = tmp_path / "child"
+    child.mkdir()
+    _write_ground(child, "---\nname: child\n---\n\nchild body\n")
+    _write_ground(tmp_path, "---\nname: root\nimports:\n- child\n---\n\nroot body\n")
+
+    inside = child / "deeper"
+    inside.mkdir()
+    out = asyncio.run(render_position(inside, boundary=tmp_path))
+
+    assert "<imports>" not in out
+    assert 'name="child"' in out  # header 仍是 child 这个场的身份
+
+
+def test_importing_a_plain_directory_terminates(tmp_path: Path):
+    """imports 点名一个不是场的子目录 → 它是 walk 面, 不带 imports, 不成环.
+
+    回归: 只按"场"判环时, 这条路径会把父场的 imports 无限重放 (SPEC §6.6).
+    """
+    from ghoshell_moss.ground._render import render_position
+
+    (tmp_path / "plain" / "inner").mkdir(parents=True)
+    _write_ground(tmp_path, "---\nname: root\nimports:\n- plain\n---\n\nroot\n")
+
+    out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+
+    assert out.count("<ground ") == 2  # root + plain 的 walk 面, 仅此而已
+    assert 'reason="cycle"' not in out
+    assert f'<cwd path="{(tmp_path / "plain").resolve()}"/>' in out
+
+
+def test_budget_measures_the_delivered_text(tmp_path: Path):
+    """预算记的是最终交付的字节, 含缩进; 所以输出不会超 (SPEC §7.2)."""
+    from ghoshell_moss.ground._render import RenderLimits, render_position
+
+    for name in ("a", "b", "c"):
+        child = tmp_path / name
+        child.mkdir()
+        _write_ground(child, f"---\nname: {name}\n---\n\n{name * 400}\n")
+    _write_ground(
+        tmp_path,
+        "---\nname: root\nimports:\n- a\n- b\n- c\n---\n\nroot body\n",
+    )
+
+    limit = 1500
+    out = asyncio.run(
+        render_position(
+            tmp_path, boundary=tmp_path, limits=RenderLimits(chars=limit)
+        )
+    )
+
+    assert len(out) <= limit
+    assert 'reason="budget"' in out
+
+
+def test_ground_declares_its_own_character_budget(tmp_path: Path):
+    """预算写在 GROUND.md 自己身上 — 声明多少就渲多少, 渲染器默认只是兜底 (SPEC §7.2)."""
+    from ghoshell_moss.ground._render import render_position
+
+    _write_ground(
+        tmp_path,
+        "---\nname: small\nbudget: 200\n---\n\n" + "word " * 200 + "\n",
+    )
+
+    out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+
+    assert len(out) <= 200
+    assert 'reason="budget"' in out
+
+
+def test_explicit_limits_never_exceed_the_declared_budget(tmp_path: Path):
+    """调用方传上限时与声明取小: 两条上限同时生效."""
+    from ghoshell_moss.ground._render import RenderLimits, render_position
+
+    _write_ground(
+        tmp_path,
+        "---\nname: small\nbudget: 300\n---\n\n" + "word " * 200 + "\n",
+    )
+
+    wider = asyncio.run(
+        render_position(
+            tmp_path, boundary=tmp_path, limits=RenderLimits(chars=9000)
+        )
+    )
+    assert len(wider) <= 300
+
+    tighter = asyncio.run(
+        render_position(
+            tmp_path, boundary=tmp_path, limits=RenderLimits(chars=400)
+        )
+    )
+    assert len(tighter) <= 400
+
+
+def test_a_ground_without_a_declaration_falls_back_to_the_default(tmp_path: Path):
+    """没声明 → 渲染器默认值兜底, 不是无限."""
+    from ghoshell_moss.ground._render import DEFAULT_RENDER_CHARS, render_position
+
+    _write_ground(tmp_path, "---\nname: bare\n---\n\nbody\n")
+
+    out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+
+    assert len(out) < DEFAULT_RENDER_CHARS
+    assert 'reason="budget"' not in out
