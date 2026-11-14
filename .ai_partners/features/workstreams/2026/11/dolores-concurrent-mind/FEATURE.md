@@ -25,7 +25,9 @@ updated: '2026-11-12'
 >
 > - **Maintained documents:** this file (plan + index), `todo.md` (construction tasks),
 >   `clone.md` (the clone scheme, 23 points acked), `ghoshell-dsh-integration.md` (D07: the
->   dsh v0.2.0 reintegration points).
+>   dsh v0.2.0 reintegration points), `emanation-surface.md` (D14: the emanation ontology,
+>   the surface/trail/implementation split, and the failure samples to check against at
+>   acceptance — a cognition record, not plan).
 > - **Discussion:** `discuss/round1/`, `discuss/round2/`. Do not cite them as decisions.
 > - **Attribution:** `他` = thirdgerb stated it; `我推` = moss's inference, **not ratified** —
 >   attack it; `待定` = known unresolved.
