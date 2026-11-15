@@ -44,7 +44,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     event_from_dict,
     render_transcript,
 )
-from ghoshell_moss.ghosts.dolores.constants import MINDFORK, NIRMANAKAYA
+from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA_REMINDER, NIRMANAKAYA
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
     PromptManager,
@@ -576,12 +576,14 @@ class EgoMementoManager:
             await asyncio.gather(*pending, return_exceptions=True)
 
     def _note_message(self, commit_id: str) -> str:
-        """Build the ``<mindfork>`` container for one commit note task.
+        """Build the ``<emanation-reminder>`` container for one commit note task.
 
         The static rules live in the memento channel instruction (read from the active
         ``memento.note`` prompt); this message carries what only the request knows: that the
-        reader is a 應身 (the same mind, forked for one task), which span to record, and that the
-        reply *is* the note — nothing is executed, so a tool call would be an empty answer.
+        reader is an emanation (the same mind, forked for one task), which span to record, and
+        that the reply *is* the note — nothing is executed, so a tool call would be an empty
+        answer. The prose is deliberately one task sentence plus the budget; the format rules
+        already ride in the prompt, and repeating them here is how the container grows.
         """
         commit = self._find_commit(commit_id)
         seq = commit.seq if commit is not None else 0
@@ -599,26 +601,25 @@ class EgoMementoManager:
                 prior_lines.append(f"- {coord}: {message}")
         prior_block = "\n".join(prior_lines)
         return (
-            f"<{MINDFORK} task=\"{DefaultPrompterKeys.MEMENTO_NOTE}\">\n"
+            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_NOTE}\">\n"
             f"<connection>{escape(connection)}</connection>\n"
             f"<prior>{escape(prior_block)}</prior>\n"
-            f"You are a concurrent {NIRMANAKAYA} of yourself above. This is a one-shot task: write\n"
-            "the note for the commit that ends this span. Your final output is the note itself:\n"
-            "first line the title, then the body. Nothing you write is executed; do not call tools.\n"
-            f"The body budget is {self._config.note_body_tokens} tokens; the title line is extra.\n"
-            f"</{MINDFORK}>"
+            f"You are a concurrent {NIRMANAKAYA} of yourself above: write the note for the commit\n"
+            "that ends this span. Your final output is the note itself; do not call tools. "
+            f"Body budget: {self._config.note_body_tokens} tokens; the title line is extra.\n"
+            f"</{NIRMANAKAYA_REMINDER}>"
         )
 
     def _chat_message(self, question: str) -> str:
-        """Build the ``<mindfork>`` container for one chat round: instruction + question."""
+        """Build the ``<emanation-reminder>`` container for one chat round: instruction + question."""
         preamble = MEMENTO_CHAT_SEED
         if self._prompt_manager is not None:
             preamble = self._prompt_manager.render(DefaultPrompterKeys.MEMENTO_CHAT)
         return (
-            f"<{MINDFORK} task=\"{DefaultPrompterKeys.MEMENTO_CHAT}\">\n"
+            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_CHAT}\">\n"
             f"<instruction>{escape(preamble)}</instruction>\n"
             f"<question>{escape(question)}</question>\n"
-            f"</{MINDFORK}>"
+            f"</{NIRMANAKAYA_REMINDER}>"
         )
 
     def _note_context(self, target_seq: int) -> tuple[str | None, list[tuple[str, str]]]:

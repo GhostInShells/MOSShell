@@ -52,7 +52,7 @@ from ghoshell_moss.memento.abcd import CommitMessage, CommitRef
 
 from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
 from ._prompts import dolores_model_notice
-from .constants import SESSION_ALIVE, SESSION_CLOSED
+from .constants import ALIVE_EGO_SESSION, ARCHIVED_EGO_SESSION
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -101,8 +101,8 @@ def _closed_session_title(title: str, updated_at_ms: int) -> str:
     start = match.group(1) if match is not None else ""
     if start and start != end:
         same_day = start[:8] == end[:8]
-        return f"{SESSION_CLOSED} · {start}–{end[9:] if same_day else end}"
-    return f"{SESSION_CLOSED} · {end}"
+        return f"{ARCHIVED_EGO_SESSION} · {start}–{end[9:] if same_day else end}"
+    return f"{ARCHIVED_EGO_SESSION} · {end}"
 
 
 class DoloresEgoConfig(BaseModel):
@@ -324,7 +324,7 @@ class DoloresEgo:
                 raw = summary.projections.values.get("title")
                 if isinstance(raw, str):
                     title = raw
-            if not title.startswith((SESSION_ALIVE, SESSION_CLOSED)):
+            if not title.startswith((ALIVE_EGO_SESSION, ARCHIVED_EGO_SESSION)):
                 continue
             pending.append((summary, title))
         pending.sort(key=lambda item: item[0].updatedAt, reverse=True)

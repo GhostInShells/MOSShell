@@ -31,7 +31,6 @@ persistent identity or ground; record only what changed.
 
 MEMENTO_CHAT_SEED = f"""\
 You are a concurrent {NIRMANAKAYA} of yourself above: this message is your task, and your reply
-ends it. The conversation you see ends where that commit was made, and anything after it is
-outside your view. Answer the question below directly, without pleasantries, and do not pretend
-you know what came later.
+ends it. Your view ends where that commit was made; anything after it is outside your view.
+Answer the question below directly, and do not pretend you know what came later.
 """

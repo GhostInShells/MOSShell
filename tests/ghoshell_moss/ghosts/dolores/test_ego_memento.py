@@ -16,7 +16,7 @@ import pytest
 from ._support import _OfflineConnection
 
 class TestEgoMementoSidecar:
-    """Note task — one off-record round per commit, with the mindfork container.
+    """Note task — one off-record round per commit, with the emanation-reminder container.
 
     Three outcomes, three memento states:
     - success → message (ready);
@@ -102,8 +102,8 @@ class TestEgoMementoSidecar:
         assert kwargs["llm"]["reasoningEffort"] == "low"
         assert kwargs["max_tokens"] > 0
         text = self._note_text(conn)
-        assert '<mindfork task="memento.note">' in text
-        assert "concurrent 應身 of yourself above" in text
+        assert '<emanation-reminder task="memento.note">' in text
+        assert "concurrent Emanation of yourself above" in text
         assert "Your final output is the note itself" in text
         assert self._state(manager, anchor.id) == "ready"
 
@@ -619,11 +619,11 @@ class TestMementoReadSurface:
         assert conn.follows == [("s1", False)]
         session_id, messages, sent_anchor = conn.chats[0]
         assert session_id == "s1"
-        # one mindfork container: instruction + question ride together.
+        # one emanation-reminder container: instruction + question ride together.
         assert len(messages) == 1
         container = messages[0][0].text
-        assert '<mindfork task="memento.chat">' in container
-        assert "concurrent 應身 of yourself above" in container
+        assert '<emanation-reminder task="memento.chat">' in container
+        assert "concurrent Emanation of yourself above" in container
         assert "this message is your task" in container
         assert "outside your view" in container
         assert question in container

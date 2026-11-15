@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from ghoshell_moss.core.blueprint.channel_builder import MutableChannel
     from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
     from ghoshell_moss.deepseek_harness.v0_2_0 import DshLauncher
-    from ghoshell_moss.memento._fs_memento import FsMemento
+    from ghoshell_moss.memento import FsMemento
 
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._ego_memento import EgoMementoManager
@@ -43,8 +43,8 @@ if TYPE_CHECKING:
 __all__ = ["Dolores"]
 
 from ._prompts import (
-    dolores_concurrent_mind, dolores_inception, dolores_memory, dolores_output_protocol_notice,
-    dolores_terminology,
+    dolores_ego_instruction,
+    dolores_inception,
     DOLORES_INSTRUCTION_END,
 )
 
@@ -343,21 +343,20 @@ class Dolores(Ghost):
         return self.home() / DOLORES_META_DIRECTORY
 
     def system_prompt(self) -> str:
-        """instruction = baseline + prototype meta + identity + terminology + protocol + dolores layer.
+        """instruction = moss meta + inception + ego instruction + prototype meta + identity + ground.
 
-        baseline is the base_instruction the factory fetched from the container (CTML + project + mode).
-        The ghost sections are derived from structured meta, not hardcoded — future cognition is built
-        from the directory. Terminology/protocol sections (fence semantics) are not configurable; the
-        dolores layer can be replaced via the ego config's inception_template. All sections are static
-        (cache-stable) — not steered (tail), not injected per frame.
+        The inception carries the ghost's ontology and the concurrent-mind section; the ego
+        instruction carries the workspace and the tool/loop semantics. The inception can be replaced
+        via the ego config's inception_template; the ego instruction is fixed, because the primitive
+        names and loop semantics are mechanism, not persona. All sections are static (cache-stable) —
+        not steered (tail), not injected per frame.
         """
         parts: list[str] = []
         if self._moss_prompter is not None:
             parts.append(self._moss_prompter.moss_meta_instruction())
 
-        parts.append(dolores_terminology())
-        parts.append(dolores_memory())
         parts.append(self._dolores_inception())
+        parts.append(self._ego_instruction())
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
         # The ghost home — the cognitive field itself, after "who I am" and before the
@@ -373,8 +372,6 @@ class Dolores(Ghost):
             parts.append("<!-- current moss project -->\n" + self._moss_prompter.project_instruction())
             parts.append("<!-- current moss mode -->\n" + self._moss_prompter.mode_instruction())
 
-        parts.append(dolores_output_protocol_notice())
-        parts.append(dolores_concurrent_mind())
         parts.append(DOLORES_INSTRUCTION_END)
         return "\n---\n".join([part.strip() for part in parts]) + "\n<!-- deepseek harness instruction -->"
 
@@ -397,6 +394,15 @@ class Dolores(Ghost):
             project_home=str(env.project_path) if env is not None else "",
             mode_home=str(env.mode_home) if env is not None else "",
             template=template,
+        )
+
+    def _ego_instruction(self) -> str:
+        """The ego's operational instruction — workspace paths, tool primitives, loops, etiquette."""
+        env = self._matrix.env if self._matrix is not None else None
+        return dolores_ego_instruction(
+            ghost_home=str(self._home) if self._home is not None else "",
+            project_home=str(env.project_path) if env is not None else "",
+            mode_home=str(env.mode_home) if env is not None else "",
         )
 
     async def ground_instruction(self) -> str | None:

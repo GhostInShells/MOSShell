@@ -14,17 +14,17 @@ DOLORES_PROMPTS_DIRECTORY = "prompts"
 DOLORES_CONFIGS_DIRECTORY = "configs"
 """Typed runtime configs under the meta directory (YAML, one file per ConfigType)."""
 
-MINDFORK = "mindfork"
-"""The generic container for a message from a parallel-thinking bypass task."""
+NIRMANAKAYA_REMINDER = "emanation-reminder"
+"""The container a forked emanation receives: which stream it is on, and what capabilities changed."""
 
-SESSION_ALIVE = "Ψ"
+ALIVE_EGO_SESSION = "Ψ"
 """The title of the one live ego session — the current breathing span, and only that one.
 
 The title template (``DoloresEgoConfig.session_title``) prefixes every new ego session with it;
 the boot rule archives every other Ψ/Ω-titled session, so "exactly one live Ψ" stays true.
 """
 
-SESSION_CLOSED = "Ω"
+ARCHIVED_EGO_SESSION = "Ω"
 """The title prefix of a closed ego session — the span that has ended.
 
 Omega is the letter after psi and the last of the alphabet: Ψ → Ω reads as one life span. It is
@@ -32,11 +32,21 @@ also the marker the boot rule greps for, so a crash that left an already-closed 
 unarchived is still collected on the next boot.
 """
 
-NIRMANAKAYA = "應身"
-"""A concurrent self: the same mind, cut from the conversation at one point, running one task.
+NIRMANAKAYA = "Emanation"
+"""A concurrent self: the same inception and the same existence trajectory, in another context.
 
-The literal is the traditional-Chinese spelling of nirmāṇakāya — two CJK characters keep it to
-two tokens in the DeepSeek tokenizer, and the doctrinal term carries no "lesser copy" reading
-(English *emanation* does, through its Neoplatonic descent). The constant name states the
-doctrine; the value is the token the model actually reads.
+The value is the English token the model reads; the doctrinal CJK spelling (應身) is kept as a
+gloss in the prompt, where it costs two tokens and carries the reading "the same one, appearing
+in several places" rather than "a lesser copy".
 """
+
+NIRMANAKAYA_SESSION = "Δ"
+"""The title prefix of a concurrent emanation session — the delta of the same self: a branching
+distributary, not a lesser copy. Together with Ψ / Ω / Σ it forms the session-title vocabulary:
+Σ supervises, Ψ faces, Δ branches, Ω closes."""
+
+SUPER_EGO_SESSION = "Σ"
+"""The title prefix of a superego session.
+
+Sigma is the summation operator: the superego's function is governance, its goal is integration,
+and its means is pruning. The letter states the goal, not the means."""
