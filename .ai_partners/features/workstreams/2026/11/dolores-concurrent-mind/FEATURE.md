@@ -29,7 +29,9 @@ updated: '2026-11-16'
 >   the surface/trail/implementation split, and the failure samples to check against at
 >   acceptance — a cognition record, not plan), `ego-branch-ground.md` (D15–D16: ego branches
 >   manage ultra-long tasks, not parallel short ones; their ground is the desk state for
->   re-entry — ego's convention, memento only gains a `created` event).
+>   re-entry — ego's convention, memento only gains a `created` event), `inbox.md` (D16: a
+>   branch-level mailbox — why it exists, why the address is a `group` rather than the ego,
+>   and why jsonl + a cursor is enough to start; **not implemented, not scheduled**).
 > - **Discussion:** `discuss/round1/`, `discuss/round2/`. Do not cite them as decisions.
 > - **Attribution:** `他` = thirdgerb stated it; `我推` = moss's inference, **not ratified** —
 >   attack it; `待定` = known unresolved.
