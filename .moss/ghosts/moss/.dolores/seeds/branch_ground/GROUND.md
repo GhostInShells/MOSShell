@@ -1,7 +1,7 @@
 ---
 name: branch ground
 description: this line's standing state — what it is for, where it stands, what it is waiting on
-budget: 1200
+budget: 10000
 ---
 
 # Branch ground

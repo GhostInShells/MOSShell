@@ -454,7 +454,9 @@ Rules that make it self-explaining:
 - **Different kinds look different.** A nested ground is a `<ground>`. A pin
   result is a `<pin>`. A fold is a `<folded>` list of empty `<pin/>` markers.
   A truncation is `<truncated/>`. Nothing is "a block" that could be any of
-  them.
+  them. A truncation carries `reason` and, where the cut has one, `path`; when
+  the implementation can know how much was dropped it also carries `chars`, the
+  number of delivered characters that did not make it into the face.
 - **Every stopping point says why.** A node that did not render says so, and
   the reason is data (`reason="budget"`, `reason="timeout"`, `reason="cycle"`),
   not prose.
@@ -589,7 +591,9 @@ smaller of the declaration and that ceiling.
 
 - **byte budget** — total rendered characters of the delivered text, indentation
   included. When exhausted, the current node is replaced by
-  `<truncated reason="budget" path="…"/>` and rendering stops. A nested face is
+  `<truncated reason="budget" path="…" chars="N"/>` and rendering stops; `chars`
+  is how many delivered characters would have been written, when the cut knows
+  it. A nested face is
   allocated the parent's remaining minus a closing reserve (§6.6), so the
   container tags of every open level always fit.
 - **wall-clock budget** — total render time. When it expires, pins that have

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from ._support import _OfflineConnection
+from ._support import _OfflineConnection, _dolores_meta
 
 class TestEgoMementoSidecar:
     """Note task — one off-record round per commit, with the emanation-reminder container.
@@ -788,6 +788,8 @@ class TestBranchGround:
         assert "MY-OWN-FIELD" in text
         assert "SEED-TEXT" not in text
         assert 'default="true"' not in text
+        # One field wears one container: the renderer's <ground> is not wrapped a second time.
+        assert text.count("<ground ") == 1
 
     @pytest.mark.asyncio
     async def test_a_new_line_is_planted_with_the_seed(self, tmp_path: Path):
@@ -799,6 +801,26 @@ class TestBranchGround:
         planted = memento.root / "branches" / branch.ref.branch_id
         assert (planted / "GROUND.md").read_text(encoding="utf-8").startswith("# seed")
         assert (planted / "skills" / "GROUND.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_the_shipped_seed_fits_its_own_body_on_a_deep_path(self, tmp_path: Path):
+        """The template a new line is planted with must deliver its body, not a marker.
+
+        The path is deliberately deep: the head (absolute path + name + description) counts
+        against the same budget, so a 1200-char seed truncated its own body at this depth.
+        """
+        seed = _dolores_meta().stubs_dir() / ".dolores" / "seeds" / "branch_ground"
+        deep = tmp_path / ("d" * 120) / ("e" * 120)
+        deep.mkdir(parents=True)
+        manager, _ = self._manager(deep, seed_ground=seed)
+
+        async with manager:
+            manager.fork_branch("idea", "a direction")
+
+        text = (await manager.aview_message("idea")).to_content_string()
+
+        assert "# Branch ground" in text
+        assert 'reason="budget"' not in text
 
     @pytest.mark.asyncio
     async def test_fork_hint_carries_the_origin_title_and_parent_ground(self, tmp_path: Path):

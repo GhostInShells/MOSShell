@@ -1073,21 +1073,26 @@ class EgoMementoManager:
         Not a ground walk: a position without GROUND.md renders the nearest law *without its
         body*, which is the opposite of what an absence has to say here. Existence is decided
         first; a missing file renders the seed itself, marked ``default``.
+
+        When the file exists the renderer already returns a complete ``<ground>`` container.
+        Wrapping it in another one put two heads and two paths around a single field, and the
+        inner face's budget paid for both — the "same shape at every level" invariant means
+        *one* container, so the rendered face is carried bare. The missing-file case is the one
+        the ego builds itself: there the path is the hint to the file to create.
         """
         branch_dir = self._memento.root / "branches" / view.branch_id
         path = branch_dir / "GROUND.md"
-        attributes = {"path": str(path)}
         try:
             if path.is_file():
                 # Positions are filesystem paths, not names under the root.
                 face = await self._branch_grounds().render(branch_dir)
-            else:
-                attributes["default"] = "true"
-                face = self._seed_text() or "(no ground yet — write one at the path above)"
+                return Message.new(tag="").with_content(face)
+            attributes = {"path": str(path), "default": "true"}
+            face = self._seed_text() or "(no ground yet — write one at the path above)"
             return Message.new(tag="ground", attributes=attributes).with_content(face)
         except Exception as exc:  # noqa: BLE001 — memory must survive a broken field
             self._logger.exception("branch ground render failed for #%s", view.index)
-            attributes["error"] = str(exc)[:200]
+            attributes = {"path": str(path), "error": str(exc)[:200]}
             return Message.new(tag="ground", attributes=attributes)
 
     def _fork_point_title(self, parent: BranchView, coord: str) -> str:

@@ -548,7 +548,8 @@ def _fmt_size(n_bytes: int) -> str:
 def _apply_budget(text: str, budget: int | None) -> str:
     if budget is None or len(text) <= budget:
         return text
-    return text[:budget] + f"\n[truncated at {budget} chars]"
+    omitted = len(text) - budget
+    return text[:budget] + f"\n[truncated at {budget} chars, {omitted} omitted]"
 
 
 def _apply_lines_cap(text: str, lines: int | None) -> str:
@@ -557,7 +558,8 @@ def _apply_lines_cap(text: str, lines: int | None) -> str:
     ls = text.splitlines()
     if len(ls) <= lines:
         return text
-    return "\n".join(ls[:lines]) + f"\n[truncated at {lines} lines]"
+    omitted = len(ls) - lines
+    return "\n".join(ls[:lines]) + f"\n[truncated at {lines} lines, {omitted} omitted]"
 
 
 # @-token regex
@@ -834,6 +836,8 @@ async def render_position(
 
     pad_s = " " * pad
     child_pad = " " * (pad + 2)
+    # 收尾标签也是交付文本: 先把它从预算里留出来, 这一面才不会用自己的 `</ground>` 撑破上限.
+    budget.total = max(budget.total - len(pad_s + "</ground>"), 0)
 
     def emit(text: str) -> bool:
         """记一个子节点 — 缩进先加、预算按最终字节扣. 不装下就不发."""
@@ -876,8 +880,12 @@ async def render_position(
             _build_body_with_at, source.body, ground_dir
         )
         body_text = "\n".join([body_text] + [b.content for b in at_children])
-        if not emit(f"<body>{_esc(body_text.strip())}</body>"):
-            emit('<truncated reason="budget"/>')
+        node = f"<body>{_esc(body_text.strip())}</body>"
+        if not emit(node):
+            # 说出被丢掉的交付字符数, 而不只是 "budget" —— 读者要能判断损失多大.
+            # 这一行无条件落: 停止点必须说明原因, 标记本身不该再被预算吞掉.
+            omitted = len("\n".join(child_pad + ln for ln in node.splitlines())) + 1
+            parts.append(child_pad + f'<truncated reason="budget" chars="{omitted}"/>')
 
     pins = list(source.pins)
     expanded = [p for p in pins if not walk or _is_positional(p) or p.always_show]
@@ -917,8 +925,9 @@ async def render_position(
         imports_rows.append(row)
         return True
 
-    def marker(reason: str, path: Path) -> str:
-        return f'{inner_pad}<truncated reason="{reason}" path="{_attr(str(path))}"/>'
+    def marker(reason: str, path: Path, chars: int | None = None) -> str:
+        count = f' chars="{chars}"' if chars is not None else ""
+        return f'{inner_pad}<truncated reason="{reason}" path="{_attr(str(path))}"{count}/>'
 
     if not walk:
         for entry in (source.convention.imports or []):
@@ -946,7 +955,7 @@ async def render_position(
                 pad=pad + 2,
             )
             if not push(inner):
-                push(marker("budget", child_dir))
+                push(marker("budget", child_dir, chars=len(inner) + 1))
                 break
 
     if imports_rows:

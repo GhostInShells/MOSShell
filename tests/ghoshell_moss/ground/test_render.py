@@ -70,7 +70,7 @@ class TestApplyBudget:
 
     def test_exceeds_budget(self):
         result = _apply_budget("hello world!", budget=8)
-        assert result == "hello wo\n[truncated at 8 chars]"
+        assert result == "hello wo\n[truncated at 8 chars, 4 omitted]"
 
     def test_exact_budget(self):
         result = _apply_budget("12345678", budget=8)
@@ -284,7 +284,7 @@ class TestContentPinRender:
         )
         (tmp_path / "CLAUDE.md").write_text("l1\nl2\nl3\nl4\n")
         out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
-        assert "[truncated at 2 lines]" in out
+        assert "[truncated at 2 lines, 3 omitted]" in out
 
     def test_budget_cap(self, tmp_path):
         from ghoshell_moss.ground._render import render_position
@@ -295,7 +295,7 @@ class TestContentPinRender:
         )
         (tmp_path / "CLAUDE.md").write_text("a" * 100)
         out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
-        assert "[truncated at 30 chars]" in out
+        assert "[truncated at 30 chars, 83 omitted]" in out
 
     def test_walk_expands_positional_and_folds_ground_pins(self, tmp_path):
         """walk 面: $CWD/内容 pin 展开, $GROUND 锚的 pin 折叠成 TOC (SPEC §6.3)."""
@@ -333,7 +333,7 @@ class TestFrameBudget:
             "  arguments:\n    path: readme.md\n    budget: 50\n---\n\nbody\n"
         )
         out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
-        assert "[truncated at 50 chars]" in out
+        assert "[truncated at 50 chars, 2950 omitted]" in out
 
 
 # -- position rendering (SPEC 0.3.0) -----------------------------------------
@@ -476,13 +476,28 @@ def test_ground_declares_its_own_character_budget(tmp_path: Path):
 
     _write_ground(
         tmp_path,
-        "---\nname: small\nbudget: 200\n---\n\n" + "word " * 200 + "\n",
+        "---\nname: small\nbudget: 300\n---\n\n" + "word " * 200 + "\n",
     )
 
     out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
 
-    assert len(out) <= 200
+    assert len(out) <= 300
     assert 'reason="budget"' in out
+
+
+def test_a_container_truncation_reports_how_much_it_dropped(tmp_path: Path):
+    """A truncated node says how many delivered characters it would have written."""
+    from ghoshell_moss.ground._render import render_position
+
+    body = "x" * 600
+    _write_ground(tmp_path, f"---\nname: small\nbudget: 300\n---\n\n{body}\n")
+
+    out = asyncio.run(render_position(tmp_path, boundary=tmp_path))
+
+    assert 'reason="budget"' in out
+    tail = out.split('<truncated reason="budget"', 1)[1]
+    dropped = int(tail.split('chars="', 1)[1].split('"', 1)[0])
+    assert dropped >= len(body)
 
 
 def test_explicit_limits_never_exceed_the_declared_budget(tmp_path: Path):
