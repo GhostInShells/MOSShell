@@ -4,15 +4,21 @@
 - root 场渐进披露子件类别身份 (frontmatter pin 扫 */GROUND.md), 不穿透进子件内部
 - existence 场 @ 装载 purpose/behaviors (冷层法), file pin 装载 identity (warm 帧)
 - journal 场 exec pin 物化 Y/M/D 占位 + 分层呈现 (years/months 存在性, today 展开)
+
+装配的是这棵树的**副本**: 渲染会跑 exec pin, journal 的 pin 按设计物化当天的占位, 直接渲染
+包内的树等于把源码树写脏 —— 那是测试的错, 不是 pin 的错.
 """
 
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 from datetime import date
 from importlib.resources import files
 from pathlib import Path
+
+import pytest
 
 from ghoshell_moss.ground import DefaultGroundSet
 
@@ -24,12 +30,20 @@ def run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture
+def stub_tree(tmp_path: Path) -> Path:
+    """The packaged skeleton, copied — the only tree a test may render."""
+    dest = tmp_path / "stubs"
+    shutil.copytree(STUBS, dest)
+    return dest
+
+
 class TestRootGroundDisclosure:
-    def test_discloses_subfield_categories_not_persons(self):
+    def test_discloses_subfield_categories_not_persons(self, stub_tree: Path):
         """root 场只披露子件类别身份, 不穿透披露具体人物."""
 
         async def scenario():
-            return await DefaultGroundSet(root=STUBS).render()
+            return await DefaultGroundSet(root=stub_tree).render()
 
         text = run(scenario())
         # 子件类别身份被渐进披露.
@@ -44,11 +58,11 @@ class TestRootGroundDisclosure:
 
 
 class TestExistenceGroundDisclosure:
-    def test_identity_pinned_and_law_expanded(self):
+    def test_identity_pinned_and_law_expanded(self, stub_tree: Path):
         """existence 场: identity 走 file pin (warm), purpose/behaviors 走 @ (冷层)."""
 
         async def scenario():
-            return await DefaultGroundSet(root=STUBS / "existence").render()
+            return await DefaultGroundSet(root=stub_tree / "existence").render()
 
         text = run(scenario())
         # identity 经 file pin 装载 (事实自我内容).

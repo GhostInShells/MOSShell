@@ -943,7 +943,14 @@ class Dolores(Ghost):
         return action
 
     def _seed_ground(self) -> None:
-        """Seed-once the ground skeleton — copy every stub file except ``.dolores.yml``, only when absent."""
+        """Seed-once the ground skeleton — copy every stub file except ``.dolores.yml``, only when absent.
+
+        Everything under ``stubs/`` travels, ``.gitignore`` files included: a rule written there
+        governs every ghost home this package seeds, not just the checkout it was written in.
+        Repository hygiene therefore lives outside this tree — a stub ignore file is a promise
+        to the home, and one that ignores a content directory silently drops the ghost's own
+        notes out of version control.
+        """
         stubs = self._meta.stubs_dir()
         for src in stubs.rglob("*"):
             if not src.is_file():
