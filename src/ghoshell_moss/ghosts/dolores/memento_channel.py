@@ -68,6 +68,9 @@ def _instruction_text(
         " the notice after the anchor lands.",
         "- `node` opens an anchor's own space on disk (created on first use) and lists what is in"
         " it — where a souvenir or a note to your future self lives.",
+        "- A line is forked from the current position (`fork`), grows by commits, and is closed by"
+        " `archive` — closing releases the name, never the trajectory. `main` never closes, and"
+        " neither does the line you are living on.",
     ]
     if storage_root is not None:
         lines.append(
@@ -163,8 +166,8 @@ def build_memento_channel(
     if description is None:
         description = (
             "Memento — your own memory: trajectory branches, coordinates (branch_index-seq), "
-            "raw reads (read), conversation with a span's context (chat), anchoring a span "
-            "(commit), and a commit's own space on disk (node)."
+            "branch lifecycle (fork / archive), raw reads (read), conversation with a span's "
+            "context (chat), anchoring a span (commit), and a commit's own space on disk (node)."
         )
     root = Path(storage_root).resolve() if storage_root is not None else None
 
@@ -189,6 +192,62 @@ def build_memento_channel(
         if message is None:
             return f"[memento] no branch `{branch}`"
         return message.to_content_string()
+
+    @chan.build.command(name="fork")
+    async def fork(name: str, description: str = "", coord: str = "") -> str:
+        """Open a new line from this one — at the tip, or from a past coordinate on it.
+
+        A line is where a direction of work lives: it keeps the parent as its fork point and
+        carries its own ground. Fork from a coordinate when the direction started earlier than
+        now.
+
+        :param name: the new branch's name — unique, no path separators, not the main line's.
+        :param description: one line on what this line is for; it rides the branch list.
+        :param coord: fork from this commit (`{index}-{seq}`) instead of the tip; must be on the current line.
+        """
+        try:
+            branch = manager.fork_branch(name, description, coord)
+        except (ValueError, NameError) as error:
+            return f"[memento] {error}"
+        anchor = coord or "the tip"
+        return f"[memento] forked `{branch.ref.name}` #{branch.index} from {anchor}"
+
+    @chan.build.command(name="archive")
+    async def archive(name: str) -> str:
+        """Close a line and every line forked from it.
+
+        Not deletion: the trajectory stays readable by index, the name is just released.
+        `main` cannot be archived, and neither can the line you are living on.
+
+        :param name: the branch to close.
+        """
+        try:
+            closed = manager.archive_branch(name)
+        except (ValueError, NameError, FileNotFoundError) as error:
+            return f"[memento] {error}"
+        if not closed:
+            return f"[memento] `{name}` was already closed; nothing to archive"
+        names = ", ".join(f"{addr.branch_name} #{addr.branch_index}" for addr in closed)
+        return f"[memento] archived {len(closed)} line(s), deepest first: {names}"
+
+    @chan.build.command(name="branches", always_observe=True)
+    async def branches(offset: int = 0, limit: int = 20) -> str:
+        """List the branch roster — closed lines included — one page at a time.
+
+        :param offset: start at this 0-based roster position; `total` in the answer says how to page.
+        :param limit: rows in this page, 20 by default.
+        """
+        total, page = manager.list_roster_page(offset, limit)
+        if not page:
+            return f"[memento] no branches at offset {offset} (total {total})"
+        current = manager.config.branch_name
+        lines = [f"[memento] branches {offset + 1}-{offset + len(page)} of {total}:"]
+        for index, ref, active in page:
+            about = f" — {ref.description}" if ref.description else ""
+            status = "" if active else " (archived)"
+            here = " <- you are here" if ref.name == current else ""
+            lines.append(f"  {ref.name} #{index}{about}{status}{here}")
+        return "\n".join(lines)
 
     @chan.build.command(name="read", always_observe=True)
     async def read(coord: str) -> str:

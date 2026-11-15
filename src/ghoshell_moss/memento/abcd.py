@@ -142,12 +142,13 @@ class BranchEvent(BaseModel):
     Thin on purpose: it carries the address, never the content. A subscriber that needs the
     content reads it from that address; memento does not interpret what it announced.
 
-    Kinds: ``commit`` (an anchor became durable, ``coord`` filled), ``confluence`` (a
-    reference landed in this branch's inbox), ``child`` (a branch was created from this one),
-    ``archived`` (this branch left the active set).
+    Kinds: ``created`` (a branch came into existence, announced at its own address; the
+    parent hears ``child`` separately), ``commit`` (an anchor became durable, ``coord``
+    filled), ``confluence`` (a reference landed in this branch's inbox), ``child`` (a branch
+    was created from this one), ``archived`` (this branch left the active set).
     """
 
-    kind: str = Field(description="commit | confluence | child | archived")
+    kind: str = Field(description="created | commit | confluence | child | archived")
     branch: BranchAddr = Field(description="Where it happened.")
     coord: str = Field(default="", description="Commit coordinate when the event is about one.")
     created: AwareDatetime = Field(default_factory=_now_utc)
@@ -875,14 +876,15 @@ class Branch(ABC):
         """IO-costly: as above, but re-read from disk."""
 
     @abstractmethod
-    def fork(self, name: str, description: str = "") -> "Branch":
+    def fork(self, name: str, description: str = "", *, commit_id: str = "") -> "Branch":
         """Fork a new branch (reference the parent, never copy). The new branch's ``commits.jsonl``
         starts empty and fork_from points back at the parent commit; the read side splices the
-        parent's and the child's files into one continuous trajectory. Single-writer sync fast
-        path."""
+        parent's and the child's files into one continuous trajectory. ``commit_id`` forks from a
+        past position on **this** branch instead of the tip; an id from another line is refused.
+        Single-writer sync fast path."""
 
     @abstractmethod
-    async def afork(self, name: str, description: str = "") -> "Branch":
+    async def afork(self, name: str, description: str = "", *, commit_id: str = "") -> "Branch":
         """Locked write, mutually exclusive with ``acommit``: create directory + meta + ref, a
         multi-file write, while holding the lock."""
 
@@ -953,6 +955,21 @@ class Memento(ABC):
 
         The ordinal is the roster position (``branches.jsonl``), so it survives archive and
         name reuse. A listing needs exactly this and nothing from a branch's commits or notes.
+        """
+
+    @abstractmethod
+    def list_roster(
+            self,
+            *,
+            offset: int = 0,
+            limit: int | None = None,
+    ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
+        """A page of every branch the owner ever created, archived included.
+
+        Returns ``(total, [(ordinal, ref, active)])``. The roster is append-only and outlives
+        the name pointer, so it is the only listing that can see a closed line; ``active`` says
+        whether the name still points at that identity. Paged on purpose: a long-lived owner
+        accumulates branches without bound, and no surface should ever read the whole roster.
         """
 
     @abstractmethod

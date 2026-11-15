@@ -444,3 +444,65 @@ def test_reading_never_creates_a_node_directory(memento):
 
     b.ensure_memento(1)  # first use is the only creator
     assert len(node_dirs()) == 1
+
+
+# ── branch lifecycle: fork points, the roster page, the created event ──
+
+
+def test_fork_from_a_past_commit_records_that_commit_as_the_fork_point(memento):
+    main = memento.create_branch("main")
+    split = main.commit(message="the split")
+    main.commit(message="later")
+
+    child = main.fork("idea", commit_id=split.id)
+
+    fork_from = child.meta().fork_from
+    assert fork_from is not None
+    assert fork_from.commit_id == split.id
+
+
+def test_fork_from_another_branchs_commit_is_refused(memento):
+    main = memento.create_branch("main")
+    other = memento.create_branch("other")
+    foreign = other.commit(message="not yours")
+
+    with pytest.raises(ValueError):
+        main.fork("idea", commit_id=foreign.id)
+
+
+def test_fork_refuses_a_name_that_already_exists(memento):
+    memento.create_branch("main")
+    memento.create_branch("idea")
+
+    with pytest.raises(NameError):
+        memento.get_branch("main").fork("idea")
+
+
+def test_every_creation_path_announces_created(memento):
+    events: list[tuple[str, str]] = []
+    memento.on_event(lambda event: events.append((event.kind, event.branch.branch_name)))
+
+    memento.create_branch("main")
+    memento.get_branch("main").fork("idea")
+
+    assert ("created", "main") in events
+    assert ("created", "idea") in events
+
+
+def test_list_roster_pages_and_keeps_archived_lines(memento):
+    memento.create_branch("main")
+    memento.create_branch("idea")
+    memento.create_branch("done")
+    memento.archive_branch("done")
+
+    total, first_page = memento.list_roster(offset=0, limit=2)
+    assert total == 3
+    assert [(index, ref.name, active) for index, ref, active in first_page] == [
+        (1, "main", True),
+        (2, "idea", True),
+    ]
+
+    _, second_page = memento.list_roster(offset=2, limit=2)
+    assert [(index, ref.name, active) for index, ref, active in second_page] == [
+        (3, "done", False)
+    ]

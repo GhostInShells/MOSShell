@@ -585,10 +585,17 @@ class FsBranch(Branch):
             )
         return target
 
-    def fork(self, name: str, description: str = "") -> "Branch":
+    def fork(self, name: str, description: str = "", *, commit_id: str = "") -> "Branch":
         self._memento._require_writable()
         commits = self.commits()
-        tip = commits[-1].id if commits else ""
+        if commit_id:
+            # A fork point must be a position *on this branch*: an id from another line would
+            # record a fork_from that splices the wrong history into the child's read.
+            if not any(ref.id == commit_id for ref in commits):
+                raise ValueError(f"commit '{commit_id}' is not on branch '{self._name}'")
+            tip = commit_id
+        else:
+            tip = commits[-1].id if commits else ""
         fork_from = ForkRef(branch_id=self._branch_id, commit_id=tip)
         branch = self._memento._create_branch(
             name, description, metatype="", metadata=None, fork_from=fork_from
@@ -626,9 +633,9 @@ class FsBranch(Branch):
         # queue behind an unrelated commit.
         return self.note(commit_id, message, error, recipients=recipients)
 
-    async def afork(self, name: str, description: str = "") -> "Branch":
+    async def afork(self, name: str, description: str = "", *, commit_id: str = "") -> "Branch":
         async with self:
-            return self.fork(name, description)
+            return self.fork(name, description, commit_id=commit_id)
 
     def ensure_memento(self, seq: int) -> Path:
         self._memento._require_writable()
@@ -964,8 +971,6 @@ class FsMemento(Memento):
             metadata: dict[str, Any] | None = None,
     ) -> Branch:
         self._require_writable()
-        if self._ref_path(name).exists():
-            raise NameError(f"branch '{name}' already exists")
         return self._create_branch(name, description, metatype=metatype, metadata=metadata, fork_from=None)
 
     def _create_branch(
@@ -979,6 +984,10 @@ class FsMemento(Memento):
     ) -> FsBranch:
         """public-internal: the single creation path shared by create_branch and Branch.fork."""
         self._require_writable()
+        # One gate for every creation path: a duplicate name would overwrite the live pointer
+        # and append a second roster row, silently re-pointing a branch that is still in use.
+        if self._ref_path(name).exists():
+            raise NameError(f"branch '{name}' already exists")
         branch_id = str(ulid.ULID())
         index = len(_read_jsonl(self._branches_jsonl())) + 1
         created = _now_utc()
@@ -1009,6 +1018,10 @@ class FsMemento(Memento):
                           parent_id=fork_from.branch_id if fork_from else "")
         branch._meta_cache = meta
         self._branches[branch_id] = branch
+        # Every creation path (fork, CLI, hive, boot) goes through here, so a subscriber that
+        # materializes something per branch never misses one. Announced after the writes are
+        # durable, at the new branch's own address — the parent hears ``child`` separately.
+        self._emit("created", branch.address())
         return branch
 
     def _branch_by_id(self, branch_id: str) -> FsBranch | None:
@@ -1067,6 +1080,32 @@ class FsMemento(Memento):
             entries.append((index_by_name.get(ref.name, 0), ref))
         entries.sort(key=lambda item: (item[0], item[1].name))
         return entries
+
+    def list_roster(
+            self,
+            *,
+            offset: int = 0,
+            limit: int | None = None,
+    ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
+        """A page of the roster, archived included — the owner's whole history of lines.
+
+        ``active`` is a storage fact (the name still points at this identity), so one ref glob
+        answers it for a whole page. Corrupt rows keep their slot and are skipped here.
+        """
+        active = {ref.branch_id for ref in self.list_branches()}
+        rows = self._roster()
+        start = max(0, offset)
+        end = len(rows) if limit is None or limit <= 0 else start + limit
+        page: list[tuple[int, BranchRef, bool]] = []
+        for position, row in enumerate(rows[start:end], start=start + 1):
+            try:
+                ref = BranchRef(**row)
+            except Exception:  # noqa: BLE001 — a corrupt slot has no branch behind it
+                continue
+            if not ref.name:
+                continue
+            page.append((position, ref, ref.branch_id in active))
+        return len(rows), page
 
     def get_branch_by_index(self, index: int) -> "FsBranch | None":
         if index < 1:

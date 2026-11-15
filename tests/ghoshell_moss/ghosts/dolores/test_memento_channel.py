@@ -103,7 +103,7 @@ class TestMementoChannel:
     async def test_read_surface_is_exposed(self, tmp_path: Path):
         chan, _, _ = self._channel(tmp_path)
         async with chan.bootstrap() as runtime:
-            for name in ("view", "read", "history", "chat", "node"):
+            for name in ("view", "read", "history", "chat", "node", "fork", "archive", "branches"):
                 assert runtime.get_command(name) is not None
 
     @pytest.mark.asyncio
@@ -283,3 +283,60 @@ class TestMementoChannel:
             second = await runtime.execute_command("commit", args=("two",))
         assert first == "[memento] commit queued — it takes effect at the end of this turn."
         assert second == "[memento] nothing new since the last anchor — not committed"
+
+    @pytest.mark.asyncio
+    async def test_fork_opens_a_line_from_the_current_position(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command("fork", args=("idea", "a direction"))
+        assert "forked `idea` #2" in receipt
+        child = memento.get_branch("idea")
+        assert child.meta().fork_from.commit_id == memento.get_branch("main").commits()[-1].id
+
+    @pytest.mark.asyncio
+    async def test_fork_refuses_a_coordinate_from_another_line(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        other = memento.create_branch("other")
+        other.commit(message="elsewhere")
+        coord = other.get_commit(1).coord
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command("fork", args=("idea", "", coord))
+        assert "can only be forked" in receipt
+
+    @pytest.mark.asyncio
+    async def test_archive_refuses_the_main_line(self, tmp_path: Path):
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command("archive", args=("main",))
+        assert "main line" in receipt
+
+    @pytest.mark.asyncio
+    async def test_archive_closes_the_subtree_deepest_first(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        async with chan.bootstrap() as runtime:
+            await runtime.execute_command("fork", args=("idea", "a direction"))
+        memento.get_branch("idea").fork("leaf")
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command("archive", args=("idea",))
+        assert "archived 2 line(s)" in receipt
+        assert receipt.index("leaf") < receipt.index("idea")
+        assert memento.get_branch("idea") is None
+
+    @pytest.mark.asyncio
+    async def test_branches_pages_the_roster_and_marks_archived(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        async with chan.bootstrap() as runtime:
+            await runtime.execute_command("fork", args=("idea", "a direction"))
+        memento.get_branch("idea").fork("leaf")
+        memento.archive_branch("leaf")
+        async with chan.bootstrap() as runtime:
+            first = await runtime.execute_command("branches", args=(0, 2))
+            second = await runtime.execute_command("branches", args=(2, 2))
+        assert "branches 1-2 of 3" in first
+        assert "you are here" in first
+        assert "branches 3-3 of 3" in second
+        assert "(archived)" in second and "leaf" in second

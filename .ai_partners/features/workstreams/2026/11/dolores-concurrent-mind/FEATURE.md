@@ -14,7 +14,7 @@ status_note: >-
   effort/cache measurements) and settled the memory surface + prompt slot direction; the
   build order for tonight is memory surface → ground slot → prompt slots → staged search.
 title: Dolores Concurrent Mind — one ghost, several attentions at once
-updated: '2026-11-12'
+updated: '2026-11-16'
 ---
 
 # Dolores Concurrent Mind
@@ -27,7 +27,9 @@ updated: '2026-11-12'
 >   `clone.md` (the clone scheme, 23 points acked), `ghoshell-dsh-integration.md` (D07: the
 >   dsh v0.2.0 reintegration points), `emanation-surface.md` (D14: the emanation ontology,
 >   the surface/trail/implementation split, and the failure samples to check against at
->   acceptance — a cognition record, not plan).
+>   acceptance — a cognition record, not plan), `ego-branch-ground.md` (D15–D16: ego branches
+>   manage ultra-long tasks, not parallel short ones; their ground is the desk state for
+>   re-entry — ego's convention, memento only gains a `created` event).
 > - **Discussion:** `discuss/round1/`, `discuss/round2/`. Do not cite them as decisions.
 > - **Attribution:** `他` = thirdgerb stated it; `我推` = moss's inference, **not ratified** —
 >   attack it; `待定` = known unresolved.

@@ -50,7 +50,16 @@ from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     PromptManager,
 )
 from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED
-from ghoshell_moss.memento.abcd import Branch, BranchRef, BranchView, CommitRef, CommitView, Memento, Note
+from ghoshell_moss.memento.abcd import (
+    Branch,
+    BranchAddr,
+    BranchRef,
+    BranchView,
+    CommitRef,
+    CommitView,
+    Memento,
+    Note,
+)
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -77,6 +86,25 @@ _BYPASS_EFFORT = "low"
 _NOTE_PRIOR_COUNT = 1
 # 旁路治理表的保留窗口: 只留最近 N 条运行记录 (笔记本身在 memento, 这里只是观测面).
 _BYPASS_KEEP = 64
+
+# Branch names become `{name}.ref.json` under the owner root, so they must stay path-safe.
+# The ego's own main line is reserved: a name reused after archive would make two identities
+# answer to one word in the roster.
+_FORBIDDEN_BRANCH_NAMES = {".", ".."}
+
+
+def validate_branch_name(name: str, *, reserved: set[str] | None = None) -> str:
+    """Keep a branch name safe as a file stem and out of the ego's reserved words."""
+    cleaned = (name or "").strip()
+    if not cleaned:
+        raise ValueError("branch name must not be empty")
+    if cleaned in _FORBIDDEN_BRANCH_NAMES or "/" in cleaned or "\\" in cleaned or "\x00" in cleaned:
+        raise ValueError(f"branch name '{name}' is not a safe file name")
+    if cleaned.startswith("."):
+        raise ValueError(f"branch name '{name}' must not start with '.'")
+    if reserved and cleaned in reserved:
+        raise ValueError(f"branch name '{name}' is reserved")
+    return cleaned
 
 
 def _local(created: datetime) -> datetime:
@@ -863,6 +891,50 @@ class EgoMementoManager:
         if not commits:
             return 0, ""
         return len(commits), f"{branch.index}-{commits[-1].seq}"
+
+    # ── branch lifecycle (ego's line management) ─────────────────────
+
+    def fork_branch(self, name: str, description: str = "", coord: str = "") -> Branch:
+        """Open a new line from the current one — at the tip, or from a past coordinate on it.
+
+        Ground is not created here: memento announces ``created`` and the ego seeds it.
+        """
+        name = validate_branch_name(name, reserved={self._config.branch_name})
+        branch = self._branch()
+        commit_id = ""
+        if coord:
+            view = self.resolve(coord)
+            if view is None:
+                raise ValueError(f"coordinate '{coord}' does not resolve")
+            if view.branch_index != branch.index:
+                raise ValueError(
+                    f"coordinate '{coord}' is on branch #{view.branch_index}; "
+                    "a line can only be forked from the one you are living on"
+                )
+            commit_id = view.ref.id
+        return branch.fork(name, description, commit_id=commit_id)
+
+    def archive_branch(self, name: str) -> list[BranchAddr]:
+        """Close a line and its descendants — not deletion: the trajectory stays by index.
+
+        The line the ego lives on is its main line by config, so one guard covers both: closing
+        it would leave every live session of this owner on a line whose name no longer resolves.
+        memento cannot know this — it is the ego's convention.
+        """
+        if name == self._config.branch_name:
+            raise ValueError(
+                f"branch '{name}' is your main line, the one you are living on; "
+                "it cannot be archived"
+            )
+        return self._memento.archive_branch(name)
+
+    def list_roster_page(
+            self,
+            offset: int = 0,
+            limit: int = 20,
+    ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
+        """A page of every line the owner ever opened — archived included."""
+        return self._memento.list_roster(offset=offset, limit=limit)
 
     def list_commits(
             self,
