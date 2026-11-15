@@ -5,11 +5,13 @@ and what it refuses to do when there is no backend or the coordinate is bad.
 """
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from ._support import _OfflineConnection
+
 
 class TestMementoChannel:
     """memento channel — ghost 的记忆器官: 读面透传 + 落锚写面 + 坏 commit 失败 + notice 列 branch."""
@@ -339,4 +341,55 @@ class TestMementoChannel:
         assert "branches 1-2 of 3" in first
         assert "you are here" in first
         assert "branches 3-3 of 3" in second
-        assert "(archived)" in second and "leaf" in second
+        assert "(archived)" in second
+        assert "leaf" in second
+
+    @pytest.mark.asyncio
+    async def test_view_scrolls_back_before_a_coordinate(self, tmp_path: Path):
+        """游标是排他的: 给一个坐标, 看到的是它**之前**那一窗 —— 坐标本身已经在你脚下."""
+        chan, manager, memento = self._channel(tmp_path)
+        for turn in range(5):
+            manager.commit(
+                session_id="s1", start_turn=turn, end_turn=turn + 1, message=f"step {turn}"
+            )
+        async with chan.bootstrap() as runtime:
+            window = await runtime.execute_command(
+                "view", kwargs={"limit": 2, "coord": self._coord(memento, 5)}
+            )
+        assert "step 3" in window
+        assert "step 2" in window
+        assert "step 4" not in window                  # 游标那一条不重复出现在"它的过去"里
+        assert '<commit seq="1-4"' in window           # 窗口退到游标的前一条为止
+        assert '<commit seq="1-2"' not in window       # 更早的只留在 <earlier> 摘要里, 不进详情
+
+    @pytest.mark.asyncio
+    async def test_view_cursor_only_scrolls_its_own_line(self, tmp_path: Path):
+        """坐标属于别的线时明确拒绝 —— 悄悄整条渲染等于用错了坐标还以为看到了历史."""
+        chan, manager, memento = self._channel(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        other = memento.create_branch("other")
+        other.commit(message="elsewhere")
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command(
+                "view", kwargs={"coord": other.get_commit(1).coord}
+            )
+        assert "only scrolls the line it belongs to" in receipt
+
+    @pytest.mark.asyncio
+    async def test_view_cursor_on_a_missing_coordinate_says_so(self, tmp_path: Path):
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command("view", kwargs={"coord": "1-999"})
+        assert receipt == "[memento] no commit at `1-999`"
+
+    @pytest.mark.asyncio
+    async def test_history_reads_a_bare_timestamp_on_the_body_clock(self, tmp_path: Path):
+        """不带时区的时间按本机时钟解释 —— 与渲染出来的日期同一套口径, 不是 UTC."""
+        chan, manager, memento = self._channel(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1, message="late night")
+        created = memento.get_branch("main").get_commit(anchor.seq).created.astimezone()
+        start = (created - timedelta(minutes=1)).replace(tzinfo=None).isoformat()
+        end = (created + timedelta(minutes=1)).replace(tzinfo=None).isoformat()
+        async with chan.bootstrap() as runtime:
+            window = await runtime.execute_command("history", kwargs={"from_date": start, "until_date": end})
+        assert "late night" in window

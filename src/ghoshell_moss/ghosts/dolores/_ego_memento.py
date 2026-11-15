@@ -877,6 +877,18 @@ class EgoMementoManager:
         """
         return self._memento.list_branch_entries()
 
+    def branch_index(self, name: str | None = None) -> int | None:
+        """The branch-log ordinal of a line — the first half of every coordinate on it.
+
+        Kept separate from ``list_branches`` so a caller can check "does this coordinate
+        belong to the line I am about to scroll" without holding the roster.
+        """
+        target = name or self._config.branch_name
+        for index, ref in self.list_branches():
+            if ref.name == target:
+                return index
+        return None
+
     def branch_stats(self, name: str | None = None) -> tuple[int, str]:
         """``(commits_total, latest_coord)`` for **the one branch the ego lives on**.
 

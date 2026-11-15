@@ -52,7 +52,7 @@ def _instruction_text(
     storage_root: Path | None,
     prompt_manager: PromptManager | None,
 ) -> str:
-    """自解释 —— 只讲控制面 (分支 / 坐标 / 两条读路径). memento 概念由系统指令解释, 这里不重复."""
+    """自解释 —— 只讲控制面 (分支 / 坐标 / 读路径). memento 概念由系统指令解释, 这里不重复."""
     lines = [
         "## Memento (control)",
         "",
@@ -60,6 +60,11 @@ def _instruction_text(
         "",
         f"- You are on branch `{manager.config.branch_name}`; the notice lists every branch.",
         "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
+        "- `view(branch=…, coord=…)` scrolls: the window is the one *before* that coordinate,"
+        " so walking back a line costs one window at a time instead of a re-read.",
+        "- `history(branch=…, from_date=…, until_date=…)` reads a range instead — `from_date` and"
+        " `until_date` are ISO timestamps; a timestamp without an offset is read on your clock"
+        " (the same one the commits are dated with).",
         "- A commit may carry a node of its own. When its line shows `node=\"1\"`, that commit"
         " has a space on disk — `node` opens it and lists what is in there; nothing here"
         " manages what you put in it.",
@@ -131,16 +136,22 @@ def _human_size(size: int) -> str:
 
 
 def _parse_date(value: str | None, field: str) -> datetime | None:
-    """ISO 时间串 → datetime; 空 = None. 解析不了抛 ValueError (命令侧转成文本提示)."""
+    """ISO 时间串 → aware datetime; 空 = None. 解析不了抛 ValueError (命令侧转成文本提示).
+
+    不带时区的时间按**本机时钟**解释 —— 与渲染出来的 ``<day date="2026-11-13+8">`` 同一套口径.
+    按 UTC 解释会让 19:30 的区间查到凌晨, 而且不报错: 差八小时比报错更难发现.
+    """
     if value is None or not value.strip():
         return None
     try:
-        return datetime.fromisoformat(value.strip())
+        parsed = datetime.fromisoformat(value.strip())
     except ValueError:
         raise ValueError(
             f"{field} is not an ISO timestamp: {value!r} "
-            "(e.g. 2026-09-01 or 2026-09-01T10:00:00)"
+            "(e.g. 2026-09-01 or 2026-09-01T10:00:00+08:00)"
         ) from None
+    # 无时区 = 说话的人用的时钟, 也就是这台机器的; 带了就尊重它.
+    return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
 
 def build_memento_channel(
@@ -182,13 +193,30 @@ def build_memento_channel(
         return _branches_text(manager)
 
     @chan.build.command(name="view", always_observe=True)
-    async def view(branch: str | None = None, limit: int | None = None) -> str:
-        """Look at one branch's view — the most recent commit summaries.
+    async def view(
+        branch: str | None = None,
+        limit: int | None = None,
+        coord: str | None = None,
+    ) -> str:
+        """Look at one branch's view — the window at the tip, or one scrolled back by coordinate.
 
         :param branch: branch name. None = the one you are living on.
-        :param limit: at most how many, counted back from the most recent. None = the default window.
+        :param limit: at most how many commits, counted back from the window's end.
+        :param coord: cursor — render the trajectory *before* this commit, e.g. `1-700`.
+            The commit itself is excluded: it is the place you already stand, not the view.
+            Reading a whole line is `history`; this moves one window at a time.
         """
-        message = await manager.aview_message(branch, n=limit)
+        if coord:
+            hit = manager.resolve(coord)
+            if hit is None:
+                return f"[memento] no commit at `{coord}`"
+            index = manager.branch_index(branch)
+            if index is not None and hit.branch_index != index:
+                return (
+                    f"[memento] `{coord}` lives on branch #{hit.branch_index}; "
+                    "a cursor only scrolls the line it belongs to"
+                )
+        message = await manager.aview_message(branch, n=limit, until=coord)
         if message is None:
             return f"[memento] no branch `{branch}`"
         return message.to_content_string()
