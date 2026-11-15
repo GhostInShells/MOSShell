@@ -162,6 +162,8 @@ cython_debug/
 !**/.memento/*/branches/GROUND.md
 **/.memento/*/commits/*
 !**/.memento/*/commits/GROUND.md
+# owner 闸文件：只装一个 pid；flock 由内核释放，进程退出后文件留着也无害，但它是运行时痕迹。
+**/.memento/*/.lock
 # 索引、引用、钩子的运行日志：全是运行时数据，一个字节都不该进版本。
 # 机制只有两类文件——`.py` 和 `.md`——所以按后缀挡，比按目录挡稳。
 **/.memento/**/*.json

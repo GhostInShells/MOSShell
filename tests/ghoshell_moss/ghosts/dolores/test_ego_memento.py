@@ -330,6 +330,19 @@ class TestMementoReadSurface:
         branch.notes = boom
         assert manager.list_branches()
 
+    def test_digest_render_keeps_the_folded_face(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        for i in range(5):
+            branch.commit(message=f"c{i}")
+
+        text = manager.view_message(n=2).to_content_string()
+
+        assert '<earlier count="3" errors="0" first="1-1" last="1-3"' in text
+        assert "1-1  c0" in text
+        assert "1-3  c2" in text
+        assert 'seq="1-4"' in text and 'seq="1-5"' in text
+
     def test_list_commits_applies_time_window(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")

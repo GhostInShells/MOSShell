@@ -802,6 +802,7 @@ class EgoMementoManager:
         return self._render_view(branch.view(
             n=n if n is not None else self._config.view_limit,
             until=self._seq_before(branch, until),
+            titles=self._config.digest_titles,
         ))
 
     async def aview_message(
@@ -822,6 +823,7 @@ class EgoMementoManager:
         view = await branch.aview(
             n=n if n is not None else self._config.view_limit,
             until=self._seq_before(branch, until),
+            titles=self._config.digest_titles,
         )
         return self._render_view(view)
 
@@ -936,7 +938,7 @@ class EgoMementoManager:
         fork = self._render_fork(view)
         if fork is not None:
             children.append(fork)
-        if view.history:
+        if view.history is not None:
             children.append(self._render_digest(view))
         children.extend(self._render_days(view.latest))
         if not children:
@@ -982,31 +984,30 @@ class EgoMementoManager:
     def _render_digest(self, view: BranchView) -> Message:
         """The folded past: how much, which slice, and the titles nearest the light.
 
-        Bounded on purpose — ``digest_titles`` is the whole budget of the far side.
-        Anything older than the window is reachable by coordinate (``read`` /
-        ``history``), which is why it is safe not to ship it.
+        ``digest_titles`` is the whole budget of the far side, and the view carries exactly
+        those titles — rendering never walks the folded range. Anything older than the window
+        is reachable by coordinate (``read`` / ``history``).
         """
-        budget = self._config.digest_titles
-        recent = view.history[-budget:] if budget > 0 else []
+        history = view.history
+        assert history is not None  # the caller guards
         body = "\n".join(
             f"· {cv.coord}  {escape(cv.title)}" + ("  [node]" if cv.memento is not None else "")
-            for cv in recent
+            for cv in history.titles
         )
-        nodes = sum(1 for cv in view.history if cv.memento is not None)
         return Message.new(
             tag="earlier",
             attributes={
                 # count 是**原始 commit 数**（未折叠 broken 前）: 它和 first/last 的坐标区间、
                 # total 同一套语义; errors 说明为什么标题行可能比 count 少.
-                "count": str(view.history_total),
-                "errors": str(view.history_errors),
-                "first": view.history[0].coord,
-                "last": view.history[-1].coord,
-                "titles": str(len(recent)),
-                "nodes": str(nodes),
+                "count": str(history.total),
+                "errors": str(history.errors),
+                "first": history.first,
+                "last": history.last,
+                "titles": str(len(history.titles)),
+                "nodes": str(history.nodes),
                 # 折叠段原先完全没有时间 —— "这段记忆有多老"无处可查.
-                "since": stamp_day(view.history[0].created),
-                "until": stamp_day(view.history[-1].created),
+                "since": stamp_day(history.since) if history.since is not None else "",
+                "until": stamp_day(history.until) if history.until is not None else "",
             },
         ).with_content(body)
 

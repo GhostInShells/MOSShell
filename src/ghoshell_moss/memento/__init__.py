@@ -11,6 +11,7 @@ from .abcd import (
     ForkRef,
     BranchMeta,
     CommitView,
+    BranchHistory,
     BranchView,
     Branch,
     Memento,

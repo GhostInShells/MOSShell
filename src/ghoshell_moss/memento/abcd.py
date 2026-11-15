@@ -72,6 +72,7 @@ __all__ = [
     "ForkRef",
     "BranchMeta",
     "CommitView",
+    "BranchHistory",
     "BranchView",
     "Branch",
     "Memento",
@@ -548,6 +549,19 @@ class CommitView(BaseModel):
         """Whether this commit's message is a broken placeholder (terminal side-channel failure)."""
         return bool(self.error)
 
+    @staticmethod
+    def node_path(root: Path, branch_index: int, seq: int, created: AwareDatetime) -> Path:
+        """The node address from its four facts — the one definition, usable without a view.
+
+        A folded history counts node-bearing commits without materializing them, so the
+        layout cannot live only on an instance method.
+        """
+        utc = created.astimezone(timezone.utc)
+        return (
+                root / "commits" / f"{utc.year:04d}" / f"{utc.month:02d}"
+                / f"cmt_{branch_index}-{seq}" / COMMIT_MEMENTO_FILE
+        )
+
     def memento_path(self, root: Path) -> Path:
         """Absolute path of this commit's node index file — pure convention, exists or not.
 
@@ -558,23 +572,39 @@ class CommitView(BaseModel):
           would move the node — that is why it must never happen.
         - ``cmt_{coord}`` is memento's internal unique address (the coordinate). The
           prefix keeps a bare ``27-1027`` from reading like a date on disk.
-        - This method is the single definition of that layout: the implementation and
-          every consumer call it, nobody re-derives the shape.
         """
-        utc = self.created.astimezone(timezone.utc)
-        return (
-                root / "commits" / f"{utc.year:04d}" / f"{utc.month:02d}"
-                / f"cmt_{self.branch_index}-{self.ref.seq}" / COMMIT_MEMENTO_FILE
-        )
+        return CommitView.node_path(root, self.branch_index, self.ref.seq, self.created)
+
+
+class BranchHistory(BaseModel):
+    """The folded past of one branch — **facts, not materialized commits**.
+
+    A renderer needs the count, the error count, the coordinate range, the few titles nearest
+    the detail window, and how many folded commits own a node. Carrying exactly those as
+    fields keeps building a view O(window) instead of O(history); the rendered face is
+    unchanged.
+    """
+
+    total: int = Field(default=0, description="Raw commits folded (counted before broken runs are collapsed).")
+    errors: int = Field(default=0, description="Broken commits inside the folded range.")
+    first: str = Field(default="", description="Coordinate of the first folded commit.")
+    last: str = Field(default="", description="Coordinate of the last folded commit.")
+    since: AwareDatetime | None = Field(default=None, description="Creation time of the first folded commit.")
+    until: AwareDatetime | None = Field(default=None, description="Creation time of the last folded commit.")
+    titles: list[CommitView] = Field(
+        default_factory=list,
+        description="The folded commits' titles nearest the window — everything older is a coordinate away.",
+    )
+    nodes: int = Field(default=0, description="Folded commits that own a node.")
 
 
 class BranchView(BaseModel):
     """A branch's budgeted context view — the projection of a read branch.
 
     Folding policy (near = detailed, far = coarse, deterministic): ``latest`` gives detail
-    for the most recent N commits; ``history`` folds earlier commits into summaries (Note
-    preferred); ``previous`` locates the forked parent and ``fork_coord`` says *where* on it
-    this branch left.
+    for the most recent N commits; ``history`` is a :class:`BranchHistory` digest (note
+    preferred for the few titles it carries); ``previous`` locates the forked parent and
+    ``fork_coord`` says *where* on it this branch left.
 
     ``previous`` is a **pointer, not a copy**: the parent arrives with its identity and its
     size and with no commits of its own. Rendering a parent's history into a child's view was
@@ -603,20 +633,9 @@ class BranchView(BaseModel):
             "a root branch or when the anchor commit is no longer resolvable."
         ),
     )
-    history: list[CommitView] = Field(default_factory=list, description="Earlier commits, folded summaries.")
+    history: BranchHistory | None = Field(default=None, description="The folded past — facts only.")
     latest: list[CommitView] = Field(default_factory=list, description="Most recent commits, detail.")
     commits_total: int = Field(default=0)
-    history_total: int = Field(
-        default=0,
-        description=(
-            "Raw commits folded into ``history`` — counted before consecutive broken commits are "
-            "collapsed, so a reader can tell how much past the digest stands for."
-        ),
-    )
-    history_errors: int = Field(
-        default=0,
-        description="Broken commits inside ``history``; explains why it renders fewer entries than ``history_total``.",
-    )
 
 
 class Branch(ABC):
@@ -817,7 +836,7 @@ class Branch(ABC):
         """
 
     @abstractmethod
-    def view(self, *, n: int = 10, until: int | None = None) -> BranchView:
+    def view(self, *, n: int = 10, until: int | None = None, titles: int = 8) -> BranchView:
         """The most recent n commits in detail + earlier ones folded; the forked parent as a pointer.
 
         ``until`` renders the trajectory **as it stood at a commit**: everything with
@@ -825,12 +844,16 @@ class Branch(ABC):
         span stays verbatim in the surface, so the snapshot must stop just before it rather
         than summarise it twice. ``until=None`` = the whole line.
 
+        ``titles`` is how many folded titles the digest carries (the ones nearest the window);
+        everything older is a coordinate away. Building the view is O(window + titles), not
+        O(history).
+
         Not a pure cache fast path: the detail window probes each commit's node index
         (``CommitView.memento``) because the node space is dynamic by definition.
         """
 
     @abstractmethod
-    async def aview(self, *, n: int = 10, until: int | None = None) -> BranchView:
+    async def aview(self, *, n: int = 10, until: int | None = None, titles: int = 8) -> BranchView:
         """IO-costly: aggregate multiple files into a view; the most expensive read."""
 
     @abstractmethod

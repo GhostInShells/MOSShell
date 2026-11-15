@@ -51,6 +51,7 @@ from ghoshell_moss.memento.abcd import (
     BranchRef,
     BranchAddr,
     BranchEvent,
+    BranchHistory,
     BranchView,
     Child,
     CommitRef,
@@ -220,23 +221,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     if not raw:
         return None
     return json.loads(raw)
-
-
-def _collapse_broken_commits(views: list[CommitView]) -> list[CommitView]:
-    """A run of consecutive broken commits (non-empty ``Note.error``) keeps only the first.
-
-    A broken commit still enters the view — the model must perceive it — but a run of broken
-    placeholders must not flood it. The fold is one pass in coordinate order.
-    """
-    collapsed: list[CommitView] = []
-    previous_broken = False
-    for view in views:
-        broken = view.is_broken
-        if broken and previous_broken:
-            continue
-        collapsed.append(view)
-        previous_broken = broken
-    return collapsed
 
 
 # ── FsBranch ───────────────────────────────────────────────────────────────────
@@ -656,6 +640,10 @@ class FsBranch(Branch):
         path = view.memento_path(self._memento.root)
         if not path.exists():  # never overwrite an existing file — that content is the writer's
             _write_text(path, _MEMENTO_TEMPLATE.format(coord=view.coord, created=view.created.isoformat()))
+        if self._memento._node_paths is not None:
+            self._memento._node_paths.add(path)  # a loaded set stays in step with this writer
+        if self._memento._node_seqs is not None:
+            self._memento._node_seqs.setdefault(self.index, set()).add(seq)
         return path
 
     # ── read-side projection ──
@@ -663,16 +651,8 @@ class FsBranch(Branch):
         return CommitView(branch_index=branch_index, ref=commit, note=notes.get(commit.id))
 
     def _node_index(self) -> set[Path]:
-        """Every node index file that exists, collected in one walk.
-
-        The cost is the number of directories in the node space, not the number of commits:
-        a branch that never wrote a node walks almost nothing, and an anchor that took
-        nothing in never leaves a directory to walk into.
-        """
-        root = self._memento.root / "commits"
-        if not root.is_dir():
-            return set()
-        return set(root.rglob(COMMIT_MEMENTO_FILE))
+        """The owner's node set — one walk, shared by every branch view."""
+        return self._memento._node_index()
 
     def _probe_memento(self, view: CommitView, nodes: set[Path] | None = None) -> CommitView:
         """Fill the node field: one stat for a single read, one collected set for a whole view."""
@@ -683,13 +663,13 @@ class FsBranch(Branch):
             view.memento = path if path in nodes else None
         return view
 
-    def view(self, *, n: int = 10, until: int | None = None) -> BranchView:
-        return self._build_view(self.commits(), self.notes(), n, until)
+    def view(self, *, n: int = 10, until: int | None = None, titles: int = 8) -> BranchView:
+        return self._build_view(self.commits(), self.notes(), n, until, titles)
 
-    async def aview(self, *, n: int = 10, until: int | None = None) -> BranchView:
+    async def aview(self, *, n: int = 10, until: int | None = None, titles: int = 8) -> BranchView:
         commits = await self.acommits()
         notes = await self.anotes()
-        return self._build_view(commits, notes, n, until)
+        return self._build_view(commits, notes, n, until, titles)
 
     def _fork_of(self, meta: BranchMeta) -> tuple["BranchView | None", str]:
         """The parent as a pointer, plus the coordinate on it where this branch left.
@@ -715,11 +695,29 @@ class FsBranch(Branch):
             created=parent_meta.created,
             commit_id="",
             previous=None,
-            history=[],
+            history=None,
             latest=[],
             commits_total=len(commits),
         )
         return pointer, (f"{parent_meta.index}-{seq}" if seq else "")
+
+    @staticmethod
+    def _collapsed_refs(commits: list[CommitRef], notes: dict[str, Note]) -> list[CommitRef]:
+        """Drop every broken commit that follows another broken one — on refs, not objects.
+
+        The fold has to run over the whole line to keep the window boundary identical to the
+        materialized view; it costs one note lookup per commit and builds nothing.
+        """
+        collapsed: list[CommitRef] = []
+        previous_broken = False
+        for ref in commits:
+            note = notes.get(ref.id)
+            broken = bool(note.error) if note is not None else False
+            if broken and previous_broken:
+                continue
+            collapsed.append(ref)
+            previous_broken = broken
+        return collapsed
 
     def _build_view(
             self,
@@ -727,6 +725,7 @@ class FsBranch(Branch):
             notes: dict[str, Note],
             n: int,
             until: int | None = None,
+            titles: int = 8,
     ) -> BranchView:
         """Project the branch, optionally **as it stood before ``until``**.
 
@@ -734,23 +733,47 @@ class FsBranch(Branch):
         surface, so a snapshot rendered during compaction must stop just before it. Without
         this, the re-rendered memory would summarise a span that is still verbatim above it —
         and the summary and the span would disagree the moment the note is written late.
+
+        Cost is O(window + titles): the folded past is carried as facts (counts, range, the
+        few nearest titles), never as one object per commit. The rendered face is unchanged.
         """
         meta = self.meta()
         if until is not None:
             commits = [c for c in commits if c.seq < until]
-        raw = [self._commit_view(c, notes, meta.index) for c in commits]
-        views = _collapse_broken_commits(raw)
+        collapsed = self._collapsed_refs(commits, notes)
+        latest_refs = collapsed[-n:] if n > 0 else []
+        history_refs = collapsed[:-n] if n > 0 else collapsed
+        # Counts are over raw commits, not collapsed entries: ``count`` next to a first/last
+        # range means "this many commits", and broken ones are still commits.
+        boundary = latest_refs[0].seq if latest_refs else (commits[-1].seq + 1 if commits else 1)
+        history_raw = [c for c in commits if c.seq < boundary]
+        history_errors = sum(
+            1 for c in history_raw
+            if (note := notes.get(c.id)) is not None and bool(note.error)
+        )
         nodes = self._node_index()
-        for cv in views:
-            self._probe_memento(cv, nodes)
-        latest = views[-n:] if n > 0 else []
-        history = views[:-n] if n > 0 else views
-        # Counts are over the raw commits, not the collapsed entries: ``count`` next to a
-        # first/last coordinate range must mean "this many commits", and the broken ones are
-        # still commits even when a run of them shows as one entry. ``history_errors`` is what
-        # explains a title list shorter than the range it stands for.
-        boundary = latest[0].seq if latest else (commits[-1].seq + 1 if commits else 1)
-        history_raw = [cv for cv in raw if cv.seq < boundary]
+        latest = [
+            self._probe_memento(self._commit_view(c, notes, meta.index), nodes)
+            for c in latest_refs
+        ]
+        title_views = [
+            self._probe_memento(self._commit_view(c, notes, meta.index), nodes)
+            for c in (history_refs[-titles:] if titles > 0 else [])
+        ]
+        node_seqs = self._memento._node_seqs_for(meta.index)
+        history_nodes = sum(1 for c in history_refs if c.seq in node_seqs)
+        history: BranchHistory | None = None
+        if history_refs:
+            history = BranchHistory(
+                total=len(history_raw),
+                errors=history_errors,
+                first=f"{meta.index}-{history_refs[0].seq}",
+                last=f"{meta.index}-{history_refs[-1].seq}",
+                since=history_refs[0].created,
+                until=history_refs[-1].created,
+                titles=title_views,
+                nodes=history_nodes,
+            )
         previous, fork_coord = self._fork_of(meta)
         tip = commits[-1].id if commits else ""
         return BranchView(
@@ -765,8 +788,6 @@ class FsBranch(Branch):
             history=history,
             latest=latest,
             commits_total=len(commits),
-            history_total=len(history_raw),
-            history_errors=sum(1 for cv in history_raw if cv.is_broken),
         )
 
     def get_commit(self, seq: int) -> CommitView | None:
@@ -845,6 +866,12 @@ class FsMemento(Memento):
         # branch keeps its caches warm. Weak, so an unused branch (and its caches) is collected
         # instead of pinning every branch the process ever read.
         self._branches: "weakref.WeakValueDictionary[str, FsBranch]" = weakref.WeakValueDictionary()
+        # The node space is a convention, not a managed index: one walk builds this set, and
+        # writers add their own path. A view probes the set instead of walking per render.
+        self._node_paths: set[Path] | None = None
+        # The same set keyed by (branch index -> commit seqs): counting nodes in a folded
+        # history must not build one Path per commit.
+        self._node_seqs: dict[int, set[int]] | None = None
         self._writable = False
         self._gate: FileLocker | None = None
         if writable:
@@ -897,6 +924,36 @@ class FsMemento(Memento):
 
     def _branch_dir(self, branch_id: str) -> Path:
         return self._root / "branches" / branch_id
+
+    def _node_index(self) -> set[Path]:
+        """Every node index file, collected once and kept in step by ``ensure_memento``.
+
+        The node space is an unmanaged asset area, so this is the only walk: a view probes the
+        set, and a writer inside this process adds its own path. A node created by another
+        process is picked up on the next open (read-only owners are short-lived).
+        """
+        if self._node_paths is None:
+            root = self._root / "commits"
+            paths = set(root.rglob(COMMIT_MEMENTO_FILE)) if root.is_dir() else set()
+            self._node_paths = paths
+            seqs: dict[int, set[int]] = {}
+            for path in paths:
+                name = path.parent.name  # cmt_{branch_index}-{seq}
+                if not name.startswith("cmt_"):
+                    continue
+                try:
+                    index_text, seq_text = name[4:].split("-", 1)
+                    seqs.setdefault(int(index_text), set()).add(int(seq_text))
+                except ValueError:
+                    continue
+            self._node_seqs = seqs
+        return self._node_paths
+
+    def _node_seqs_for(self, branch_index: int) -> set[int]:
+        """Which commit seqs of one branch own a node — a set lookup, not a path build."""
+        self._node_index()
+        assert self._node_seqs is not None
+        return self._node_seqs.get(branch_index, set())
 
     def create_branch(
             self,

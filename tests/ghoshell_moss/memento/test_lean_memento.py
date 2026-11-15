@@ -131,12 +131,12 @@ def test_broken_note_enters_view_collapsed(memento):
         b.note(ref.id, "sidecar failed", error="fatal")
 
     v = b.view(n=10)
-    coords = [cv.coord for cv in v.history + v.latest]
 
-    # 坏 commit 进 view (模型须感知), 但连续坏只留第一个 → 1-1, 1-2(坏), 1-5
-    assert coords == ["1-1", "1-2", "1-5"]
+    # 全部落在 detail window 里, 折叠只影响窗口内的连续坏 commit → 1-1, 1-2(坏), 1-5
+    assert [cv.coord for cv in v.latest] == ["1-1", "1-2", "1-5"]
     assert v.commits_total == 5
-    broken = [cv for cv in v.history + v.latest if cv.is_broken]
+    assert v.history is None
+    broken = [cv for cv in v.latest if cv.is_broken]
     assert len(broken) == 1
     assert broken[0].error == "fatal"
 
@@ -153,11 +153,13 @@ def test_view_folds_latest_history_and_derives_title(memento):
 
     assert v.commits_total == 3
     assert len(v.latest) == 2
-    assert len(v.history) == 1
+    assert v.history is not None
+    assert v.history.total == 1
+    assert (v.history.first, v.history.last) == ("1-1", "1-1")
     # title = message 首行, body = 其余
     assert v.latest[-1].title == "commit 2"
     assert v.latest[-1].body == "body 2"
-    assert v.history[0].title == "commit 0"
+    assert v.history.titles[0].title == "commit 0"
 
 
 def test_view_coord_is_branch_index_and_commit_seq(memento):
@@ -414,7 +416,9 @@ def test_node_surface_covers_the_whole_view(memento):
     # A node is reported wherever it sits, history included: the probe is one walk over the
     # node space rather than one stat per commit, so the detail window no longer decides what
     # is observable.
-    assert [cv.memento is not None for cv in view.history] == [True, False]
+    assert view.history is not None
+    assert [cv.memento is not None for cv in view.history.titles] == [True, False]
+    assert view.history.nodes == 1
     assert view.latest[0].memento is not None
 
 
