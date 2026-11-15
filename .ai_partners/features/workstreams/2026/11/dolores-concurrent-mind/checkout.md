@@ -59,11 +59,41 @@ session 不变、模型不变，变的是"我现在属于哪条线"。
 
 `我推` 的形状：
 
-- 出发：`depart(#2 idea): <一句话>`，写在 A 上，`to` 指向目的线。
-- 到达：`arrive(#1 main @1-735): <一句话>`，写在 B 上，`from` 指向来源线与来源坐标。
+- 出发：`depart(#2 idea): <title>`，写在 A 上，`to` 指向目的线。
+- 到达：`arrive(#1 main @1-735): <title>`，写在 B 上，`from` 指向来源线与来源坐标。
+- **两个锚共用同一个 title**：离开的理由就是到达的理由，模型只写一次；出发锚的 body 是 `note`，
+  到达锚的 body 指向来源坐标。
 - **op 默认空字符串**，空 = 无语义约束（今天的普通 commit）。`note` 不是 op 名。
 - **op 负责组合默认标题**；结构化参数（`to` / `from` / `coord`）进 commit 本身，**不从标题字符串里解析**。
 - `fork` / `archive` 本身不留 commit，不需要 op。
+
+### op 的定义只有一处
+
+`他说`（D16 02:4x）：op 约定类型之后，文档可以在 command 上带；但**不要抄注释**——迭代里会自动腐烂的
+抄写最讨厌，最好用 doc fn 生产，或者换别的方式。
+
+`我推` 的落法：一张 `OpSpec` 注册表（name / title 模板 / 需要哪些参数 / 一句话语义 / body 规则），
+三处产物全部由它生成：
+
+1. commit 时的标题与校验；
+2. channel instruction 里的 op 表；
+3. `checkout` / `commit` 命令 docstring 里那段 op 说明——**用 spec 的 `doc()` 拼**，不手写第二份。
+
+### 命令签名
+
+`他说`（D16 02:4x）：checkout 里没有 title 不行；既然定义了 op，就应该是 `checkout(name, title, note)`，
+否则 note 又是纯粹独立规则。**note 是长文本，必须一直用 `text__` 定义参数**（`commit` 同理）——
+否则在 `""` 里手写转义太痛苦。`text__` 现在还要 CDATA 包一层，这个麻烦一直没时间解决，先用 `text__`。
+
+`我推`：
+
+```python
+async def checkout(name: str, title: str = "", text__: str = "") -> str
+```
+
+- `name` / `title` 走属性；`note` 走标签体（`text__`）。
+- `title` 必填：它就是两侧 note 的标题，缺了就不是"明确的 note"。
+- `note` 可空：空则两侧只有标题。
 
 ### 零宽锚与 turn 空间
 
@@ -134,3 +164,5 @@ BACKGROUND + `ChallengeMode.notify`，不抢注意力，抢占失败也 buffer�
 - B 的下一笔 commit 的下界 = 切换时的 turn（`(T, …]`），不吞 A 的 turn。
 - 切到归档分支 / 不存在的分支 / 当前分支：拒绝且无副作用。
 - 同轮第二次 checkout：第一次的排队被清空，且命令报错。
+- `checkout` 的 `note` 以 `text__` 声明：长文本可以从标签体进来，不必在属性里转义。
+- op 的说明只有一处来源：instruction 里的 op 表与命令 docstring 都由 `OpSpec` 生成，改规则只改注册表。
