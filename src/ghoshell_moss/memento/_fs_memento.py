@@ -322,23 +322,25 @@ class FsBranch(Branch):
 
     # ── reads (cached fast path) ──
     def commits(self) -> list[CommitRef]:
+        """The branch's anchors in order — the cached list itself; callers treat it read-only."""
         if self._commits_cache is None:
             self._commits_cache = _parse_commits(_read_jsonl(self._commits_path()))
-        return list(self._commits_cache)
+        return self._commits_cache
 
     def notes(self) -> dict[str, Note]:
+        """``commit_id -> Note`` — the cached map itself; callers treat it read-only."""
         if self._notes_cache is None:
             self._notes_cache = _parse_notes(_read_jsonl(self._notes_path()))
-        return dict(self._notes_cache)
+        return self._notes_cache
 
     # ── reads (aiofiles, IO-costly) ──
     async def acommits(self) -> list[CommitRef]:
         self._commits_cache = _parse_commits(await _aread_jsonl(self._commits_path()))
-        return list(self._commits_cache)
+        return self._commits_cache
 
     async def anotes(self) -> dict[str, Note]:
         self._notes_cache = _parse_notes(await _aread_jsonl(self._notes_path()))
-        return dict(self._notes_cache)
+        return self._notes_cache
 
     # ── writes ──
     def commit(
@@ -361,7 +363,10 @@ class FsBranch(Branch):
             rejected=[*rejected_confluences, *rejected_children],
         )
         _append_jsonl(self._commits_path(), [ref.model_dump(mode="json")])
-        self._commits_cache = None
+        # ``seq`` was derived from the cached list, so it is loaded; keep it in step with disk
+        # instead of dropping it (a drop would force the next read to re-parse the whole file).
+        if self._commits_cache is not None:
+            self._commits_cache.append(ref)
         # The anchor is durable, so the claimed batches now belong to it: drop the files. A
         # crash before this point leaves them behind, and the next commit re-reads and de-dupes.
         for claimed in (self._claimed_path(), self._claimed_children_path()):
@@ -545,7 +550,8 @@ class FsBranch(Branch):
             recipients = previous.recipients if previous is not None else []
         note = Note(commit_id=commit_id, message=message, error=error, recipients=list(recipients))
         _append_jsonl(self._notes_path(), [note.model_dump(mode="json")])
-        self._notes_cache = None
+        # ``notes()`` above loaded the map; update that one entry instead of dropping the map.
+        self._notes_cache[commit_id] = note
         # Delivery happens once, on the first note: the address is part of the message, and a
         # rewrite is only a restatement.
         if previous is None and recipients:
@@ -642,9 +648,11 @@ class FsBranch(Branch):
 
     def ensure_memento(self, seq: int) -> Path:
         self._memento._require_writable()
-        view = self.get_commit(seq)
-        if view is None:
+        commits = self.commits()
+        if seq < 1 or seq > len(commits):
             raise KeyError(f"branch '{self._name}' has no commit at seq {seq}")
+        # The node address needs the anchor only — opening a node must not pull the note map.
+        view = CommitView(branch_index=self.index, ref=commits[seq - 1])
         path = view.memento_path(self._memento.root)
         if not path.exists():  # never overwrite an existing file — that content is the writer's
             _write_text(path, _MEMENTO_TEMPLATE.format(coord=view.coord, created=view.created.isoformat()))
@@ -833,6 +841,10 @@ class FsMemento(Memento):
         self._root = Path(root)
         self._hooks: list[Callable[[BranchEvent], None]] = []
         self._roster_cache: list[dict[str, Any]] | None = None
+        # One live branch instance per branch_id: caches live there, and a caller that holds a
+        # branch keeps its caches warm. Weak, so an unused branch (and its caches) is collected
+        # instead of pinning every branch the process ever read.
+        self._branches: "weakref.WeakValueDictionary[str, FsBranch]" = weakref.WeakValueDictionary()
         self._writable = False
         self._gate: FileLocker | None = None
         if writable:
@@ -936,25 +948,39 @@ class FsMemento(Memento):
         _write_json(self._ref_path(name), ref.model_dump(mode="json"))
         _append_jsonl(self._branches_jsonl(), [ref.model_dump(mode="json")])
         self._roster_cache = None
-        return FsBranch(self, branch_id, name, description, created, index=index,
-                        parent_id=fork_from.branch_id if fork_from else "")
+        branch = FsBranch(self, branch_id, name, description, created, index=index,
+                          parent_id=fork_from.branch_id if fork_from else "")
+        branch._meta_cache = meta
+        self._branches[branch_id] = branch
+        return branch
 
     def _branch_by_id(self, branch_id: str) -> FsBranch | None:
+        existing = self._branches.get(branch_id)
+        if existing is not None:
+            return existing
         data = _read_json(self._branch_dir(branch_id) / "meta.json")
         if data is None:
             return None
         meta = BranchMeta(**data)
-        return FsBranch(self, meta.branch_id, meta.name, meta.description, meta.created,
-                        index=meta.index,
-                        parent_id=meta.fork_from.branch_id if meta.fork_from else "")
+        branch = FsBranch(self, meta.branch_id, meta.name, meta.description, meta.created,
+                          index=meta.index,
+                          parent_id=meta.fork_from.branch_id if meta.fork_from else "")
+        branch._meta_cache = meta
+        self._branches[branch_id] = branch
+        return branch
 
     def get_branch(self, name: str) -> Branch | None:
         data = _read_json(self._ref_path(name))
         if data is None:
             return None
         ref = BranchRef(**data)
-        return FsBranch(self, ref.branch_id, ref.name, ref.description, ref.created,
-                        parent_id=ref.parent_id)
+        existing = self._branches.get(ref.branch_id)
+        if existing is not None:
+            return existing
+        branch = FsBranch(self, ref.branch_id, ref.name, ref.description, ref.created,
+                          parent_id=ref.parent_id)
+        self._branches[ref.branch_id] = branch
+        return branch
 
     def list_branches(self) -> list[BranchRef]:
         return [ref for _, ref in self.list_branch_entries()]

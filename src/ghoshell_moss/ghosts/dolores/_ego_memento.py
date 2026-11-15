@@ -308,6 +308,9 @@ class EgoMementoManager:
         self._logger = logger or get_moss_logger()
         # 旁路治理状态: 每个排过旁路的 commit → 它的切点 / 状态 / 在飞任务 (见 BypassCommit).
         self._bypass: dict[str, BypassCommit] = {}
+        # The current line's lease: the manager holds it strongly so its caches stay warm;
+        # other branches are only weakly referenced by the owner and are collected unused.
+        self._current_branch: Branch | None = None
 
     @property
     def config(self) -> EgoMementoConfig:
@@ -1050,6 +1053,9 @@ class EgoMementoManager:
         branch = self._memento.get_branch(self._config.branch_name)
         if branch is None:
             raise RuntimeError(f"memento branch '{self._config.branch_name}' not found")
+        # Hold the current line: an owner's branch instances are weak, so this is the lease
+        # that keeps this branch's read caches warm between calls.
+        self._current_branch = branch
         return branch
 
     def _ref_of(self, commit: CommitRef) -> DshSessionRef | None:
