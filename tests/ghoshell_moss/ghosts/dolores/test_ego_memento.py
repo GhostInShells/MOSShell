@@ -330,13 +330,14 @@ class TestMementoReadSurface:
         branch.notes = boom
         assert manager.list_branches()
 
-    def test_digest_render_keeps_the_folded_face(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_digest_render_keeps_the_folded_face(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
         for i in range(5):
             branch.commit(message=f"c{i}")
 
-        text = manager.view_message(n=2).to_content_string()
+        text = (await manager.aview_message(n=2)).to_content_string()
 
         assert '<earlier count="3" errors="0" first="1-1" last="1-3"' in text
         assert "1-1  c0" in text
@@ -357,7 +358,8 @@ class TestMementoReadSurface:
         before_all = branch.commits()[0].created - timedelta(days=1)
         assert manager.list_commits(until_date=before_all) == []
 
-    def test_view_message_reads_another_branch(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_reads_another_branch(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         memento.get_branch("main").note(anchor.id, "main-note")
@@ -365,10 +367,11 @@ class TestMementoReadSurface:
         side_anchor = side.commit(metatype="session", metadata={})
         side.note(side_anchor.id, "side-note")
 
-        assert "main-note" in manager.view_message().to_content_string()
-        assert "side-note" in manager.view_message("side").to_content_string()
+        assert "main-note" in (await manager.aview_message()).to_content_string()
+        assert "side-note" in (await manager.aview_message("side")).to_content_string()
 
-    def test_view_message_folds_the_past_instead_of_rendering_it(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_folds_the_past_instead_of_rendering_it(self, tmp_path: Path):
         """The budget is the contract: n commits in detail, everything older folded.
 
         This used to concatenate ``history + latest`` and draw every commit in
@@ -381,7 +384,7 @@ class TestMementoReadSurface:
             anchor = manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
             branch.note(anchor.id, f"note {i}\n" + ("body " * 200))
 
-        text = manager.view_message().to_content_string()
+        text = (await manager.aview_message()).to_content_string()
 
         # 6 详展 + 24 折叠; the folded count is over raw commits, and its title budget is 20.
         assert text.count("<commit ") == 6
@@ -393,7 +396,8 @@ class TestMementoReadSurface:
         # one folded entry, not twenty-four: the far side is a range plus a few titles
         assert len(text) < 12000
 
-    def test_digest_counts_raw_commits_and_reports_broken_ones(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_digest_counts_raw_commits_and_reports_broken_ones(self, tmp_path: Path):
         """count is over commits, not rendered entries — a broken run still consumes its range.
 
         Two consecutive broken notes collapse to one entry so they cannot flood the view; the
@@ -409,26 +413,28 @@ class TestMementoReadSurface:
         branch.note(ids[0], "", error="run failed: timeout")
         branch.note(ids[1], "", error="run failed: timeout")
 
-        text = manager.view_message().to_content_string()
+        text = (await manager.aview_message()).to_content_string()
 
         assert 'count="6"' in text, "history is six raw commits"
         assert 'errors="2"' in text, "the collapsed run is still two broken commits"
         assert 'titles="5"' in text, "two broken entries collapse to one title line"
 
-    def test_commit_note_body_is_escaped_before_it_enters_the_surface(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_commit_note_body_is_escaped_before_it_enters_the_surface(self, tmp_path: Path):
         """A note is text, not structure: its angle brackets must not become tags."""
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         branch.note(anchor.id, "shape <memento> & <commit seq=...>")
 
-        text = manager.view_message().to_content_string()
+        text = (await manager.aview_message()).to_content_string()
 
         assert "&lt;memento&gt;" in text
         assert "&amp;" in text
-        assert "<memento branch=" in text, "the container itself is still markup"
+        assert "<memento>" in text, "the container itself is still markup"
 
-    def test_view_message_marks_a_node_without_shipping_its_path(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_marks_a_node_without_shipping_its_path(self, tmp_path: Path):
         """A node's presence is one flag; its path is derivable and would be pure noise.
 
         The commit line used to carry the absolute path of ``MEMENTO.md`` — hundreds of
@@ -440,15 +446,16 @@ class TestMementoReadSurface:
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         branch.note(anchor.id, "main-note")
 
-        assert 'node="' not in manager.view_message().to_content_string()
+        assert 'node="' not in (await manager.aview_message()).to_content_string()
 
         node = branch.ensure_memento(anchor.seq)
-        text = manager.view_message().to_content_string()
+        text = (await manager.aview_message()).to_content_string()
 
         assert 'node="1"' in text
         assert str(node) not in text
 
-    def test_view_message_groups_the_window_by_day(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_groups_the_window_by_day(self, tmp_path: Path):
         """The window is a day's work; the date is paid once, the clock travels per commit.
 
         A bare ``D13`` cannot say which month it belongs to — this branch already spans
@@ -463,7 +470,7 @@ class TestMementoReadSurface:
 
         created = [c.created for c in branch.commits()]
         local = created[0].astimezone()
-        text = manager.view_message().to_content_string()
+        text = (await manager.aview_message()).to_content_string()
 
         assert text.count("<day ") == 1
         assert f'<day date="{local.strftime("%Y-%m-%d")}' in text
@@ -472,7 +479,8 @@ class TestMementoReadSurface:
         assert re.search(r'<commit seq="1-\d+" at="\d{2}:\d{2}"', text)
         assert 'created="' not in text
 
-    def test_view_message_stops_before_a_coordinate(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_stops_before_a_coordinate(self, tmp_path: Path):
         """A snapshot rendered for compaction must end where the surface takes over.
 
         The cut commit's span stays verbatim above the recap; rendering it into the snapshot
@@ -486,21 +494,23 @@ class TestMementoReadSurface:
             branch.note(anchor.id, f"note {i}")
             coords.append(manager.coord(anchor))
 
-        text = manager.view_message(until=coords[2]).to_content_string()
+        text = (await manager.aview_message(until=coords[2])).to_content_string()
 
         # exclusive: the cut commit and everything after it are the surface's job
         assert coords[0] in text and coords[1] in text
         assert coords[2] not in text
         assert 'total="2"' in text
 
-    def test_view_message_does_not_claim_an_owner(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_does_not_claim_an_owner(self, tmp_path: Path):
         """owner was a directory name, not an identity; the container no longer states one."""
         manager, memento = self._manager(tmp_path)
         manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
-        assert 'owner="' not in manager.view_message().to_content_string()
+        assert 'owner="' not in (await manager.aview_message()).to_content_string()
 
-    def test_view_message_points_at_the_forked_parent(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_points_at_the_forked_parent(self, tmp_path: Path):
         """The branch opening reserves the parent: one pointer, never the parent's history."""
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
@@ -508,13 +518,14 @@ class TestMementoReadSurface:
         branch.note(anchor.id, "main-note")
         branch.fork("child")
 
-        text = manager.view_message("child").to_content_string()
+        text = (await manager.aview_message("child")).to_content_string()
 
         assert f'<fork from="main" index="{branch.index}"' in text
         assert f'coord="{branch.index}-{anchor.seq}"' in text
         assert "<commit" not in text  # the parent's commits stay at the parent
 
-    def test_view_message_shows_what_arrived_from_another_branch(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_shows_what_arrived_from_another_branch(self, tmp_path: Path):
         """A confluence is the only cross-branch write, so it must be visible where it landed.
 
         Only the title travels (the contract copies nothing else); the body stays at the
@@ -532,13 +543,14 @@ class TestMementoReadSurface:
         landed = side.commit(metatype="session", metadata={})
         side.note(landed.id, "side-note")
 
-        text = manager.view_message("side").to_content_string()
+        text = (await manager.aview_message("side")).to_content_string()
 
         assert '<from branch="main"' in text
         assert f'coord="{main.index}-{anchor.seq}"' in text
         assert "main-note" in text
 
-    def test_view_message_shows_a_branch_it_spawned(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_view_message_shows_a_branch_it_spawned(self, tmp_path: Path):
         """The outgoing half of the same exchange: a child is absorbed by the next commit."""
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
@@ -548,7 +560,7 @@ class TestMementoReadSurface:
         later = manager.commit(session_id="s1", start_turn=1, end_turn=2)
         branch.note(later.id, "later-note")
 
-        text = manager.view_message().to_content_string()
+        text = (await manager.aview_message()).to_content_string()
 
         assert '<to branch="child"' in text
 
@@ -725,3 +737,81 @@ class TestEgoMementoCompactCut:
 
 
 # ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
+
+
+class TestBranchGround:
+    """The line's state face — nested in memory, planted from a seed, absent-safe."""
+
+    @staticmethod
+    def _manager(tmp_path: Path, *, seed_ground: Path | None = None):
+        from ghoshell_moss.memento import new_local_memento
+
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
+
+        memento = new_local_memento(tmp_path / "owner", writable=True)
+        memento.create_branch("main")
+        manager = EgoMementoManager(
+            connection=_OfflineConnection(),
+            memento=memento,
+            config=EgoMementoConfig(),
+            seed_ground=seed_ground,
+        )
+        return manager, memento
+
+    @staticmethod
+    def _seed(tmp_path: Path) -> Path:
+        seed = tmp_path / "seed" / "branch_ground"
+        (seed / "skills").mkdir(parents=True)
+        (seed / "GROUND.md").write_text("# seed\n\nSEED-TEXT", encoding="utf-8")
+        (seed / "skills" / "GROUND.md").write_text("# skills\n", encoding="utf-8")
+        return seed
+
+    @pytest.mark.asyncio
+    async def test_absent_ground_renders_the_seed_as_default(self, tmp_path: Path):
+        manager, _ = self._manager(tmp_path, seed_ground=self._seed(tmp_path))
+
+        text = (await manager.aview_message()).to_content_string()
+
+        assert '<branch name="main"' in text
+        assert 'default="true"' in text
+        assert "SEED-TEXT" in text
+
+    @pytest.mark.asyncio
+    async def test_a_written_ground_renders_itself_not_the_seed(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path, seed_ground=self._seed(tmp_path))
+        memento.get_branch("main").path.joinpath("GROUND.md").write_text(
+            "# main\n\nMY-OWN-FIELD", encoding="utf-8"
+        )
+
+        text = (await manager.aview_message()).to_content_string()
+
+        assert "MY-OWN-FIELD" in text
+        assert "SEED-TEXT" not in text
+        assert 'default="true"' not in text
+
+    @pytest.mark.asyncio
+    async def test_a_new_line_is_planted_with_the_seed(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path, seed_ground=self._seed(tmp_path))
+
+        async with manager:
+            branch = manager.fork_branch("idea", "a direction")
+
+        planted = memento.root / "branches" / branch.ref.branch_id
+        assert (planted / "GROUND.md").read_text(encoding="utf-8").startswith("# seed")
+        assert (planted / "skills" / "GROUND.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_fork_hint_carries_the_origin_title_and_parent_ground(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path, seed_ground=self._seed(tmp_path))
+        main = memento.get_branch("main")
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        main.note(anchor.id, "the split\nwhy it split")
+        main.path.joinpath("GROUND.md").write_text("# main\n\nmain's field", encoding="utf-8")
+
+        async with manager:
+            manager.fork_branch("idea", "a direction")
+
+        text = (await manager.aview_message("idea")).to_content_string()
+
+        assert 'title="the split"' in text
+        assert 'ground="1"' in text

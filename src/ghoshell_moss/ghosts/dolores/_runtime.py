@@ -703,6 +703,7 @@ class Dolores(Ghost):
                         memento=self._memento,
                         config=self._load_config().memento,
                         prompt_manager=prompt_manager,
+                        seed_ground=self._home / ".dolores/seeds/branch_ground",
                         logger=self.logger,
                     )
                 )

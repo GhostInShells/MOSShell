@@ -414,7 +414,7 @@ class BranchRef(BaseModel):
         default="",
         description=(
             "Branch this one was created from; empty for a root. Written once, with the row, so "
-            "the parent-child tree is derivable from the roster alone — no meta read, no "
+            "the parent-child tree is derivable from the branch log alone — no meta read, no "
             "trajectory scan."
         ),
     )
@@ -808,7 +808,7 @@ class Branch(ABC):
         """Branches created from this one that the next commit has not absorbed yet.
 
         **Not** the answer to "which branches are mine" — that question is answered by the
-        roster and each child's ``fork_from``, and it holds whether or not this branch ever
+        branch log and each child's ``fork_from``, and it holds whether or not this branch ever
         commits again (``Memento.children_of``). This is only the gap between creating a child
         and recording that creation in the trajectory.
         """
@@ -912,7 +912,7 @@ class Branch(ABC):
 class Memento(ABC):
     """The owner-level entry point. One owner = one directory.
 
-    Under ``owner/``: ``branches.jsonl`` (the historical branch roster), ``{branch_name}.ref.json``
+    Under ``owner/``: ``branches.jsonl`` (the historical branch log), ``{branch_name}.ref.json``
     (the current pointer), ``branches/{branch_id}/`` (each branch's directory), and
     ``commits/{YYYY}/{MM}/cmt_{coord}/`` (the commit node space, created only by writers).
     """
@@ -953,12 +953,12 @@ class Memento(ABC):
     def list_branch_entries(self) -> list[tuple[int, BranchRef]]:
         """The active branch list with each branch's ordinal, from owner data only.
 
-        The ordinal is the roster position (``branches.jsonl``), so it survives archive and
+        The ordinal is the branch log position (``branches.jsonl``), so it survives archive and
         name reuse. A listing needs exactly this and nothing from a branch's commits or notes.
         """
 
     @abstractmethod
-    def list_roster(
+    def list_branch_catalog(
             self,
             *,
             offset: int = 0,
@@ -966,10 +966,10 @@ class Memento(ABC):
     ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
         """A page of every branch the owner ever created, archived included.
 
-        Returns ``(total, [(ordinal, ref, active)])``. The roster is append-only and outlives
+        Returns ``(total, [(ordinal, ref, active)])``. The branch log is append-only and outlives
         the name pointer, so it is the only listing that can see a closed line; ``active`` says
         whether the name still points at that identity. Paged on purpose: a long-lived owner
-        accumulates branches without bound, and no surface should ever read the whole roster.
+        accumulates branches without bound, and no surface should ever read the whole branch log.
         """
 
     @abstractmethod
@@ -980,7 +980,7 @@ class Memento(ABC):
     def children_of(self, name: str) -> list[BranchAddr]:
         """Every branch created from this one — **derived**, not read off a trajectory.
 
-        The roster gives all branches and each child's ``meta.fork_from`` gives its parent, so
+        The branch log gives all branches and each child's ``meta.fork_from`` gives its parent, so
         the answer is a join over branch data: complete from the moment a child exists, and
         independent of whether the parent ever commits again. What it cannot say is *when in
         the trajectory* the child appeared — that is ``CommitRef.children``, and it only exists
@@ -997,7 +997,7 @@ class Memento(ABC):
         """Archive this branch and its whole subtree — **deepest first**.
 
         Archiving is not deletion: it removes the name pointer (``{name}.ref.json``) and
-        nothing else. The directory, the meta and every commit survive, and the roster keeps
+        nothing else. The directory, the meta and every commit survive, and the branch log keeps
         the row, so the branch stays resolvable by index and can be restored from meta later.
         Children are archived before their parent, so a crash midway leaves a parent that still
         exists and can account for what happened, rather than live fragments of a vanished one.

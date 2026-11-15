@@ -232,12 +232,12 @@ def build_memento_channel(
 
     @chan.build.command(name="branches", always_observe=True)
     async def branches(offset: int = 0, limit: int = 20) -> str:
-        """List the branch roster — closed lines included — one page at a time.
+        """List every branch — closed lines included — one page at a time.
 
-        :param offset: start at this 0-based roster position; `total` in the answer says how to page.
+        :param offset: start at this 0-based branch position; `total` in the answer says how to page.
         :param limit: rows in this page, 20 by default.
         """
-        total, page = manager.list_roster_page(offset, limit)
+        total, page = manager.branch_catalog(offset, limit)
         if not page:
             return f"[memento] no branches at offset {offset} (total {total})"
         current = manager.config.branch_name

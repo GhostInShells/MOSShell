@@ -4,7 +4,7 @@ Storage binds to one local path (the owner root):
 
     {owner}/
       .lock                                 # owner gate: held by the one writable process
-      branches.jsonl                        # branch roster, append-only
+      branches.jsonl                        # branch log, append-only
       {branch_name}.ref.json                # the current pointer (BranchRef)
       branches/{branch_id}/
         meta.json                           # BranchMeta
@@ -561,7 +561,7 @@ class FsBranch(Branch):
     def _resolve(self, address: BranchAddr) -> "FsBranch":
         """Find a branch from an address — by position first, by name as a fallback.
 
-        Position is the stable half: the roster is append-only, so an index survives archive.
+        Position is the stable half: the branch log is append-only, so an index survives archive.
         The name is only a fallback, and the id is checked whenever it is present — a reused
         name must never silently point at a different branch.
         """
@@ -587,6 +587,11 @@ class FsBranch(Branch):
 
     def fork(self, name: str, description: str = "", *, commit_id: str = "") -> "Branch":
         self._memento._require_writable()
+        # A closed line is frozen: forking it would write a child row into a trajectory that
+        # already left the active set, and leave the child pointing at a parent nobody can see.
+        active = self._memento.get_branch(self._name)
+        if active is None or active.ref.branch_id != self._branch_id:
+            raise RuntimeError(f"cannot fork from branch '{self._name}': it left the active set")
         commits = self.commits()
         if commit_id:
             # A fork point must be a position *on this branch*: an id from another line would
@@ -857,6 +862,15 @@ class FsBranch(Branch):
 # ── FsMemento ──────────────────────────────────────────────────────────────────
 
 
+def _safe_branch_name(name: str) -> bool:
+    """A branch name becomes a file stem under the owner root — keep it path-safe."""
+    if not name or name in (".", ".."):
+        return False
+    if name.startswith("."):
+        return False
+    return "/" not in name and "\\" not in name and "\x00" not in name
+
+
 class FsMemento(Memento):
     """The owner-level filesystem memento. ``root`` is the owner directory.
 
@@ -868,7 +882,7 @@ class FsMemento(Memento):
     def __init__(self, root: Path, *, writable: bool = False):
         self._root = Path(root)
         self._hooks: list[Callable[[BranchEvent], None]] = []
-        self._roster_cache: list[dict[str, Any]] | None = None
+        self._branch_rows_cache: list[dict[str, Any]] | None = None
         # One live branch instance per branch_id: caches live there, and a caller that holds a
         # branch keeps its caches warm. Weak, so an unused branch (and its caches) is collected
         # instead of pinning every branch the process ever read.
@@ -927,6 +941,10 @@ class FsMemento(Memento):
         return self._root / "branches.jsonl"
 
     def _ref_path(self, name: str) -> Path:
+        # The contract only states uniqueness, so safety is enforced here instead of trusted
+        # from callers: a name with a separator would read — or unlink — outside the owner.
+        if not _safe_branch_name(name):
+            raise ValueError(f"branch name '{name}' is not a safe file stem")
         return self._root / f"{name}.ref.json"
 
     def _branch_dir(self, branch_id: str) -> Path:
@@ -985,7 +1003,7 @@ class FsMemento(Memento):
         """public-internal: the single creation path shared by create_branch and Branch.fork."""
         self._require_writable()
         # One gate for every creation path: a duplicate name would overwrite the live pointer
-        # and append a second roster row, silently re-pointing a branch that is still in use.
+        # and append a second branch log row, silently re-pointing a branch that is still in use.
         if self._ref_path(name).exists():
             raise NameError(f"branch '{name}' already exists")
         branch_id = str(ulid.ULID())
@@ -1013,7 +1031,7 @@ class FsMemento(Memento):
         _write_json(self._branch_dir(branch_id) / "meta.json", meta.model_dump(mode="json"))
         _write_json(self._ref_path(name), ref.model_dump(mode="json"))
         _append_jsonl(self._branches_jsonl(), [ref.model_dump(mode="json")])
-        self._roster_cache = None
+        self._branch_rows_cache = None
         branch = FsBranch(self, branch_id, name, description, created, index=index,
                           parent_id=fork_from.branch_id if fork_from else "")
         branch._meta_cache = meta
@@ -1056,14 +1074,14 @@ class FsMemento(Memento):
         return [ref for _, ref in self.list_branch_entries()]
 
     def list_branch_entries(self) -> list[tuple[int, BranchRef]]:
-        """Active branches with their roster ordinal — owner data only.
+        """Active branches with their branch log ordinal — owner data only.
 
-        The roster supplies the ordinal (its row position, which survives archive and name
+        The branch log supplies the ordinal (its row position, which survives archive and name
         reuse); a branch whose ref pointer is gone is archived and therefore absent. Nothing
         here reads a branch's commits or notes.
         """
         index_by_name: dict[str, int] = {}
-        for position, row in enumerate(self._roster(), start=1):
+        for position, row in enumerate(self._branch_rows(), start=1):
             name = row.get("name") or ""
             if name:
                 index_by_name[name] = position
@@ -1081,19 +1099,19 @@ class FsMemento(Memento):
         entries.sort(key=lambda item: (item[0], item[1].name))
         return entries
 
-    def list_roster(
+    def list_branch_catalog(
             self,
             *,
             offset: int = 0,
             limit: int | None = None,
     ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
-        """A page of the roster, archived included — the owner's whole history of lines.
+        """A page of the branch log, archived included — the owner's whole history of lines.
 
         ``active`` is a storage fact (the name still points at this identity), so one ref glob
         answers it for a whole page. Corrupt rows keep their slot and are skipped here.
         """
         active = {ref.branch_id for ref in self.list_branches()}
-        rows = self._roster()
+        rows = self._branch_rows()
         start = max(0, offset)
         end = len(rows) if limit is None or limit <= 0 else start + limit
         page: list[tuple[int, BranchRef, bool]] = []
@@ -1110,7 +1128,7 @@ class FsMemento(Memento):
     def get_branch_by_index(self, index: int) -> "FsBranch | None":
         if index < 1:
             return None
-        rows = self._roster()
+        rows = self._branch_rows()
         if index > len(rows):
             return None
         try:
@@ -1119,27 +1137,27 @@ class FsMemento(Memento):
             return None
         return self._branch_by_id(ref.branch_id)
 
-    def _roster(self) -> list[dict[str, Any]]:
+    def _branch_rows(self) -> list[dict[str, Any]]:
         """``branches.jsonl`` in memory, with positions preserved even if a row is corrupt.
 
         Index is the first half of every coordinate, so a bad row keeps its slot as a
         placeholder rather than shifting everyone after it.
         """
-        if self._roster_cache is None:
+        if self._branch_rows_cache is None:
             rows: list[dict[str, Any]] = []
             for position, row in enumerate(_read_jsonl(self._branches_jsonl()), start=1):
                 if isinstance(row, str):
-                    logger.error("corrupt roster row at position %d", position)
+                    logger.error("corrupt branch log row at position %d", position)
                     rows.append({"branch_id": f"__corrupt_{position}", "name": "", "parent_id": ""})
                     continue
                 rows.append(row)
-            self._roster_cache = rows
-        return self._roster_cache
+            self._branch_rows_cache = rows
+        return self._branch_rows_cache
 
     def children_of(self, name: str) -> list[BranchAddr]:
         """The parent-child tree, read off branch data — never off a trajectory.
 
-        A roster row carries ``parent_id`` (written once, at creation), so the tree is a filter
+        A branch log row carries ``parent_id`` (written once, at creation), so the tree is a filter
         over one cached list: no meta read, no commit scan. Complete from the moment a child
         exists — including children whose parent never commits again. What it cannot say is
         *when in the trajectory* the child appeared; that is ``CommitRef.children``.
@@ -1150,7 +1168,7 @@ class FsMemento(Memento):
         parent_id = parent.ref.branch_id
         return [
             BranchAddr(branch_id=row["branch_id"], branch_name=row["name"], branch_index=index)
-            for index, row in enumerate(self._roster(), start=1)
+            for index, row in enumerate(self._branch_rows(), start=1)
             if (row.get("parent_id") or "") == parent_id
         ]
 
@@ -1175,7 +1193,7 @@ class FsMemento(Memento):
             raise FileNotFoundError(f"branch '{name}' not found")
 
         children: dict[str, list[BranchAddr]] = {}
-        for index, row in enumerate(self._roster(), start=1):
+        for index, row in enumerate(self._branch_rows(), start=1):
             parent_id = row.get("parent_id") or ""
             if parent_id:
                 children.setdefault(parent_id, []).append(
@@ -1202,7 +1220,7 @@ class FsMemento(Memento):
             ref.unlink()
             archived.append(address)
             self._emit("archived", address)
-        self._roster_cache = None
+        self._branch_rows_cache = None
         return archived
 
     def on_event(self, callback: Callable[[BranchEvent], None]) -> Callable[[], None]:

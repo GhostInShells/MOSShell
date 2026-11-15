@@ -134,7 +134,7 @@ class TestDoloresMemories:
         assert "<memory" in text
         # 快照要带"它成形于哪一刻" —— 绝对锚, UTC, 秒精度
         assert re.search(r'<memory instanced_at="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"', text)
-        assert '<memento branch="main"' in text and "note" in text
+        assert '<branch name="main"' in text and "note" in text
 
     def test_returns_empty_when_nothing_to_remember(self):
         ghost = _dolores()

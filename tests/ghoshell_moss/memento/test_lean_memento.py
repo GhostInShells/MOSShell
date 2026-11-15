@@ -489,20 +489,40 @@ def test_every_creation_path_announces_created(memento):
     assert ("created", "idea") in events
 
 
-def test_list_roster_pages_and_keeps_archived_lines(memento):
+def test_branch_catalogs_and_keeps_archived_lines(memento):
     memento.create_branch("main")
     memento.create_branch("idea")
     memento.create_branch("done")
     memento.archive_branch("done")
 
-    total, first_page = memento.list_roster(offset=0, limit=2)
+    total, first_page = memento.list_branch_catalog(offset=0, limit=2)
     assert total == 3
     assert [(index, ref.name, active) for index, ref, active in first_page] == [
         (1, "main", True),
         (2, "idea", True),
     ]
 
-    _, second_page = memento.list_roster(offset=2, limit=2)
+    _, second_page = memento.list_branch_catalog(offset=2, limit=2)
     assert [(index, ref.name, active) for index, ref, active in second_page] == [
         (3, "done", False)
     ]
+
+
+def test_a_branch_name_cannot_escape_the_owner_root(memento):
+    memento.create_branch("main")
+
+    with pytest.raises(ValueError):
+        memento.create_branch("../escape")
+    with pytest.raises(ValueError):
+        memento.create_branch(".hidden")
+    with pytest.raises(ValueError):
+        memento.get_branch("main").fork("../escape")
+
+
+def test_fork_from_an_archived_branch_is_refused(memento):
+    main = memento.create_branch("main")
+    idea = main.fork("idea")
+    memento.archive_branch("idea")
+
+    with pytest.raises(RuntimeError):
+        idea.fork("leaf")

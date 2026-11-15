@@ -4,7 +4,7 @@
 
 - **锚点**: ``commit()`` 组 ``DshSessionRef`` + 写 memento. metadata = ``{ref, prev_turn}``,
   memento 只存不解析. 区间取「已完成的 turn」(追认): 签发时 turn/end 已知, usage 齐整.
-- **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``compact_cut_turn()`` 给 compact 的
+- **view / 切点**: ``aview_message()`` 给 ghost 的 memories; ``compact_cut_turn()`` 给 compact 的
   安全切点 (SCS = tip commit 的 start_turn).
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
@@ -27,8 +27,10 @@ import asyncio
 import contextlib
 import dataclasses
 import itertools
+import shutil
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
@@ -53,6 +55,7 @@ from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED
 from ghoshell_moss.memento.abcd import (
     Branch,
     BranchAddr,
+    BranchEvent,
     BranchRef,
     BranchView,
     CommitRef,
@@ -89,7 +92,7 @@ _BYPASS_KEEP = 64
 
 # Branch names become `{name}.ref.json` under the owner root, so they must stay path-safe.
 # The ego's own main line is reserved: a name reused after archive would make two identities
-# answer to one word in the roster.
+# answer to one word in the branch list.
 _FORBIDDEN_BRANCH_NAMES = {".", ".."}
 
 
@@ -327,12 +330,18 @@ class EgoMementoManager:
             memento: Memento,
             config: EgoMementoConfig | None = None,
             prompt_manager: PromptManager | None = None,
+            seed_ground: Path | None = None,
             logger: LoggerItf | None = None,
     ) -> None:
         self._connection = connection
         self._memento = memento
         self._config = config or EgoMementoConfig()
         self._prompt_manager = prompt_manager
+        # ``seed_ground`` is the directory a new line's ground is planted from — a ghost-home
+        # asset (§ego-branch-ground). None = no seeding; the render falls back to absence.
+        self._seed_ground = Path(seed_ground) if seed_ground is not None else None
+        self._grounds = None  # DefaultGroundSet over the owner's branches/, built on first use
+        self._unsubscribe = None
         self._logger = logger or get_moss_logger()
         # 旁路治理状态: 每个排过旁路的 commit → 它的切点 / 状态 / 在飞任务 (见 BypassCommit).
         self._bypass: dict[str, BypassCommit] = {}
@@ -347,6 +356,10 @@ class EgoMementoManager:
     # ── 生命周期 (由 ghost 开启/关闭; 旁路任务归它治理) ───────────────
 
     async def __aenter__(self) -> Self:
+        # The ego owns the per-branch conventions, so it is the one that plants a new line's
+        # ground. memento only announces; it does not know what a ground is.
+        if self._unsubscribe is None:
+            self._unsubscribe = self._memento.on_event(self._on_branch_event)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -362,6 +375,9 @@ class EgoMementoManager:
         if running:
             await asyncio.gather(*(run.task for run in running), return_exceptions=True)
             self._logger.info("memento bypass: %d in-flight note run(s) dropped at shutdown", len(running))
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
 
     @property
     def bypass(self) -> dict[str, BypassCommit]:
@@ -811,28 +827,6 @@ class EgoMementoManager:
 
     # ── 读侧投影 (branch / commit 都是纯读, 不触 dsh) ───────────────
 
-    def view_message(
-            self,
-            name: str | None = None,
-            *,
-            n: int | None = None,
-            until: str | None = None,
-    ) -> Message | None:
-        """把 branch view 渲染成 xml-like memory 块 (坏 commit 已由 memento view 折叠).
-
-        ``name`` 缺省 = 当前 branch (ego 的 memory 用这条); 给了名字就读别的 branch.
-        ``until`` 是一条坐标: 渲染"那条 commit 之前"的轨迹 —— compact 之后重渲染 memory
-        就走这条(切点那条的原文 tail 还留在 surface 里, 不该再被摘要一遍).
-        """
-        branch = self._memento.get_branch(name or self._config.branch_name)
-        if branch is None:
-            return None
-        return self._render_view(branch.view(
-            n=n if n is not None else self._config.view_limit,
-            until=self._seq_before(branch, until),
-            titles=self._config.digest_titles,
-        ))
-
     async def aview_message(
             self,
             name: str | None = None,
@@ -840,10 +834,16 @@ class EgoMementoManager:
             n: int | None = None,
             until: str | None = None,
     ) -> Message | None:
-        """``view_message`` 的异步入口 —— 开机 memory / compact 重渲染都走这条.
+        """Render a branch view into the xml-like memory block — the only entry point.
 
-        ``branch_view`` 槽位随进程 hook 机制一起移除（文件即契约无法随 dolores 升级）；
-        代码侧 hook 重做后，这里再接回。现在两条入口渲染的是同一份投影。
+        ``name`` defaults to the branch the ego lives on; naming another one reads that line.
+        ``until`` is a coordinate: render the trajectory *before* that commit — the re-render
+        after a compact takes this path, because the cut commit's raw tail stays in the surface
+        and must not be summarised twice.
+
+        Async by contract, not by accident: the branch's own field is rendered here, and a
+        ground's exec pins are async. A sync twin would render a face production never emits
+        (no ``<ground>``), so there is none.
         """
         branch = self._memento.get_branch(name or self._config.branch_name)
         if branch is None:
@@ -853,7 +853,7 @@ class EgoMementoManager:
             until=self._seq_before(branch, until),
             titles=self._config.digest_titles,
         )
-        return self._render_view(view)
+        return await self._render_view(view)
 
     def _seq_before(self, branch: Branch, coord: str | None) -> int | None:
         """坐标 → 该 branch 上的 seq; 渲染时用它做**排他**上界.
@@ -869,7 +869,7 @@ class EgoMementoManager:
         return view.seq
 
     def list_branches(self) -> list[tuple[int, BranchRef]]:
-        """Active branches with their roster ordinal — owner data only.
+        """Active branches with their branch-log ordinal — owner data only.
 
         A listing needs the branch's identity, not its trajectory: reading commits or notes
         here made every notice refresh O(owner). The ordinal comes from the roster position,
@@ -928,13 +928,13 @@ class EgoMementoManager:
             )
         return self._memento.archive_branch(name)
 
-    def list_roster_page(
+    def branch_catalog(
             self,
             offset: int = 0,
             limit: int = 20,
     ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
         """A page of every line the owner ever opened — archived included."""
-        return self._memento.list_roster(offset=offset, limit=limit)
+        return self._memento.list_branch_catalog(offset=offset, limit=limit)
 
     def list_commits(
             self,
@@ -986,9 +986,94 @@ class EgoMementoManager:
             return None
         return ref.start_turn, self.coord(commits[-1])
 
+    # ── branch ground (ego's convention, not memento's) ─────────────
+
+    def _on_branch_event(self, event: BranchEvent) -> None:
+        if event.kind == "created":
+            self._seed_branch_ground(event.branch)
+
+    def _seed_branch_ground(self, address: BranchAddr) -> None:
+        """Plant the seed into a new line — once, never over an existing file.
+
+        Directories are created too: a pre-made mount is structure, and structure only helps
+        if it is there before the model decides what to write into it.
+        """
+        seed = self._seed_ground
+        if seed is None or not seed.is_dir():
+            return
+        target = self._memento.root / "branches" / address.branch_id
+        try:
+            for src in seed.rglob("*"):
+                rel = src.relative_to(seed)
+                dst = target / rel
+                if src.is_dir():
+                    dst.mkdir(parents=True, exist_ok=True)
+                    continue
+                if dst.exists():
+                    continue
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        except OSError:
+            # A failed seed must not fail the branch: the render falls back to the seed text.
+            self._logger.exception("failed to seed the ground of branch %s", address.branch_name)
+
+    def _branch_grounds(self):
+        if self._grounds is None:
+            from ghoshell_moss.ground import DefaultGroundSet
+
+            self._grounds = DefaultGroundSet(root=self._memento.root / "branches")
+        return self._grounds
+
+    def _seed_text(self) -> str:
+        seed = self._seed_ground
+        if seed is None:
+            return ""
+        path = seed / "GROUND.md"
+        try:
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+        except OSError:
+            return ""
+
+    async def _render_branch_ground(self, view: BranchView) -> Message:
+        """The current line's own field, or the seed's text until it grows one.
+
+        Not a ground walk: a position without GROUND.md renders the nearest law *without its
+        body*, which is the opposite of what an absence has to say here. Existence is decided
+        first; a missing file renders the seed itself, marked ``default``.
+        """
+        branch_dir = self._memento.root / "branches" / view.branch_id
+        path = branch_dir / "GROUND.md"
+        attributes = {"path": str(path)}
+        try:
+            if path.is_file():
+                # Positions are filesystem paths, not names under the root.
+                face = await self._branch_grounds().render(branch_dir)
+            else:
+                attributes["default"] = "true"
+                face = self._seed_text() or "(no ground yet — write one at the path above)"
+            return Message.new(tag="ground", attributes=attributes).with_content(face)
+        except Exception as exc:  # noqa: BLE001 — memory must survive a broken field
+            self._logger.exception("branch ground render failed for #%s", view.index)
+            attributes["error"] = str(exc)[:200]
+            return Message.new(tag="ground", attributes=attributes)
+
+    def _fork_point_title(self, parent: BranchView, coord: str) -> str:
+        """The parent's note title at the fork point — this line's origin, immutable history."""
+        try:
+            seq = int(coord.rsplit("-", 1)[1])
+        except (IndexError, ValueError):
+            return ""
+        branch = self._memento.get_branch_by_index(parent.index)
+        if branch is None:
+            return ""
+        commit = branch.get_commit(seq)
+        if commit is None:
+            return ""
+        return commit.title.strip()[:120]
+
     # ── 渲染 ─────────────────────────────────────────────────────
 
-    def _render_view(self, view: BranchView) -> Message:
+    async def _render_view(self, view: BranchView) -> Message:
         """Two densities, and the count says which window this is.
 
         ``latest`` is the detail window (the contract's ``n``); ``history`` is
@@ -997,25 +1082,27 @@ class EgoMementoManager:
         the contract always claimed and the renderer never did: it concatenated
         the two lists and drew every commit in full, so a 292-commit branch put
         282 of them into memory while the budget only existed in a signature.
+
+        The container nests the line's own field first: ``<memento><branch><ground/>…``.
+        Async only because the ground is (exec pins); everything else here is a cached read.
         """
-        container = Message.new(
-            tag="memento",
+        container = Message.new(tag="memento")
+        branch = Message.new(
+            tag="branch",
             attributes={
-                "branch": view.name,
+                "name": view.name,
                 "index": str(view.index),
                 "total": str(view.commits_total),
             },
         )
-        children: list[Message] = []
+        children: list[Message] = [await self._render_branch_ground(view)]
         fork = self._render_fork(view)
         if fork is not None:
             children.append(fork)
         if view.history is not None:
             children.append(self._render_digest(view))
         children.extend(self._render_days(view.latest))
-        if not children:
-            return container.with_content("no commit")
-        return container.with_messages(*children)
+        return container.with_messages(branch.with_messages(*children))
 
     def _render_fork(self, view: BranchView) -> Message | None:
         """父线在哪儿 —— 一条指针, 不是父线的副本.
@@ -1033,6 +1120,13 @@ class EgoMementoManager:
         }
         if view.fork_coord:
             attributes["coord"] = view.fork_coord
+            # The origin, in one line: what the parent was doing when this line split off.
+            # Immutable history, so it never goes stale — unlike the parent's latest title.
+            title = self._fork_point_title(parent, view.fork_coord)
+            if title:
+                attributes["title"] = title
+        if (self._memento.root / "branches" / parent.branch_id / "GROUND.md").is_file():
+            attributes["ground"] = "1"
         return Message.new(tag="fork", attributes=attributes)
 
     def _render_days(self, latest: list[CommitView]) -> list[Message]:
