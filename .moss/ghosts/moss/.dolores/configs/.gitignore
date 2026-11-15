@@ -1,0 +1,7 @@
+# .dolores/configs — typed runtime configs (YAML, one file per ConfigType).
+#
+# Tracked: *.yml — the manifest and active pointers belong to the ghost's durable state.
+# Ignored: scratch and write artifacts only. Do not use `*`: it would hide the manifest.
+*.tmp
+*.bak
+*.lock
