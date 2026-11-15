@@ -31,7 +31,10 @@ updated: '2026-11-16'
 >   manage ultra-long tasks, not parallel short ones; their ground is the desk state for
 >   re-entry — ego's convention, memento only gains a `created` event), `inbox.md` (D16: a
 >   branch-level mailbox — why it exists, why the address is a `group` rather than the ego,
->   and why jsonl + a cursor is enough to start; **not implemented, not scheduled**).
+>   and why jsonl + a cursor is enough to start; **not implemented, not scheduled**),
+>   `checkout.md` (D16: checkout = identity swap at the turn boundary, never a context move —
+>   `depart` / `arrive` anchors, a zero-width arrival so turn spans stay honest, and the ego
+>   signal as the surface's only path into the next turn).
 > - **Discussion:** `discuss/round1/`, `discuss/round2/`. Do not cite them as decisions.
 > - **Attribution:** `他` = thirdgerb stated it; `我推` = moss's inference, **not ratified** —
 >   attack it; `待定` = known unresolved.
