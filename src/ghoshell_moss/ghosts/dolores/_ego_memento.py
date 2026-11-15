@@ -336,6 +336,9 @@ class EgoMementoManager:
         self._connection = connection
         self._memento = memento
         self._config = config or EgoMementoConfig()
+        # The line the ego lives on **now**. The config only answers "where do I wake up";
+        # a checkout moves this, not the config, so every read of the current line goes here.
+        self._branch_name: str = ""
         self._prompt_manager = prompt_manager
         # ``seed_ground`` is the directory a new line's ground is planted from — a ghost-home
         # asset (§ego-branch-ground). None = no seeding; the render falls back to absence.
@@ -352,6 +355,21 @@ class EgoMementoManager:
     @property
     def config(self) -> EgoMementoConfig:
         return self._config
+
+    @property
+    def active_branch(self) -> str:
+        """The line the ego lives on now — runtime state; empty falls back to ``config.branch_name``.
+
+        Config is "where I wake up"; this is "where I am". They differ between a checkout and
+        the next restart, so nothing outside boot may read the config for the current line.
+        """
+        return self._branch_name or self._config.branch_name
+
+    def switch_branch(self, name: str) -> None:
+        """Move the ego's identity onto another line — identity only; the transition is the caller's."""
+        self._branch_name = validate_branch_name(name)
+        # The lease belongs to the old line: drop it so the next read re-leases the new one.
+        self._current_branch = None
 
     # ── 生命周期 (由 ghost 开启/关闭; 旁路任务归它治理) ───────────────
 
@@ -393,6 +411,7 @@ class EgoMementoManager:
             start_turn: int,
             end_turn: int,
             message: str = "",
+            branch: str | None = None,
     ) -> CommitRef | None:
         """落一个锚点. 区间 = ``(start_turn, end_turn]`` —— **下界开、上界闭**, start = 上个 commit 的 end_turn.
 
@@ -401,12 +420,14 @@ class EgoMementoManager:
         ``start_turn == end_turn`` = 空区间 (没有新追认的 turn) → **不落锚点, 返回 None**.
         ``metadata.prev_turn`` 即 ``start_turn``.
         ``message`` 非空时顺便种子一条 note (便捷); 默认只落锚点 —— authoritative message 归 sidecar.
+        ``branch`` 写在指定的线上而不是当前线 —— checkout 的两半必须在身份移动之前各就各位,
+        到达那一半还住在别的线里。
         返回本 commit 的 ``CommitRef`` (``id``/``seq`` 供排 sidecar + 造 notice); 空区间返回 None.
         """
         if start_turn == end_turn:
             return None
         ref = DshSessionRef(session_id=session_id, start_turn=start_turn, end_turn=end_turn)
-        commit = self._branch().commit(
+        commit = self._branch(branch).commit(
             message=message,
             metatype="session",
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
@@ -805,7 +826,7 @@ class EgoMementoManager:
 
     def latest_ref(self) -> DshSessionRef | None:
         """branch tip 的 ref (= 下一个 commit 的区间下界); 无 commit 返回 None."""
-        branch = self._memento.get_branch(self._config.branch_name)
+        branch = self._memento.get_branch(self.active_branch)
         if branch is None:
             return None
         commits = branch.commits()
@@ -845,7 +866,7 @@ class EgoMementoManager:
         ground's exec pins are async. A sync twin would render a face production never emits
         (no ``<ground>``), so there is none.
         """
-        branch = self._memento.get_branch(name or self._config.branch_name)
+        branch = self._memento.get_branch(name or self.active_branch)
         if branch is None:
             return None
         view = await branch.aview(
@@ -883,7 +904,7 @@ class EgoMementoManager:
         Kept separate from ``list_branches`` so a caller can check "does this coordinate
         belong to the line I am about to scroll" without holding the roster.
         """
-        target = name or self._config.branch_name
+        target = name or self.active_branch
         for index, ref in self.list_branches():
             if ref.name == target:
                 return index
@@ -896,7 +917,7 @@ class EgoMementoManager:
         to say where the ego is, and that is one branch, not the owner. Every other branch
         stays owner-data only (``list_branches``).
         """
-        branch = self._memento.get_branch(name or self._config.branch_name)
+        branch = self._memento.get_branch(name or self.active_branch)
         if branch is None:
             return 0, ""
         commits = branch.commits()
@@ -911,7 +932,7 @@ class EgoMementoManager:
 
         Ground is not created here: memento announces ``created`` and the ego seeds it.
         """
-        name = validate_branch_name(name, reserved={self._config.branch_name})
+        name = validate_branch_name(name, reserved={self.active_branch})
         branch = self._branch()
         commit_id = ""
         if coord:
@@ -933,7 +954,7 @@ class EgoMementoManager:
         it would leave every live session of this owner on a line whose name no longer resolves.
         memento cannot know this — it is the ego's convention.
         """
-        if name == self._config.branch_name:
+        if name == self.active_branch:
             raise ValueError(
                 f"branch '{name}' is your main line, the one you are living on; "
                 "it cannot be archived"
@@ -956,7 +977,7 @@ class EgoMementoManager:
             until_date: datetime | None = None,
     ) -> list[CommitDigest]:
         """按时间区间列 commit (seq + title + body), 等价 ``git log --oneline``; 详情就在同一条里."""
-        branch = self._memento.get_branch(name or self._config.branch_name)
+        branch = self._memento.get_branch(name or self.active_branch)
         if branch is None:
             return []
         digests: list[CommitDigest] = []
@@ -1228,13 +1249,20 @@ class EgoMementoManager:
 
     # ── 内部读取 ─────────────────────────────────────────────────
 
-    def _branch(self) -> Branch:
-        branch = self._memento.get_branch(self._config.branch_name)
+    def _branch(self, name: str | None = None) -> Branch:
+        """Resolve a line (default: the one the ego lives on) and lease it when it is ours.
+
+        ``name`` exists for the one transition that must write on a line it has not moved to
+        yet: a checkout records both halves before the identity follows.
+        """
+        target = name or self.active_branch
+        branch = self._memento.get_branch(target)
         if branch is None:
-            raise RuntimeError(f"memento branch '{self._config.branch_name}' not found")
-        # Hold the current line: an owner's branch instances are weak, so this is the lease
-        # that keeps this branch's read caches warm between calls.
-        self._current_branch = branch
+            raise RuntimeError(f"memento branch '{target}' not found")
+        if name is None or name == self.active_branch:
+            # Hold the current line: an owner's branch instances are weak, so this is the lease
+            # that keeps this branch's read caches warm between calls.
+            self._current_branch = branch
         return branch
 
     def _ref_of(self, commit: CommitRef) -> DshSessionRef | None:
@@ -1249,7 +1277,7 @@ class EgoMementoManager:
 
     def _note_of(self, commit_id: str) -> Note | None:
         """这条 commit 有没有 note (谁写的都算) —— 旁路排不排的唯一判据."""
-        branch = self._memento.get_branch(self._config.branch_name)
+        branch = self._memento.get_branch(self.active_branch)
         if branch is None:
             return None
         return branch.notes().get(commit_id)

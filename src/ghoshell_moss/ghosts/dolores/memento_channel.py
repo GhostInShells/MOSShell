@@ -58,13 +58,14 @@ def _instruction_text(
         "",
         "Reflexive control over your memento trajectory.",
         "",
-        f"- You are on branch `{manager.config.branch_name}`; the notice lists every branch.",
+        f"- You are on branch `{manager.active_branch}`; the notice lists every branch.",
         "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
         "- `view(branch=…, coord=…)` scrolls: the window is the one *before* that coordinate,"
         " so walking back a line costs one window at a time instead of a re-read.",
         "- `history(branch=…, from_date=…, until_date=…)` reads a range instead — `from_date` and"
         " `until_date` are ISO timestamps; a timestamp without an offset is read on your clock"
         " (the same one the commits are dated with).",
+        _checkout_instruction(),
         "- A commit may carry a node of its own. When its line shows `node=\"1\"`, that commit"
         " has a space on disk — `node` opens it and lists what is in there; nothing here"
         " manages what you put in it.",
@@ -112,7 +113,7 @@ def _branches_text(manager: EgoMementoManager) -> str:
     entries = manager.list_branches()
     if not entries:
         return "[memento] no branch yet."
-    current = manager.config.branch_name
+    current = manager.active_branch
     total, latest = manager.branch_stats(current)
     lines = ["[memento] branches:"]
     for index, ref in entries:
@@ -154,12 +155,48 @@ def _parse_date(value: str | None, field: str) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
 
+# The two anchors a checkout writes. Their description lives here once: the channel instruction
+# and the command's own doc both render from this table, so a wording change cannot rot in one
+# of them while the other keeps the old story.
+_CHECKOUT_OPS: tuple[tuple[str, str], ...] = (
+    ("depart", "written on the line you leave; its target is the line you move to"),
+    ("arrive", "written on the line you enter; its target is the source line and coordinate"),
+)
+
+
+def _checkout_ops_text() -> str:
+    return "; ".join(f"`{name}` — {text}" for name, text in _CHECKOUT_OPS)
+
+
+def _checkout_instruction() -> str:
+    return (
+        "- `checkout(name, title, …)` moves you onto another line at the end of this turn —"
+        " the session does not change. Two anchors are written, both titled by you: "
+        f"{_checkout_ops_text()}."
+    )
+
+
+def _checkout_doc() -> str:
+    return (
+        "Move the ego onto another line — effective at the end of this turn, never inside it.\n\n"
+        "The session does not move: the next turn opens with the destination's memory surface\n"
+        "delivered, and every later commit belongs to the new line. Two anchors are written,\n"
+        "and both carry the title you give here:\n"
+        + "\n".join(f"- `{name}` — {text}" for name, text in _CHECKOUT_OPS)
+        + "\n\n"
+        ":param name: the branch to move to; it must be active, and not the one you are on.\n"
+        ":param title: one line saying why you are leaving; it titles both anchors.\n"
+        ":param text__: the note body; both anchors carry it."
+    )
+
+
 def build_memento_channel(
     manager: EgoMementoManager,
     *,
     prompt_manager: PromptManager | None = None,
     storage_root: str | Path | None = None,
     commit_anchor: Callable[[str], str] | None = None,
+    checkout_hook: Callable[[str, str, str], str] | None = None,
     name: str = "memento",
     description: str | None = None,
 ) -> MutableChannel:
@@ -171,6 +208,8 @@ def build_memento_channel(
     :param storage_root: 轨迹的磁盘位置, 进 instruction 自解释. None = 略去那一行.
     :param commit_anchor: 落锚后端 (收 note, 返回一条给模型的回执). None =
         不挂 ``commit`` 命令 —— 写面归 ego (turn span 记账在它手里), 这里只透传.
+    :param checkout_hook: 换线后端 (收 name / title / note, 返回回执). None = 不挂 ``checkout``;
+        换线是 ego 的转场 (turn/end 落两笔锚 + 发 signal), channel 只做校验与排队.
     :param name: CTML 标签名.
     :param description: 覆盖默认描述.
     """
@@ -221,6 +260,14 @@ def build_memento_channel(
             return f"[memento] no branch `{branch}`"
         return message.to_content_string()
 
+    if checkout_hook is not None:
+
+        @chan.build.command(name="checkout", always_observe=True, doc=_checkout_doc)
+        async def checkout(name: str, title: str = "", text__: str = "") -> str:
+            # Validation and queueing only: the transition itself runs at turn/end, so a
+            # command result can never carry content from the line the ego has not moved to.
+            return checkout_hook(name, title, text__)
+
     @chan.build.command(name="fork")
     async def fork(name: str, description: str = "", coord: str = "") -> str:
         """Open a new line from this one — at the tip, or from a past coordinate on it.
@@ -268,7 +315,7 @@ def build_memento_channel(
         total, page = manager.branch_catalog(offset, limit)
         if not page:
             return f"[memento] no branches at offset {offset} (total {total})"
-        current = manager.config.branch_name
+        current = manager.active_branch
         lines = [f"[memento] branches {offset + 1}-{offset + len(page)} of {total}:"]
         for index, ref, active in page:
             about = f" — {ref.description}" if ref.description else ""
@@ -308,7 +355,7 @@ def build_memento_channel(
             return f"[memento] {error}"
         digests = manager.list_commits(branch, from_date=start, until_date=end)
         if not digests:
-            return f"[memento] no commits in {branch or manager.config.branch_name} for that range"
+            return f"[memento] no commits in {branch or manager.active_branch} for that range"
         lines: list[str] = []
         for digest in digests:
             broken = " (broken placeholder, chat unavailable)" if digest.broken else ""

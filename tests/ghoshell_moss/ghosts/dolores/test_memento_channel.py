@@ -244,6 +244,32 @@ class TestMementoChannel:
         assert "commits=" not in side_line
 
     @pytest.mark.asyncio
+    async def test_checkout_is_not_exposed_without_a_backend(self, tmp_path: Path):
+        """No transition backend, no command — the same rule as `commit`."""
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            assert runtime.get_command("checkout") is None
+
+    @pytest.mark.asyncio
+    async def test_checkout_passes_name_title_and_body_through(self, tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores.memento_channel import build_memento_channel
+
+        manager, _ = self._manager(tmp_path)
+        seen: dict = {}
+
+        def hook(name: str, title: str, note: str) -> str:
+            seen.update(name=name, title=title, note=note)
+            return "[memento] checkout queued"
+
+        chan = build_memento_channel(manager, checkout_hook=hook)
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command(
+                "checkout", kwargs={"name": "idea", "title": "why", "text__": "the body"}
+            )
+        assert receipt == "[memento] checkout queued"
+        assert seen == {"name": "idea", "title": "why", "note": "the body"}
+
+    @pytest.mark.asyncio
     async def test_commit_is_not_exposed_without_a_backend(self, tmp_path: Path):
         """没有落锚后端就不挂命令 —— 挂一条只会答"做不了"的命令是在骗模型."""
         chan, _, _ = self._channel(tmp_path)

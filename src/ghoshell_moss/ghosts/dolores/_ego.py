@@ -50,7 +50,12 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
 from ghoshell_moss.message import Content, Message
 from ghoshell_moss.memento.abcd import CommitMessage, CommitRef
 
-from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
+from ._ego_memento import (
+    CommitDecision,
+    EgoMementoConfig,
+    EgoMementoManager,
+    validate_branch_name,
+)
 from ._prompts import dolores_model_notice
 from .constants import ALIVE_EGO_SESSION, ARCHIVED_EGO_SESSION
 from .nucleus import new_dolores_ego_signal
@@ -77,6 +82,97 @@ _EXIT_RPC_TIMEOUT = 5.0
 # 优雅退出的 note body 上限 (字符). 它不是模型生成的 —— 长度由这里保证，不为了一个退出记录
 # 再跑一次摘要.
 _EXIT_NOTE_MAX_CHARS = 1200
+
+
+class CheckoutRequest(BaseModel):
+    """A validated line switch, waiting for the turn boundary."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    title: str
+    note: str = ""
+
+
+class CheckoutRejected(RuntimeError):
+    """A checkout that will not happen. Raised, never returned: a quiet refusal reads as success."""
+
+
+class CheckoutOutcome(BaseModel):
+    """What the turn/end half of a switch produced — the face to deliver, or why it stopped."""
+
+    model_config = ConfigDict(frozen=True)
+
+    surface: Message | None = None
+    reason: str = ""
+
+
+async def run_checkout(
+        manager: EgoMementoManager,
+        request: CheckoutRequest,
+        *,
+        session_id: str,
+        start_turn: int,
+        end_turn: int,
+) -> CheckoutOutcome:
+    """Everything a line switch must do *before* identity moves — a function of the manager alone.
+
+    Order is the contract. The destination's face is rendered first (a line whose ground cannot
+    render is not a line to move into), then its arrival anchor becomes durable, then the
+    departure anchor lands: that last write is the point of no return, which is why the caller
+    moves identity only after this returns a surface. Both anchors carry the *same* session ref —
+    the span the ego is closing — so the next commit on the destination starts where this one
+    ended, instead of claiming the turns spent on the line being left.
+    """
+    source = manager.active_branch
+    if start_turn == end_turn:
+        return CheckoutOutcome(reason="there was no completed turn to record")
+    try:
+        surface = await manager.aview_message(request.name)
+    except Exception:  # noqa: BLE001 — a broken destination must not half-move the ego
+        get_moss_logger().exception("checkout: cannot render `%s`", request.name)
+        surface = None
+    if surface is None:
+        return CheckoutOutcome(reason="its memory surface could not be rendered")
+    source_index = manager.branch_index(source) or 0
+    target_index = manager.branch_index(request.name) or 0
+    total, _ = manager.branch_stats(source)
+    depart_coord = f"{source_index}-{total + 1}"
+    arrive = manager.commit(
+        session_id=session_id,
+        start_turn=start_turn,
+        end_turn=end_turn,
+        branch=request.name,
+        message=CommitMessage(
+            op="arrive",
+            target=f"#{source_index} {source} @{depart_coord}",
+            content=request.title,
+            body=request.note,
+        ).to_str(),
+    )
+    if arrive is None:
+        return CheckoutOutcome(reason="the arrival anchor was not written")
+    surface = await manager.aview_message(request.name)  # the arrival is part of the face now
+    depart = manager.commit(
+        session_id=session_id,
+        start_turn=start_turn,
+        end_turn=end_turn,
+        branch=source,
+        message=CommitMessage(
+            op="depart",
+            target=f"#{target_index} {request.name}",
+            content=request.title,
+            body=request.note,
+        ).to_str(),
+    )
+    if depart is None:
+        return CheckoutOutcome(reason="the departure anchor was not written")
+    if manager.coord(depart) != depart_coord:
+        get_moss_logger().warning(
+            "checkout: the arrival points at %s but the departure landed at %s",
+            depart_coord, manager.coord(depart),
+        )
+    return CheckoutOutcome(surface=surface)
 
 
 def _assistant_text(message: Any) -> str:
@@ -268,6 +364,8 @@ class DoloresEgo:
         # 待落锚: commit 是请求, 不是写 —— 轮中登记, turn/end 才落地 (边界不切在脚下).
         self._pending_commit: bool = False
         self._pending_note: str = ""
+        # 待执行的换线: 与 commit 同一个边界, 但只允许一次 —— 一轮里两个目标等于没有目标.
+        self._pending_checkout: CheckoutRequest | None = None
         # 优雅退出用: 最近一条非空 assistant 文本 (运行时缓存; 退出时作 exit note 的 body;
         # 某一轮没有文本就保留上一轮的 —— 空文本不该把已有的答案抹掉).
         self._last_final_answer: str = ""
@@ -695,6 +793,10 @@ class DoloresEgo:
         if turn_end is None:
             return
         self._last_turn = max(self._last_turn, turn_end.turn)
+        if self._pending_checkout is not None:
+            request, self._pending_checkout = self._pending_checkout, None
+            await self._run_checkout(request)
+            return
         if self._pending_commit:
             note = self._pending_note
             self._pending_commit = False
@@ -747,6 +849,45 @@ class DoloresEgo:
         manager.schedule_note(anchor.id)  # 慢腿: 空 note 归旁路 sidecar (已有 note 时它自己会让开)
         return anchor
 
+    async def _run_checkout(self, request: CheckoutRequest) -> None:
+        """Run one queued switch at turn/end — identity moves only if the whole record landed."""
+        manager = self._memento_manager
+        if manager is None or self._ego_session_id is None:
+            self._logger.warning("checkout requested with no ego session — staying on the current line")
+            return
+        outcome = await run_checkout(
+            manager,
+            request,
+            session_id=self._ego_session_id,
+            start_turn=self._session_start_turn(),
+            end_turn=self._last_turn,
+        )
+        if outcome.surface is None:
+            self._logger.warning(
+                "checkout to `%s` did not happen: %s", request.name, outcome.reason
+            )
+            self._notices.append(
+                Message.new(tag="memento_notice", attributes={"kind": "checkout", "status": "aborted"})
+                .with_content(f"checkout to `{request.name}` did not happen: {outcome.reason}")
+            )
+            return
+        manager.switch_branch(request.name)
+        self._emit_line_switch(outcome.surface, request)
+
+    def _emit_line_switch(self, surface: Message, request: CheckoutRequest) -> None:
+        """Deliver the new line's face as the next turn's input — a body-carrying ego delivery."""
+        signal = new_dolores_ego_signal(
+            surface,
+            description=f"checked out to `{request.name}`",
+            role="mind",
+        )
+        if self._signal_broadcast is None:
+            self._logger.warning(
+                "checkout happened but no signal broadcast is wired — the new face will not arrive"
+            )
+            return
+        self._signal_broadcast(signal)
+
     def _exit_note(self) -> str:
         """The graceful-exit record: a system note, not a sidecar summary.
 
@@ -775,6 +916,42 @@ class DoloresEgo:
         self._pending_commit = True
         self._pending_note = note
         return "[memento] commit queued — it takes effect at the end of this turn."
+
+    # ── checkout (换线; 身份在 turn/end 才动) ─────────────────────────
+
+    def request_checkout(self, name: str, title: str = "", note: str = "") -> str:
+        """Queue a line switch — validated here, executed at turn/end.
+
+        A second request in the same turn is a protocol violation: the first one is dropped and
+        the caller gets a loud error. Honouring either silently would leave the ego unable to say
+        which line it actually asked for.
+        """
+        manager = self._memento_manager
+        if manager is None:
+            raise CheckoutRejected("checkout is not wired: this ego has no memento manager")
+        target = validate_branch_name(name)
+        current = manager.active_branch
+        if target == current:
+            raise CheckoutRejected(f"already on `{current}` — a checkout has to move somewhere else")
+        active = {ref.name for _, ref in manager.list_branches()}
+        if target not in active:
+            raise CheckoutRejected(
+                f"no active line named `{target}` — archived lines cannot be entered, and a line "
+                f"that never existed cannot either (active: {', '.join(sorted(active))})"
+            )
+        if not title.strip():
+            raise CheckoutRejected(
+                "a checkout must say why it leaves: pass `title=` — it titles both anchors"
+            )
+        if self._pending_checkout is not None:
+            dropped = self._pending_checkout.name
+            self._pending_checkout = None
+            raise CheckoutRejected(
+                f"a checkout to `{dropped}` was already queued this turn — it has been cleared. "
+                "One transition per turn."
+            )
+        self._pending_checkout = CheckoutRequest(name=target, title=title.strip(), note=note)
+        return f"[memento] checkout to `{target}` queued — it takes effect at the end of this turn."
 
     # ── compact (原地 surface replace; 上一有效 run 决定, 下一 run 启动执行) ──
 

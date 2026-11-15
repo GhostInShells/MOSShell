@@ -42,7 +42,7 @@ session 不变、模型不变，变的是"我现在属于哪条线"。
 定稿的执行链（`我推` 补齐了出发侧的落点与失败处置）：
 
 1. **渲染 B 的 memento**（冷读一次）——先验证它出得来；出不来，整笔不切。
-2. **写 B 的 arrive 锚**（零宽，见 §4）。
+2. **写 B 的 arrive 锚**（复用 depart 的 session ref，见 §4）。
 3. **重渲染 B** ——此时到达标记已经在面里。
 4. **写 A 的 depart 锚** ——这一步落地即切换完成。
 5. **换运行时身份**。
@@ -101,19 +101,22 @@ async def checkout(name: str, title: str = "", text__: str = "") -> str
 （`_ego.py:_session_start_turn`）。所以换线之后，B 的下一笔会拿 **B 上一次居住时的 tip** 当下界——
 中间那些 turn 全是在 A 上过的。
 
-`我见`：这个 `start == end` 的拒绝只发生在中间层
+`他说`（D16 02:5x，定案）：**arrive 的 session ref 和 checkout 触发的 depart 完全一模一样**——
+同一个 `session_id`、同一个 `(prev, T]`。不是零宽，也不加任何开关。
 
-```python
-# _ego_memento.py:406
-if start_turn == end_turn:
-    return None
-```
+`我推` 的后果：
 
-存储层（`FsBranch.commit`）根本没有 turn 区间概念。
+- 同一段区间在两条线上各记一笔：A 记"我从这里走"，B 记"我到这里来"，**认领的是同一段 turn**，
+  所以 B 的下一笔自然从 `(T, …]` 起，不重不漏。
+- `EgoMementoManager.commit()` 一个字不用改——它本来就收显式的 `start_turn` / `end_turn`，
+  arrive 只是把 depart 那对数字原样传进去。没有"空区间"这个特例，也就没有开关。
+- `latest_ref()` 在 B 上拿到的是 `end_turn = T` 的 ref，B 的下一笔不会退回 `0` 当下界。
+- 实现上两份 ref 的 `session_id` / `start_turn` / `end_turn` 逐字相同；`created` 是各自落盘的
+  时刻，因此不同。它是记录的时刻，不是区间的一部分 —— 若真要连它一起复制，等看到真机的两条
+  记录再定。
 
-`我推`：arrive 是唯一允许零宽的 op，记 `(T, T]`：turn T 属于 A 的最后一笔 `(prev, T]`，arrive 不占
-turn，B 的下一笔从 `(T, …]` 起。**不重不漏**。实现上给这条 op 开显式口子（如 `allow_empty=True`），
-不改默认判定。
+我一度主张零宽 `(T, T]` 再开 `allow_empty`——那是把"一个时刻"的语义压成一个布尔，属于熵。
+同一份 ref 显然是更小的形状：没有新概念，没有新分支，没有新开关。
 
 ## 5. 身份
 
@@ -160,7 +163,7 @@ BACKGROUND + `ChallengeMode.notify`，不抢注意力，抢占失败也 buffer�
 ## 9. 验收（可测的行为）
 
 - 一次 checkout 之后，旁路队列为空：两个系统锚都自带 note，sidecar 应当整条让开。
-- B 的 tip 是一笔零宽 `arrive`，metadata 带来源线与坐标；A 的 tip 是 `depart`。
+- B 的 tip 是一笔 `arrive`，它的 session ref 与 A 的 `depart` 逐字相同（同一 `session_id`、同一区间）；来源线与坐标写在 op 的 target 里；A 的 tip 是 `depart`。
 - B 的下一笔 commit 的下界 = 切换时的 turn（`(T, …]`），不吞 A 的 turn。
 - 切到归档分支 / 不存在的分支 / 当前分支：拒绝且无副作用。
 - 同轮第二次 checkout：第一次的排队被清空，且命令报错。

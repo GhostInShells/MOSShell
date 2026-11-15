@@ -439,6 +439,16 @@ class Dolores(Ghost):
             raise RuntimeError("commit_anchor called before the ego session was created")
         return self._ego.commit_anchor(note)
 
+    def _checkout_hook(self, name: str, title: str, note: str) -> str:
+        """memento channel 的换线后端 —— 校验与排队归 ego, 真正的转场在 turn/end.
+
+        与 ``_commit_anchor`` 同一条理由: 装配顺序坏了就直接抛, 不静默返回假回执 ——
+        "换线已排队"这句谎会被模型当成真的搬过去。
+        """
+        if self._ego is None:
+            raise RuntimeError("checkout_hook called before the ego session was created")
+        return self._ego.request_checkout(name, title, note)
+
     def _model_organ(self) -> "ModelOrgan":
         """ghost.model 的后端 —— 读目录 / 读现状 / 声明, 三件都落在 ego 身上.
 
@@ -497,6 +507,7 @@ class Dolores(Ghost):
                 prompt_manager=prompt_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
                 commit_anchor=self._commit_anchor,
+                checkout_hook=self._checkout_hook,
                 frame_root=self._frame_root(),
                 init_frame=self._startup_doc.frame if self._startup_doc is not None else None,
                 model=self._model_organ(),
