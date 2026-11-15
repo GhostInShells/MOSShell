@@ -1,0 +1,7 @@
+# memento owner root — the append-only trace stays local; discrete files are the owner's call.
+# Selective on purpose: a node space (commits/{Y}/{M}/cmt_*/) holds files a ghost authored,
+# and whether those ship belongs to whoever owns the trajectory — not to the mechanism.
+.lock
+branches.jsonl
+*.ref.json
+branches/
