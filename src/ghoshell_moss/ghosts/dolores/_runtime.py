@@ -667,7 +667,7 @@ class Dolores(Ghost):
                 from ghoshell_moss.memento import new_local_memento
 
                 branch_name = self._load_config().memento.branch_name
-                self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR)
+                self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR, writable=True)
                 if self._memento.get_branch(branch_name) is None:
                     self._memento.create_branch(branch_name)
                 # 布局不在这里写: memento 根与 branch 由 new_local_memento 建。目录里不再种子
@@ -731,7 +731,13 @@ class Dolores(Ghost):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+        try:
+            await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            # The owner gate is process-lifetime, but a clean release makes a same-process
+            # restart (tests, re-entry) possible without waiting for GC.
+            if self._memento is not None:
+                self._memento.close()
 
     # ── startup (born) ───────────────────────────────
 

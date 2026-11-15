@@ -91,6 +91,19 @@ def _resolve_root(root: Optional[Path]) -> Path:
     return cwd_root
 
 
+def _open_writable(resolved: Path):
+    """Open the owner for writing; a busy gate is a message, not a traceback.
+
+    One process owns the trajectory's write gate. If the ghost is running, a shell write is
+    refused — the shell is not the body that owns the trajectory.
+    """
+    try:
+        return new_local_memento(resolved, writable=True)
+    except BlockingIOError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1) from None
+
+
 def _branch(m, name: Optional[str]):
     """The named branch, or the only one there is; failure is a message, not a traceback."""
     refs = m.list_branches()
@@ -193,7 +206,7 @@ def commit_cmd(
 ):
     """Freeze a new anchor on the branch."""
     resolved = _resolve_root(root)
-    m = new_local_memento(resolved)
+    m = _open_writable(resolved)
     target = _branch(m, branch)
     ref = target.commit(message=message)
     view = target.get_commit(ref.seq)
@@ -252,6 +265,6 @@ def branch_create(
 ):
     """Open a new line."""
     resolved = _resolve_root(root)
-    m = new_local_memento(resolved)
+    m = _open_writable(resolved)
     branch = m.create_branch(name, description)
     print_success(f"created branch `{branch.ref.name}` at {branch.path}")

@@ -3,6 +3,7 @@
 Storage binds to one local path (the owner root):
 
     {owner}/
+      .lock                                 # owner gate: held by the one writable process
       branches.jsonl                        # branch roster, append-only
       {branch_name}.ref.json                # the current pointer (BranchRef)
       branches/{branch_id}/
@@ -11,15 +12,17 @@ Storage binds to one local path (the owner root):
         commit_notes.jsonl                  # bypass Notes (last-wins, droppable, rebuildable)
         confluences.jsonl                   # inbox: references received from other branches
         children.jsonl                      # outbox: branches created from this one
-        .lock                               # FileLocker write gate
       commits/{YYYY}/{MM}/cmt_{coord}/       # the commit's node space (a convention, lazy)
         MEMENTO.md                          # the node's index file, self-explaining entry
 
 Discipline:
-- Writes are ordered appends and atomic replaces; a reader skips a torn trailing line.
+- An owner is opened **writable or read-only, once for the life of the process**. Writable =
+  this process holds ``<root>/.lock`` and keeps it; read-only = every write raises
+  ``MementoReadonlyError``. Exactly one writable process per root is the host's guarantee;
+  memento does not arbitrate between processes and has no per-write lock or retry.
+- A write is an ordered append or an atomic replace. A reader takes nothing, creates nothing,
+  and skips a torn trailing line.
 - A sync read is the cached fast path; an ``a``-prefixed method re-reads through aiofiles (IO-costly).
-- Write gating is ``async with branch:`` (FileLocker, fail fast) — one writer per branch.
-  Only read-modify-write operations take it (``commit`` / ``fork``); appends do not.
 - The node space is an **unmanaged asset area**: memento only reports whether ``MEMENTO.md``
   exists — one walk per branch view, one stat per single read — and never reads or cleans it.
   A directory appears only when something is put there: ``ensure_memento``, or a writer
@@ -32,6 +35,7 @@ import json
 import logging
 import os
 import tempfile
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -54,6 +58,7 @@ from ghoshell_moss.memento.abcd import (
     CommitView,
     ForkRef,
     Memento,
+    MementoReadonlyError,
     Note,
 )
 
@@ -258,7 +263,7 @@ class FsBranch(Branch):
         self._created = created
         self._index = index
         self._parent_id = parent_id
-        self._locker: FileLocker | None = None
+        self._meta_cache: BranchMeta | None = None
         self._commits_cache: list[CommitRef] | None = None
         self._notes_cache: dict[str, Note] | None = None
 
@@ -274,9 +279,6 @@ class FsBranch(Branch):
 
     def _meta_path(self) -> Path:
         return self._dir() / "meta.json"
-
-    def _lock_path(self) -> Path:
-        return self._dir() / ".lock"
 
     def _inbox_path(self) -> Path:
         return self._dir() / "confluences.jsonl"
@@ -305,10 +307,12 @@ class FsBranch(Branch):
         return self._dir()
 
     def meta(self) -> BranchMeta:
-        data = _read_json(self._meta_path())
-        if data is None:
-            raise FileNotFoundError(f"branch meta missing: {self._meta_path()}")
-        return BranchMeta(**data)
+        if self._meta_cache is None:
+            data = _read_json(self._meta_path())
+            if data is None:
+                raise FileNotFoundError(f"branch meta missing: {self._meta_path()}")
+            self._meta_cache = BranchMeta(**data)
+        return self._meta_cache
 
     @property
     def index(self) -> int:
@@ -345,6 +349,7 @@ class FsBranch(Branch):
             metadata: dict[str, Any] | None = None,
             recipients: list[BranchAddr] | None = None,
     ) -> CommitRef:
+        self._memento._require_writable()
         confluences, rejected_confluences = self._absorb_confluences()
         children, rejected_children = self._absorb_children()
         ref = CommitRef(
@@ -489,6 +494,7 @@ class FsBranch(Branch):
 
     def confluence(self, confluence: Confluence) -> None:
         """Deliver one reference into this branch's inbox — the only cross-branch write."""
+        self._memento._require_writable()
         key = (confluence.branch.branch_id, confluence.commit_seq)
         if any((c.branch.branch_id, c.commit_seq) == key for c in self.confluences()):
             return  # already waiting in the inbox
@@ -517,6 +523,7 @@ class FsBranch(Branch):
 
     def add_child(self, child: Child) -> None:
         """Record a branch created from this one — written by the parent, absorbed at commit."""
+        self._memento._require_writable()
         key = child.branch.branch_id
         if any(c.branch.branch_id == key for c in self.pending_children()):
             return
@@ -530,6 +537,7 @@ class FsBranch(Branch):
             *,
             recipients: list[BranchAddr] | None = None,
     ) -> Note:
+        self._memento._require_writable()
         # ``recipients`` is the one field that is not last-wins: a rewrite must not re-address
         # a message a summarizer merely restated.
         previous = self.notes().get(commit_id)
@@ -588,6 +596,7 @@ class FsBranch(Branch):
         return target
 
     def fork(self, name: str, description: str = "") -> "Branch":
+        self._memento._require_writable()
         commits = self.commits()
         tip = commits[-1].id if commits else ""
         fork_from = ForkRef(branch_id=self._branch_id, commit_id=tip)
@@ -632,6 +641,7 @@ class FsBranch(Branch):
             return self.fork(name, description)
 
     def ensure_memento(self, seq: int) -> Path:
+        self._memento._require_writable()
         view = self.get_commit(seq)
         if view is None:
             raise KeyError(f"branch '{self._name}' has no commit at seq {seq}")
@@ -799,34 +809,73 @@ class FsBranch(Branch):
             result = [c for c in result if c.created <= hi]
         return result
 
-    # ── write gating ──
+    # ── write gating (owner mode) ──
     async def __aenter__(self) -> "FsBranch":
-        locker = FileLocker(self._lock_path())
-        if not locker.acquire():  # fast fail; flock is the in-process and cross-process mutex
-            raise BlockingIOError(f"branch '{self._name}' write lock busy")
-        self._locker = locker
+        self._memento._require_writable()
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if self._locker is not None:
-            self._locker.release()
-            self._locker = None
+        return None
 
 
 # ── FsMemento ──────────────────────────────────────────────────────────────────
 
 
 class FsMemento(Memento):
-    """The owner-level filesystem memento. ``root`` is the owner directory."""
+    """The owner-level filesystem memento. ``root`` is the owner directory.
 
-    def __init__(self, root: Path):
-        self._root = root
+    ``writable`` is the owner's mode for this process, not a per-write flag: writable takes
+    ``<root>/.lock`` once and keeps it; read-only refuses every write. The host guarantees
+    one writable process per root — memento does not arbitrate.
+    """
+
+    def __init__(self, root: Path, *, writable: bool = False):
+        self._root = Path(root)
         self._hooks: list[Callable[[BranchEvent], None]] = []
         self._roster_cache: list[dict[str, Any]] | None = None
+        self._writable = False
+        self._gate: FileLocker | None = None
+        if writable:
+            self._open_for_write()
 
     @property
     def root(self) -> Path:
         return self._root
+
+    @property
+    def writable(self) -> bool:
+        """Whether this process holds the owner gate (i.e. writes are allowed)."""
+        return self._writable
+
+    def _open_for_write(self) -> None:
+        """Take the owner gate once, for the life of this instance.
+
+        The gate is this process's write permission, not a per-write lock: whoever holds it
+        is the owner's only writer. A second process cannot take it, so it stays read-only
+        (or refuses to start — that is the host's call, not memento's).
+        """
+        if self._writable:
+            return
+        gate = FileLocker(self._root / ".lock")
+        if not gate.acquire():  # fast fail; one writable process per owner root
+            raise BlockingIOError(
+                f"memento owner {self._root} is already open for writing in another process"
+            )
+        self._gate = gate
+        self._writable = True
+
+    def _require_writable(self) -> None:
+        if not self._writable:
+            raise MementoReadonlyError(
+                f"memento owner {self._root} is read-only; open it with writable=True to write"
+            )
+
+    def close(self) -> None:
+        gate = self._gate
+        self._gate = None
+        self._writable = False
+        if gate is not None:
+            gate.release()
 
     def _branches_jsonl(self) -> Path:
         return self._root / "branches.jsonl"
@@ -845,6 +894,7 @@ class FsMemento(Memento):
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
     ) -> Branch:
+        self._require_writable()
         if self._ref_path(name).exists():
             raise NameError(f"branch '{name}' already exists")
         return self._create_branch(name, description, metatype=metatype, metadata=metadata, fork_from=None)
@@ -859,6 +909,7 @@ class FsMemento(Memento):
             fork_from: ForkRef | None,
     ) -> FsBranch:
         """public-internal: the single creation path shared by create_branch and Branch.fork."""
+        self._require_writable()
         branch_id = str(ulid.ULID())
         index = len(_read_jsonl(self._branches_jsonl())) + 1
         created = _now_utc()
@@ -906,12 +957,33 @@ class FsMemento(Memento):
                         parent_id=ref.parent_id)
 
     def list_branches(self) -> list[BranchRef]:
-        result: list[BranchRef] = []
-        for p in sorted(self._root.glob("*.ref.json")):
-            data = _read_json(p)
-            if data is not None:
-                result.append(BranchRef(**data))
-        return result
+        return [ref for _, ref in self.list_branch_entries()]
+
+    def list_branch_entries(self) -> list[tuple[int, BranchRef]]:
+        """Active branches with their roster ordinal — owner data only.
+
+        The roster supplies the ordinal (its row position, which survives archive and name
+        reuse); a branch whose ref pointer is gone is archived and therefore absent. Nothing
+        here reads a branch's commits or notes.
+        """
+        index_by_name: dict[str, int] = {}
+        for position, row in enumerate(self._roster(), start=1):
+            name = row.get("name") or ""
+            if name:
+                index_by_name[name] = position
+        entries: list[tuple[int, BranchRef]] = []
+        for path in sorted(self._root.glob("*.ref.json")):
+            data = _read_json(path)
+            if data is None:
+                continue
+            try:
+                ref = BranchRef(**data)
+            except Exception:  # noqa: BLE001 — a broken pointer is not a branch to list
+                logger.warning("skipping invalid branch pointer %s", path, exc_info=True)
+                continue
+            entries.append((index_by_name.get(ref.name, 0), ref))
+        entries.sort(key=lambda item: (item[0], item[1].name))
+        return entries
 
     def get_branch_by_index(self, index: int) -> "FsBranch | None":
         if index < 1:
@@ -975,6 +1047,7 @@ class FsMemento(Memento):
 
     def archive_branch(self, name: str) -> list[BranchAddr]:
         """Archive this branch and its subtree, deepest first. The pointer goes; the data stays."""
+        self._require_writable()
         branch = self.get_branch(name)
         if branch is None:
             raise FileNotFoundError(f"branch '{name}' not found")
@@ -1033,6 +1106,28 @@ class FsMemento(Memento):
                 logger.exception("branch event hook failed: %s", kind)
 
 
-def new_local_memento(root: Path) -> FsMemento:
-    """Build an owner-level filesystem memento."""
-    return FsMemento(root)
+_OWNERS: "weakref.WeakValueDictionary[str, FsMemento]" = weakref.WeakValueDictionary()
+"""One owner instance per resolved root in this process.
+
+The write gate is process-global: two instances on the same root would both try to hold the
+same file lock. This registry hands the same instance back while a caller holds it; it is
+weak, so an owner nobody uses (and its caches) is collected instead of accumulating.
+"""
+
+
+def new_local_memento(root: Path, *, writable: bool = False) -> FsMemento:
+    """Open (or reuse) the owner at ``root``.
+
+    ``writable`` is the owner's mode for this process: writable takes the owner gate once and
+    keeps it; read-only refuses every write. Opening writable while another process holds the
+    gate raises ``BlockingIOError`` — one writable process per root is the host's guarantee.
+    """
+    key = str(Path(root).resolve())
+    existing = _OWNERS.get(key)
+    if existing is not None:
+        if writable:
+            existing._open_for_write()
+        return existing
+    owner = FsMemento(root, writable=writable)
+    _OWNERS[key] = owner
+    return owner

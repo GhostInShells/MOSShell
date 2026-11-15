@@ -96,18 +96,24 @@ def _instruction_text(
 
 
 def _branches_text(manager: EgoMementoManager) -> str:
-    """notice —— 全部 branch 一行一条; 标出当前活着的那条."""
-    infos = manager.list_branches()
-    if not infos:
+    """notice —— branch 列表; 只有当前 branch 带统计 (commits / latest).
+
+    The list itself is owner data. The current branch is the one exception: the notice has to
+    say where the ego is, so it reads that one branch's trajectory — never the others'.
+    """
+    entries = manager.list_branches()
+    if not entries:
         return "[memento] no branch yet."
     current = manager.config.branch_name
+    total, latest = manager.branch_stats(current)
     lines = ["[memento] branches:"]
-    for info in infos:
-        latest = info.latest_coord if info.latest_coord else "(empty)"
-        mark = " <- the one you are living on" if info.name == current else ""
-        lines.append(
-            f"  {info.name} #{info.index} commits={info.commits_total} latest={latest}{mark}"
-        )
+    for index, ref in entries:
+        about = f" — {ref.description}" if ref.description else ""
+        if ref.name == current:
+            stats = f"  commits={total} latest={latest or '(empty)'}"
+            lines.append(f"  {ref.name} #{index}{about}{stats} <- you are here")
+        else:
+            lines.append(f"  {ref.name} #{index}{about}")
     return "\n".join(lines)
 
 

@@ -610,7 +610,7 @@ class TestDoloresEgoCommit:
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         manager = EgoMementoManager(
             connection=_OfflineConnection(), memento=memento,

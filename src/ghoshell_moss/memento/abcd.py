@@ -75,6 +75,7 @@ __all__ = [
     "BranchView",
     "Branch",
     "Memento",
+    "MementoReadonlyError",
 ]
 
 COMMIT_MEMENTO_FILE = "MEMENTO.md"
@@ -98,6 +99,18 @@ def _now_utc() -> datetime:
     question (the body's OS zone), never something the record freezes.
     """
     return datetime.now(timezone.utc)
+
+
+class MementoReadonlyError(RuntimeError):
+    """A write was attempted on an owner that was not opened for writing.
+
+    The owner has exactly two modes for the life of a process: writable (the process holds
+    the owner gate) or read-only (it does not). The mode is decided once, when the owner is
+    opened; there is no per-write lock, no waiting, and no retry — a write in read-only mode
+    is refused, and the caller decides whether that is an error to report or a condition to
+    work around.
+    """
+
 
 
 class BranchAddr(BaseModel):
@@ -616,15 +629,14 @@ class Branch(ABC):
       its docstring is marked **"IO-costly"**. The explicit ``a*`` tier exists to give the
       caller an offload point, so it is not forced into ``asyncio.to_thread`` with a
       hand-rolled task it will forget to await.
-    - ``async with branch:`` is **write permission**: one writer at a time, taken or failed
-      fast. How that is achieved is the implementation's business — a file lock, an
-      in-memory lock, or nothing where a single writer is guaranteed. It is a cooperative
-      convention, not a security boundary, and it **does not enforce per-file admission
-      constraints** (an out-of-band writer editing files directly cannot be stopped — that
-      is a closed storage system's job).
-    - Only read-modify-write operations need it: ``commit`` (``seq`` is derived) and
-      ``fork``. ``note`` and anything purely appended do not — an append is already atomic,
-      and a duplicate is idempotent downstream.
+    - ``async with branch:`` is a **write-permission check**, not a lock. The owner is opened
+      writable or read-only once, for the life of the process; a write against a read-only
+      owner raises ``MementoReadonlyError``. Exactly one writable process per owner root is the
+      host's guarantee — memento does not arbitrate between processes, and there is no
+      per-write acquire / wait / retry.
+    - Read-only means **no write at all**: reads never take the gate, never create a directory,
+      never rewrite a file. Writes are appends and atomic replaces; a reader tolerates a torn
+      trailing line.
     """
 
     @property
@@ -864,12 +876,12 @@ class Branch(ABC):
 
     @abstractmethod
     async def __aenter__(self) -> "Branch":
-        """Write-permission gating: take the branch's write permission or fail fast. A
-        non-enforcing cooperative convention; a process-level file lock by default."""
+        """Write-permission check: the owner must have been opened writable. It fails fast
+        with ``MementoReadonlyError`` otherwise; no lock is taken here."""
 
     @abstractmethod
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        """Release write permission."""
+        """Exit the write-permission check — a no-op under the owner-mode model."""
 
 
 class Memento(ABC):
@@ -885,6 +897,13 @@ class Memento(ABC):
     def root(self) -> Path:
         """The memento root directory (bound to a single local path; not strongly tied to a storage
         backend)."""
+
+    def close(self) -> None:
+        """Release whatever the owner holds — the filesystem owner releases its write gate.
+
+        A no-op by default; closing a read-only owner does nothing. Callers that opened the
+        owner writable call this at shutdown.
+        """
 
     @abstractmethod
     def create_branch(
@@ -904,6 +923,14 @@ class Memento(ABC):
     @abstractmethod
     def list_branches(self) -> list[BranchRef]:
         """The active branch list (glob of ref.json)."""
+
+    @abstractmethod
+    def list_branch_entries(self) -> list[tuple[int, BranchRef]]:
+        """The active branch list with each branch's ordinal, from owner data only.
+
+        The ordinal is the roster position (``branches.jsonl``), so it survives archive and
+        name reuse. A listing needs exactly this and nothing from a branch's commits or notes.
+        """
 
     @abstractmethod
     def get_branch_by_index(self, index: int) -> Branch | None:

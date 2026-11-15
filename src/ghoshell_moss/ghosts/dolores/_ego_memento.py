@@ -50,14 +50,14 @@ from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     PromptManager,
 )
 from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED
-from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
+from ghoshell_moss.memento.abcd import Branch, BranchRef, BranchView, CommitRef, CommitView, Memento, Note
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection
 
 __all__ = [
-    "BranchInfo", "BrokenCommitError", "BypassCommit", "BypassState",
+    "BrokenCommitError", "BypassCommit", "BypassState",
     "CommitDecision", "CommitDigest", "EgoMementoConfig", "EgoMementoManager",
     "SourceUnreadableError",
 ]
@@ -75,6 +75,8 @@ _READ_ROUTE = "/moss-api/ghost/dolores/read"
 _BYPASS_EFFORT = "low"
 # 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
 _NOTE_PRIOR_COUNT = 1
+# 旁路治理表的保留窗口: 只留最近 N 条运行记录 (笔记本身在 memento, 这里只是观测面).
+_BYPASS_KEEP = 64
 
 
 def _local(created: datetime) -> datetime:
@@ -229,21 +231,6 @@ class BypassCommit:
     ref: DshSessionRef
     state: BypassState = BypassState.RUNNING
     task: asyncio.Task | None = None
-
-
-class BranchInfo(BaseModel):
-    """一个 branch 的概览 —— 先看有哪些 branch, 再用 ``view_message(name)`` 看内容.
-
-    坐标 ``latest_coord`` 是给模型引用的地址 (形如 ``1-27``); 空 branch 没有坐标.
-    """
-
-    name: str = Field(description="branch 名, 看 view 时用它。")
-    index: int = Field(default=0, description="owner 内 branch 序号 — 坐标前半截。")
-    description: str = Field(default="")
-    commits_total: int = Field(default=0)
-    latest_coord: str = Field(default="", description="最新 commit 的坐标; 空 branch 为空串。")
-    latest_title: str = Field(default="", description="最新 commit 的 message 首行。")
-    created: datetime | None = Field(default=None)
 
 
 class CommitDigest(BaseModel):
@@ -433,6 +420,23 @@ class EgoMementoManager:
         run = BypassCommit(commit_id=commit_id, ref=ref)
         self._bypass[commit_id] = run
         run.task = asyncio.create_task(self._guarded_note(run), name=f"memento-note-{commit_id}")
+        self._prune_bypass()
+
+    def _prune_bypass(self) -> None:
+        """Keep the note-task registry bounded.
+
+        The registry is an observation surface (per-commit run state), not the note itself —
+        the note lives in memento. A long-running ghost schedules one entry per commit, so an
+        unbounded dict is a slow leak. Keep the newest ``_BYPASS_KEEP`` and drop the oldest
+        finished runs; a running task is never dropped.
+        """
+        if len(self._bypass) <= _BYPASS_KEEP:
+            return
+        for commit_id, run in list(self._bypass.items()):
+            if len(self._bypass) <= _BYPASS_KEEP:
+                break
+            if run.task is None or run.task.done():
+                del self._bypass[commit_id]
 
     async def _guarded_note(self, run: BypassCommit) -> None:
         """The note task's last resort — every escape from ``_run_bypass`` ends here.
@@ -831,25 +835,29 @@ class EgoMementoManager:
             return None
         return view.seq
 
-    def list_branches(self) -> list[BranchInfo]:
-        """所有现存 branch 的概览 —— 先看有哪些, 再用 ``view_message(name)`` 看内容."""
-        infos: list[BranchInfo] = []
-        for ref in self._memento.list_branches():
-            branch = self._memento.get_branch(ref.name)
-            if branch is None:
-                continue
-            commits = branch.commits()
-            latest = branch.get_commit(commits[-1].seq) if commits else None
-            infos.append(BranchInfo(
-                name=ref.name,
-                index=branch.index,
-                description=ref.description,
-                commits_total=len(commits),
-                latest_coord=latest.coord if latest is not None else "",
-                latest_title=latest.title if latest is not None else "",
-                created=ref.created,
-            ))
-        return infos
+    def list_branches(self) -> list[tuple[int, BranchRef]]:
+        """Active branches with their roster ordinal — owner data only.
+
+        A listing needs the branch's identity, not its trajectory: reading commits or notes
+        here made every notice refresh O(owner). The ordinal comes from the roster position,
+        so it survives archive and name reuse.
+        """
+        return self._memento.list_branch_entries()
+
+    def branch_stats(self, name: str | None = None) -> tuple[int, str]:
+        """``(commits_total, latest_coord)`` for **the one branch the ego lives on**.
+
+        This is the only listing path allowed to read a branch's trajectory: the notice has
+        to say where the ego is, and that is one branch, not the owner. Every other branch
+        stays owner-data only (``list_branches``).
+        """
+        branch = self._memento.get_branch(name or self._config.branch_name)
+        if branch is None:
+            return 0, ""
+        commits = branch.commits()
+        if not commits:
+            return 0, ""
+        return len(commits), f"{branch.index}-{commits[-1].seq}"
 
     def list_commits(
             self,

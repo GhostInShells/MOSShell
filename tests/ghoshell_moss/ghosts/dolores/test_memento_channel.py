@@ -54,7 +54,7 @@ class TestMementoChannel:
 
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         return EgoMementoManager(
             connection=connection or _OfflineConnection(), memento=memento, config=EgoMementoConfig()
@@ -224,7 +224,22 @@ class TestMementoChannel:
         assert "memento trajectory" in meta.instruction
         assert str((tmp_path / "owner").resolve()) in meta.instruction
         assert "main" in meta.notice
+        assert "#1" in meta.notice
         assert "commits=1" in meta.notice
+
+    @pytest.mark.asyncio
+    async def test_notice_counts_only_the_current_branch(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        memento.create_branch("side")
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            meta = runtime.self_meta()
+        assert "main #1" in meta.notice
+        assert "commits=1" in meta.notice
+        assert "side #2" in meta.notice
+        side_line = next(line for line in meta.notice.splitlines() if "side" in line)
+        assert "commits=" not in side_line
 
     @pytest.mark.asyncio
     async def test_commit_is_not_exposed_without_a_backend(self, tmp_path: Path):

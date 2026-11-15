@@ -116,7 +116,7 @@ class TestDoloresMemories:
 
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         manager = EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig())
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)

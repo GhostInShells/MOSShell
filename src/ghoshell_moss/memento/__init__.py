@@ -14,6 +14,7 @@ from .abcd import (
     BranchView,
     Branch,
     Memento,
+    MementoReadonlyError,
 )
 from ._fs_memento import (
     FsMemento,

@@ -11,13 +11,39 @@ from pathlib import Path
 
 import pytest
 
-from ghoshell_moss.memento.abcd import COMMIT_MEMENTO_FILE
+from ghoshell_moss.memento.abcd import COMMIT_MEMENTO_FILE, MementoReadonlyError
 from ghoshell_moss.memento._fs_memento import FsMemento, new_local_memento
 
 
 @pytest.fixture
 def memento(tmp_path: Path) -> FsMemento:
-    return new_local_memento(tmp_path / "owner")
+    return new_local_memento(tmp_path / "owner", writable=True)
+
+
+# ── owner mode (writable / read-only) ──
+
+
+def test_owner_is_readonly_until_opened_for_write(tmp_path: Path):
+    memento = new_local_memento(tmp_path / "owner")
+    with pytest.raises(MementoReadonlyError):
+        memento.create_branch("main")
+
+
+def test_writable_owner_is_one_instance_per_root(tmp_path: Path):
+    first = new_local_memento(tmp_path / "owner", writable=True)
+    second = new_local_memento(tmp_path / "owner")
+    assert second is first
+    first.create_branch("main")
+
+
+def test_list_branch_entries_carries_the_roster_ordinal(tmp_path: Path):
+    memento = new_local_memento(tmp_path / "owner", writable=True)
+    memento.create_branch("main")
+    memento.create_branch("idea")
+
+    entries = memento.list_branch_entries()
+
+    assert [(index, ref.name) for index, ref in entries] == [(1, "main"), (2, "idea")]
 
 
 # ── branch 生命周期 ──
@@ -264,19 +290,22 @@ def test_query_commits_time_range(memento):
     assert before == []
 
 
-# ── 写门控与异步面 ──
+# ── 写门控（owner 模式）与异步面 ──
 
 
-def test_write_gate_fast_fails(memento):
-    b = memento.create_branch("main")
+def test_write_gate_follows_the_owner_mode(tmp_path: Path):
+    owner = new_local_memento(tmp_path / "owner", writable=True)
+    branch = owner.create_branch("main")
 
-    async def inner():
-        async with b:
-            with pytest.raises(BlockingIOError):
-                async with b:
-                    pass
+    async def enters():
+        async with branch:
+            pass
 
-    asyncio.run(inner())
+    asyncio.run(enters())  # writable: the permission check passes
+
+    owner.close()
+    with pytest.raises(MementoReadonlyError):
+        asyncio.run(enters())
 
 
 def test_async_reads_match_sync(memento):

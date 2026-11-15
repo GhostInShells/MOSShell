@@ -67,7 +67,7 @@ class TestEgoMementoSidecar:
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         manager = EgoMementoManager(
             connection=connection, memento=memento, config=config or EgoMementoConfig()
@@ -302,7 +302,7 @@ class TestMementoReadSurface:
 
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         return EgoMementoManager(
             connection=connection or _OfflineConnection(), memento=memento, config=EgoMementoConfig()
@@ -312,20 +312,23 @@ class TestMementoReadSurface:
     def _coord(memento, seq: int) -> str:
         return memento.get_branch("main").get_commit(seq).coord
 
-    def test_list_branches_reports_index_and_latest(self, tmp_path: Path):
+    def test_list_branches_is_owner_data_only(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
         side = memento.create_branch("side")
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=4)
-        memento.get_branch("main").note(anchor.id, "标题\n正文")
+        manager.commit(session_id="s1", start_turn=0, end_turn=4)
 
-        infos = {info.name: info for info in manager.list_branches()}
+        entries = {ref.name: index for index, ref in manager.list_branches()}
 
-        assert infos["main"].commits_total == 1
-        assert infos["main"].latest_title == "标题"
-        assert infos["main"].latest_coord == self._coord(memento, anchor.seq)
-        assert infos["side"].index == side.index
-        assert infos["side"].commits_total == 0
-        assert infos["side"].latest_coord == ""
+        assert entries == {"main": 1, "side": side.index}
+        # A listing must not need a branch's trajectory: make those reads explode if taken.
+        branch = memento.get_branch("main")
+
+        def boom(*args, **kwargs):
+            raise AssertionError("branch trajectory read")
+
+        branch.commits = boom
+        branch.notes = boom
+        assert manager.list_branches()
 
     def test_list_commits_applies_time_window(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
@@ -655,7 +658,7 @@ class TestMementoCommitSpan:
 
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         return EgoMementoManager(
             connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig()
@@ -685,7 +688,7 @@ class TestEgoMementoCompactCut:
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
 
-        memento = new_local_memento(tmp_path / "owner")
+        memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         return EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig()), memento
 

@@ -593,7 +593,7 @@ class DshCaseAgentManager(CaseAgentManager[str]):
     def __init__(self, hive: DshHive, store: Path) -> None:
         self._hive = hive
         self._store = store
-        self._memento: Memento = new_local_memento(store)
+        self._memento: Memento = new_local_memento(store, writable=True)
         self._cases: dict[str, DshCase] = {}
         self._agents: dict[str, DshCaseAgent] = {}
         self._chats: set[asyncio.Task[None]] = set()
