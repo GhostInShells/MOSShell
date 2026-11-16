@@ -1,19 +1,24 @@
-"""Listener Controller — 判停逻辑装线 + listener signal 生产边界 + 运行时自解释.
+"""Listener Controller — stop logic wiring, the listener signal production boundary, and
+runtime self-explanation.
 
-判停逻辑 (聆听礼仪) 通过 ListenerState.on_event_creating 挂载到识别层 (inline await),
-判停时调 state.commit(). commit 机制 (发负序号切段) 已在 recognition 层, 这里只决定
-何时调用.
+Stop logic (the listening etiquette) mounts on the recognition layer through
+ListenerState.on_event_creating (inline await); when it decides the turn ended it calls
+state.commit(). The commit mechanism (negative-index segmentation) lives in the
+recognition layer; this layer only decides when to call it.
 
-信号发射是独立于判停的第二职责: 本层是 RecognitionEvent (text axis) → listener signal
-(first/clause/tail) 的生产边界. 构造时注入 ``signal_broadcast`` (signal sink), 存在时
-注册一条 listener 级 on_recognition_result 观察者, 机械地把每个识别事件翻译成 listener
-signal 并广播.
+Signal emission is a second, independent duty: this is the production boundary from
+RecognitionEvent (text axis) to listener signal (first/clause/tail). When a
+``signal_broadcast`` sink is injected, a listener-level on_recognition_result observer
+translates every recognition event into a listener signal and broadcasts it.
 
-第三职责是运行时自解释: 当前礼仪 = ``_active_etiquette`` 单一真值, 提供合成快照
-(``snapshot()``) 与随身 channel (``as_channel()``), 让模型能判断"耳朵开没开、什么礼仪".
+The third duty is runtime self-explanation: the active etiquette is the single truth in
+``_active_etiquette``, exposed as a composed snapshot (``snapshot()``) and a companion
+channel (``as_channel()``), so the model can tell whether the ear is on and which
+etiquette is running.
 """
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import statistics
@@ -38,12 +43,15 @@ from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.contracts.listener import ListenLifecycle, Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.core.codex.executor import Executor
+from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
 from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.core.mindflow.listener_nucleus import new_listener_signal
 from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
+from ghoshell_moss.host.listener import etiquette as etiquette_module
 from ghoshell_moss.host.listener.etiquette import (
     DeliverSpec,
     DetectSpec,
@@ -369,6 +377,23 @@ class ListenerController(ListenLifecycle):
         config.upsert(spec)
         if save and self._config_store is not None:
             self._config_store.save(config)
+
+    def remove_etiquette(self, name: str) -> str:
+        """删掉一种礼仪 (内存 + config store) —— 删除是显式意图, 所以直接持久化.
+
+        删的若是当前 default: 还有别的礼仪就落到第一条, 一个不剩就清空 default.
+        删完不会动正在跑的会话; 要换行为, 再激活一次.
+        """
+        config = self._etiquette_config()
+        remaining = [spec for spec in config.etiquettes if spec.name != name]
+        if len(remaining) == len(config.etiquettes):
+            return f"etiquette {name!r} not defined"
+        config.etiquettes = remaining
+        if config.default == name:
+            config.default = remaining[0].name if remaining else ""
+        if self._config_store is not None:
+            self._config_store.save(config)
+        return f"removed `{name}`"
 
     def _set_active_etiquette(self, spec: EtiquetteSpec | None) -> None:
         """设当前激活礼仪, 并让 segment buffer 容量跟随 spec.deliver.history."""
@@ -1260,25 +1285,28 @@ class ListenerController(ListenLifecycle):
         self._expect_events.clear()
 
     def _emit_expect_timeout(self, index: str, seconds: float) -> None:
-        """到期: 发一条 knock —— 他还没开口, 你可以开口了.
+        """On expiry: send a knock — no reply came; the floor is open.
 
-        为什么是 knock 不是 notify: 这句话的性质是"你可以说话了", 不是"出事了".
-        knock 是最低一档且抢占失败即丢 —— 我正在忙的时候它就该消失, 不该跟真实
-        事件抢注意力. signal_broadcast 未注入时静默跳过.
+        Why a knock, not a notify: the message is "you may speak", not "something
+        happened". A knock is the lowest tier and is dropped when it cannot preempt —
+        while busy it should disappear, not compete with real events. Skipped silently
+        when no signal_broadcast is injected.
         """
         if self._signal_broadcast is None:
             return
         self._broadcast(new_knock_signal(
-            f"expect_reply #{index}: no voice in {seconds:g}s — he has not spoken, you may take the floor",
+            f"expect_reply #{index}: no voice in {seconds:g}s — no reply, you may take the floor",
             description="listener:expect-reply-timeout",
         ))
         self._notify_signal(f"expect_reply #{index} timed out after {seconds:g}s")
 
     def _emit_idle_timeout(self, idle_timeout: float) -> None:
-        """空闲超时: 发一条 notify signal, 告知模型"长时间无语音, 降级到 knock 门铃".
+        """Idle timeout: send a notify signal — no speech for a long time; degrade to
+        the knock doorbell.
 
-        source = cell_name (不是 "asr"), complete=True + interrupt=False + mode=notify —
-        只旁路知会, 不打断模型. signal_broadcast 未注入时静默跳过.
+        source = cell_name (not "asr"), complete=True + interrupt=False + mode=notify —
+        a side notice only, never an interrupt. Skipped silently when no
+        signal_broadcast is injected.
         """
         if self._signal_broadcast is None:
             return
@@ -1601,13 +1629,102 @@ class ListenerController(ListenLifecycle):
         return self._channel
 
     def _build_channel(self) -> Channel:
-        chan = new_channel(name="listener", description="语音输入控制 — 开启/关闭聆听、切换礼仪、调 ASR")
+        # gate: etiquette create/update/delete is a low-frequency advanced surface —
+        # hidden until mounted.
+        chan = PyChannel(
+            name="listener",
+            description="Voice input control — start/stop listening, switch etiquette, tune ASR",
+            gate=True,
+        )
         self._register_channel_commands(chan)
+        chan.build.add_virtual_channel(self._build_etiquette_child())
         return chan
 
+    def _build_etiquette_child(self) -> Channel:
+        """Gated child — the etiquette source and its write surface (Python eval).
+
+        Etiquette is a pydantic data structure; the source is the prompt. The write
+        surface is not another JSON contract — the model writes Python in the module
+        namespace to create, change, or remove a style.
+        """
+        child = new_channel(
+            name="etiquette",
+            description=(
+                "Change how we talk — read the etiquette model, then write Python that creates, "
+                "tunes, or removes an interaction style."
+            ),
+        )
+
+        @child.build.instruction
+        def instruction() -> str:
+            return (
+                "The etiquette is pydantic source: read the module once — it is the code the "
+                "listener runs, and it is the prompt. Then run Python in that namespace. "
+                "`current` is a copy of the style in force; `apply(spec, save=False)` makes a "
+                "style take effect (state only, config untouched); `save(name, description)` "
+                "persists the current style; `remove(name)` deletes one. Set `__result__` to "
+                "what you want back."
+            )
+
+        @child.build.command(name="specification", always_observe=True)
+        async def specification() -> str:
+            """The etiquette module's source — the data model and the shipped styles."""
+            return inspect.getsource(etiquette_module)
+
+        @child.build.command(name="exec", always_observe=True)
+        async def exec_code(text__: str) -> str:
+            """Run Python in the etiquette module's namespace.
+
+            The shipped classes and styles are in scope, plus `current` (a copy of the style in
+            force), `apply`, `save`, `remove`, and `main` (the listener controller). Prints are
+            captured; `__result__` is returned.
+            """
+            executor = Executor(
+                origin=etiquette_module,
+                local_injections=self._etiquette_injections(),
+            )
+            result = executor.execute(text__)
+            if result.exception:
+                return f"[listener] {result.exception}"
+            parts: list[str] = []
+            if result.std_output.strip():
+                parts.append(result.std_output.rstrip())
+            if result.returns is not None:
+                parts.append(repr(result.returns))
+            return "\n".join(parts) or "ok"
+
+        return child
+
+    def _etiquette_injections(self) -> dict:
+        """`exec` namespace — data is deep-copied; `apply` makes it live, `save` persists."""
+        active = self._active_etiquette
+        current = active.model_copy(deep=True) if active is not None else None
+
+        def apply(spec: EtiquetteSpec, *, save: bool = False) -> str:
+            if not isinstance(spec, EtiquetteSpec):
+                raise TypeError("apply expects an EtiquetteSpec")
+            if save:
+                self.set_etiquette_spec(spec, save=True)
+            self.run_etiquette(spec)
+            return f"applied `{spec.name}`" + (" and saved" if save else " (not saved)")
+
+        def save(name: str, description: str = "") -> str:
+            return self.save_interaction(name, description)
+
+        def remove(name: str) -> str:
+            return self.remove_etiquette(name)
+
+        return {
+            "current": current,
+            "apply": apply,
+            "save": save,
+            "remove": remove,
+            "main": self,
+        }
+
     def _register_channel_commands(self, chan: MutableChannel) -> None:
-        # 人类锁门控 — 锁着时整个 channel 从模型面消失 (无残留命令 / notice), 不给
-        # 模型撤销人类主权的路径; 解锁后完整回归.
+        # Human-lock gate — while locked the whole channel leaves the model's surface
+        # (no commands, no notice), so there is no path to undo the human's lock.
         chan.build.available(lambda: not self._human_paused)
 
         @chan.build.instruction
@@ -1615,73 +1732,44 @@ class ListenerController(ListenLifecycle):
             info = self._asr.get_info()
             return (
                 f"ASR audio contract: {info.sample_rate}Hz, {info.bits}-bit, {info.channel}ch.\n"
-                f"Voice input is ASR transcription — it may contain homophones and near-sounds "
-                f"(谐音). Judge by meaning and context, infer what the user likely said, and "
-                f"ask for clarification when unsure.\n"
-                f"voiceflow — how this conversation is paced is a live state, not a mode you are\n"
-                f"stuck in. `interaction` reads it (three dimensions: 判停 / 交付 / 打断), `tune`\n"
-                f"moves one knob and returns the state re-read (that return IS the proof it took),\n"
-                f"`save_etiquette` keeps the current shape under a name. If the pacing is wrong for\n"
-                f"what you are doing, change it instead of fighting it.\n"
-                f"How to read a <listen> packet — the listening side hands you what it heard, plus a mark for\n"
-                f"where it thinks the stretch stands; what the conversation is doing is yours to judge.\n"
-                f"  paused=\"true\"  — it thinks the stretch just closed.\n"
-                f"  paused=\"false\" — it thinks there is more coming.\n"
-                f"  A packet may also carry no text at all: only the stretch closing, nothing new heard.\n"
-                f"  The closing packet may also carry db=\"…\": how loud that stretch was, in dB — a\n"
-                f"  measurement, nothing to obey.\n"
-                f"Speaking is your call on any packet — the tag is not a permission slip. low_conf=\"…\" lists\n"
-                f"the characters whose transcription confidence was low; check them when it matters.\n"
-                f"Taking a turn — the packet is information, speaking is your choice:\n"
-                f"  You are not waiting for permission, and not waiting for the end of the stretch. When\n"
-                f"  what you hear already calls for an answer, or when he is heading the wrong way, it is\n"
-                f"  fine to step in while he is still talking.\n"
-                f"  A packet that says the stretch may have closed can also carry whatever it added since\n"
-                f"  the previous one — read it as content first, as a pause cue second.\n"
-                f"  If you notice you cut in wrongly, stop yourself promptly: your own voice first, then\n"
-                f"  whatever you set in motion. Stopping late is worse than never having started.\n"
-                f"  How this person actually wants to be talked with is not settled here — it grows out of\n"
-                f"  practice. Watch how he reacts, and adjust what you do, not only what you say.\n"
-                f"A <talking>yes</talking> fragment in the notice means he is mid-sentence right now: text\n"
-                f"is accumulating on his side and has not been delivered to you yet (the pull command\n"
-                f"get_transcript carries the tail of it). Its absence means nothing is being said.\n"
-                f"ASR tunable params schema:\n"
-                f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
-                f"EtiquetteSpec json schema (for set_etiquette_spec):\n"
-                f"{json.dumps(EtiquetteSpec.model_json_schema(), ensure_ascii=False)}"
+                "Voice input is ASR transcription — homophones and near-sounds (谐音) are "
+                "normal; judge by meaning and context, not surface spelling.\n"
+                "A <listen> packet is what the listening side heard; its fields say where the "
+                "stretch stands. A packet may carry no text: only the closing.\n"
+                "Speaking is your call on any packet — the tag is not a permission slip. "
+                "The active etiquette sets what is automatic: whether voice input stops "
+                "your voice, or whether stopping your own line is your judgment.\n"
+                "A <talking>yes</talking> fragment means speech is in progress; "
+                "`get_transcript` carries its tail. Its absence means nothing is being said.\n"
+                "voiceflow is live state — readable and changeable; when the pacing does not "
+                "fit the work, change it."
             )
 
         @chan.build.named_notices
         def named_notices() -> dict[str, str | None]:
-            # 温数据只暴露当前礼仪名称; 配置详情走 get_etiquette 读接口.
-            # 没有激活礼仪时片段缺席 (None): 模型收到 <etiquette removed/> 墓碑, 而不是
-            # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
+            # Warm data: only the active etiquette's name; details stay cold.
+            # With no active etiquette the fragment is absent (None): the model gets a
+            # <etiquette removed/> tombstone, not a placeholder — an empty string means
+            # "unchanged" here and would leave the old etiquette looking active.
             active = self._active_etiquette
             notice: dict[str, str | None] = {
-                # 名字 + 这套礼仪自己的说明. 说明是**指令**, 不是注释 —— cue 的"被点名才开口"
-                # 就写在这里, 所以它必须随激活礼仪一起进到模型的视野里, 而不是等模型
-                # 主动 get_etiquette 才看得到.
+                # Name + the etiquette's own description. The description is an
+                # instruction, not a comment: cue's "speak only when addressed" lives
+                # here, so it must ride the active etiquette into the model's view.
                 "etiquette": f"{active.name} — {active.description}" if active else None,
-                # 说话态: 一个桶值 (他在说 / 没说). 缺席即"没说" — 墓碑就是那条收尾边沿,
-                # 所以一段话只产生两次 delta, 不按秒刷.
+                # Speech state: one bucket (speech in progress / not). Absence means
+                # nothing is being said — the tombstone is the closing edge, so a
+                # stretch produces two deltas, never one per second.
                 "talking": "yes" if self._talking else None,
             }
-            # 留存槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
+            # Retained slot: when on, expose the last committed segment's full text
+            # (re-sent only when it changes); off/empty sends a None tombstone.
             if active is not None and not active.deliver.emit:
                 recent = self._buffer.peek_recent(1)
                 notice["last_heard"] = recent[-1].text if recent else None
             else:
                 notice["last_heard"] = None
             return notice
-
-        @chan.build.command()
-        async def set_etiquette_spec(text__: str, save: bool = False) -> str:
-            """Set or update an etiquette; `text__` is a JSON string of EtiquetteSpec
-            (schema in the instruction). `save=True` persists it via the config store.
-            """
-            spec = EtiquetteSpec.model_validate_json(text__)
-            self.set_etiquette_spec(spec, save=save)
-            return f"etiquette '{spec.name}' set"
 
         @chan.build.command(blocking=False)
         async def activate(name: str = "") -> str:
@@ -1692,58 +1780,11 @@ class ListenerController(ListenLifecycle):
         async def interaction() -> str:
             """Read voiceflow — how this conversation is being paced right now.
 
-            Three orthogonal dimensions, not three behaviours:
-
-            - **A · 判停** `stop.*` — when one of his sentences counts as finished
-              (silence seconds, end keywords, a classifier's score, sound detection).
-            - **B · 交付** `deliver.*` — how a finished sentence reaches you
-              (push or keep-only, per clause or per stretch, queue mode, priority).
-            - **C · 打断** `onset.*` / `deliver.interrupt` / `deliver.barge_in_while_speaking`
-              — who may take away what you are doing.
-
-            Returns JSON: `current` (the name of the etiquette in force), `origin` (the
-            preset it was loaded from — `current` and `origin` are the same until you
-            tune or save), `deviated` (which keys have moved away from `origin`),
-            `values` (the flattened keys), `presets` (what else can be loaded).
-            Read it before tuning, and again after.
+            Three orthogonal dimensions: turn end (`stop.*`), delivery (`deliver.*`),
+            interruption (`onset.*` / `deliver.interrupt`). Returns JSON: `current`,
+            `origin`, `deviated`, `values`, `presets`.
             """
             return json.dumps(self.interaction_state(), ensure_ascii=False)
-
-        @chan.build.command(always_observe=True)
-        async def tune(text__: str) -> str:
-            """Change the current interaction in place — and confirm it took effect.
-
-            `text__` is a JSON object of the keys to move, named exactly as
-            `interaction` prints them, e.g. `{"deliver.barge_in_while_speaking": false}`.
-            Only the keys you pass change; everything else stays.
-
-            The return value **is** the confirmation: it is the same JSON `interaction`
-            returns, re-read after the change, plus `touched` and `restarted`. Do not
-            assume a knob moved because the call returned — read it back.
-
-            A key from the 判停 layer (`stop.*`) cannot reach a session already running:
-            it is copied into the stop judge when the session starts, so those keys
-            restart listening and the answer says `"restarted": true`. Delivery and
-            interruption keys apply on the next signal, no restart.
-            """
-            patch = json.loads(text__)
-            if not isinstance(patch, dict):
-                raise ValueError(f"tune expects a JSON object, got {type(patch).__name__}")
-            state, touched, restarted = self.tune_interaction(patch)
-            state["touched"] = touched
-            state["restarted"] = restarted
-            return json.dumps(state, ensure_ascii=False)
-
-        @chan.build.command()
-        async def save_etiquette(name: str, description: str = "") -> str:
-            """Keep the current interaction as a named etiquette.
-
-            The whole `current` is written out — not a diff against its origin — and
-            persisted through the config store, so it survives a restart. `description`
-            is the etiquette's own instruction to you: it rides into your notice whenever
-            this etiquette is active, so write the rule you want to obey, not a label.
-            """
-            return self.save_interaction(name, description)
 
         @chan.build.command(blocking=False)
         async def stop() -> str:
@@ -1753,45 +1794,23 @@ class ListenerController(ListenLifecycle):
 
         @chan.build.command(blocking=False)
         async def expect_reply(seconds: float = 10.0) -> str:
-            """Wait for him to reply — and get knocked if he does not.
+            """Wait for a reply — and get knocked if none comes.
 
-            The command to reach for after you have spoken and handed the turn back:
-            "he may answer; if he does not say anything within `seconds`, tell me".
-
-            Pure async — it returns a receipt index immediately and blocks nothing. If
-            any voice arrives before the deadline, the expectation is met silently and
-            nothing is sent. If it expires, the listener sends you a **knock**: the
-            lowest tier, dropped when you are busy, saying that he has not spoken and
-            you may take the floor. Unlike a notify, losing it is fine — the moment it
-            would have been useful is the moment you were free to hear it.
-
-            This is the voice-side twin of mindflow's `idle-knock`: one watches the
-            mindflow go quiet, the other watches the microphone go quiet.
-
-            The receipt index lets you correlate which expectation expired (e.g. a
-            later signal referencing "#3").
+            Reach for it after you have spoken and handed the turn back: "a reply may come;
+            if none within `seconds`, tell me". Returns a receipt at once and blocks nothing;
+            a voice arriving first meets the expectation silently. On expiry, a knock says
+            no reply came.
             """
             return self.expect_reply(seconds)
 
         @chan.build.command(blocking=False)
         async def send_now() -> str:
-            """Human-style strong send — commit what should be sent right now.
+            """Strong send — commit what should be sent right now.
 
-            When the etiquette does not auto-send (deliver.emit=False, input-method mode),
-            this drains the retained buffer and sends it as one signal (empty buffer = no
-            signal, just "buffer empty"). When auto-send is on, this force-commits the
-            current turn early (before stop judging), letting the normal commit path deliver.
+            With no auto-send (deliver.emit=False) this drains the retained buffer as one signal;
+            with auto-send on it force-commits the current turn early.
             """
             return self.send_now()
-
-        @chan.build.command(always_observe=True)
-        async def get_etiquette(name: str = "") -> str:
-            """Read etiquette config: empty = names of all, non-empty = one full spec json."""
-            config = self.etiquette_config()
-            if name:
-                spec = config.get(name)
-                return spec.model_dump_json() if spec else f"etiquette {name!r} not defined"
-            return json.dumps([s.name for s in config.etiquettes], ensure_ascii=False)
 
         @chan.build.command(always_observe=True)
         async def get_asr_params() -> str:
@@ -1820,44 +1839,35 @@ class ListenerController(ListenLifecycle):
 
         @chan.build.command(always_observe=True)
         async def get_transcript(n: int = 0) -> str:
-            """Pull the segment buffer: current growing text + recent n heard segments.
+            """Pull the segment buffer: the growing text plus the last n heard segments.
 
-            `n=0` uses the active etiquette's deliver.history; returns JSON with
-            `enabled` (deliver.emit=False), `current`, `recent` (tail-n) and `forgotten`.
-            Empty current/recent when emit=True or nothing heard yet — `talking` is the
-            exception: it is live in either mode (`talking` / `for` / `idle_for` / `tail`),
-            so you can tell he is still mid-sentence and read what he has said so far.
+            `n=0` uses the active etiquette's deliver.history. Returns JSON: `enabled`,
+            `current`, `recent`, `forgotten`, and live `talking` / `for` / `idle_for` / `tail`.
             """
             return json.dumps(self.transcript_state(n), ensure_ascii=False)
 
         @chan.build.command()
         async def configure_asr(params: dict) -> str:
-            """Change ASR params — pass only the keys to change (schema is in the instruction)."""
+            """Change ASR params — pass only the keys to change; read `get_asr_params` for them."""
             current = dict(self._asr.get_info().params)
             self._asr.configure({**current, **params})
             return "asr configured"
 
         @chan.build.command()
         async def set_loudness_watermark(db: float | None = None) -> str:
-            """Set the runtime loudness watermark (dB): a packet at or below it challenges at
-            normal strength, one above it challenges harder the louder it is.
+            """Set the runtime loudness watermark (dB): louder packets challenge harder.
 
-            A runtime knob, not an etiquette field — it depends on the mic and the room, so it
-            belongs to the live session. None turns the escalation off; packets still carry
-            their own `db`.
+            A runtime knob, not an etiquette field — it depends on the mic and the room. None
+            turns the escalation off; packets still carry their own `db`.
             """
             self.with_loudness_watermark(db)
             return f"loudness watermark: {'off' if db is None else f'{db:.1f}dB'}"
 
         @chan.build.command(always_observe=True)
         async def get_loudness_state() -> str:
-            """Read the loudness state (cold data, pulled on demand — not in notice).
+            """Read the loudness state (cold data).
 
-            Returns JSON: `explicit` (the runtime watermark, null = auto), `auto` (median of
-            recent segments + margin; null until enough segments are in), `effective` (the
-            one in force), `recent` (recent segment loudness, dB), `segment` (this stretch's
-            running mean, null before any sound) and `strength` (what the next packet would
-            challenge with; null = normal).
+            Returns JSON: `explicit`, `auto`, `effective`, `recent`, `segment`, `strength`.
             """
             return json.dumps(self.loudness_state(), ensure_ascii=False)
 

@@ -52,8 +52,8 @@ class DeltaPacket:
     authoritative version whenever ``revised`` is set.
 
     ``final`` marks the segment's last packet (a tail); ``unit`` tells the consumer which
-    kind of boundary produced it, so a model can tell "he finished a sentence" from "he
-    finished the whole thing".
+    kind of boundary produced it, so a model can tell a sentence boundary from the end
+    of the whole stretch.
     """
 
     segment_id: str

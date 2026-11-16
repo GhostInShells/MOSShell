@@ -1778,3 +1778,74 @@ async def test_restarting_for_a_stop_knob_keeps_a_one_shot_session_one_shot():
     for cb in listener.state.result:
         cb(_tail("你好"))
     await asyncio.wait_for(controller._active_task, timeout=1.0)
+
+
+# ============================================================
+# gated etiquette child — 礼仪的增/删/改走 Python eval
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_etiquette_child_is_gated_until_mounted():
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    chan = controller.as_channel()
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        meta = runtime.self_meta()
+        assert "etiquette" in meta.named_notices["gated_children"]
+        assert runtime.fetch_sub_runtime("etiquette") is None
+
+        await runtime.execute_command("mount_child", args=("etiquette",))
+        await runtime.refresh_metas()
+        child = runtime.fetch_sub_runtime("etiquette")
+        assert child is not None
+        assert child.get_command("specification") is not None
+        assert child.get_command("exec") is not None
+    controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_exec_changes_the_live_state_and_leaves_the_config_alone():
+    """apply 只改状态: current 是深拷贝, 配置值要等 save 才动."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    chan = controller.as_channel()
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        await runtime.execute_command("activate", args=("duplex",))
+        await runtime.execute_command("mount_child", args=("etiquette",))
+        await runtime.refresh_metas()
+        child = runtime.fetch_sub_runtime("etiquette")
+
+        result = await child.execute_command(
+            "exec", args=("current.stop.silence = 2.0\n__result__ = apply(current)",),
+        )
+
+        assert "not saved" in result
+    assert controller.active_etiquette().stop.silence == 2.0
+    assert controller.etiquette_config().get("duplex").stop.silence != 2.0
+    controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_exec_can_save_and_remove_a_style():
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    chan = controller.as_channel()
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        await runtime.execute_command("activate", args=("duplex",))
+        await runtime.execute_command("mount_child", args=("etiquette",))
+        await runtime.refresh_metas()
+        child = runtime.fetch_sub_runtime("etiquette")
+
+        made = await child.execute_command("exec", args=(
+            "spec = current.model_copy(deep=True)\n"
+            "spec.name = 'mine'\n"
+            "__result__ = apply(spec, save=True)",
+        ))
+        assert "saved" in made
+        assert controller.etiquette_config().get("mine") is not None
+
+        removed = await child.execute_command("exec", args=("__result__ = remove('mine')",))
+        assert "removed" in removed
+        assert controller.etiquette_config().get("mine") is None
+    controller.stop()

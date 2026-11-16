@@ -203,9 +203,10 @@ class _SpeechCommandFactory:
         tone_descriptions_str = ";".join(
             f"`{tone}`: {description}" for tone, description in tts_info.tones.items()
         )
-        # 命令表面只写契约: schema / tone 目录 / 参数语义, 都是启动期就定的静态内容.
-        # 此刻的 voice / tone 是状态, 走 module 的 named notice (见 SpeechChannelModule),
-        # 否则文档一变整块命令接口就要重发, 命令 meta 也跟着反复重生成.
+        # The command surface carries contract only: schema, tone catalog, parameter
+        # semantics — all fixed at boot. The current voice/tone is state and rides the
+        # module's named notice (see SpeechChannelModule); otherwise any doc change
+        # would resend the whole command interface and re-generate command meta.
         say_doc = (
             f"Speak with the specified voice state. The content becomes spoken audio — avoid visually-oriented text (tables, special symbols) as speech content.\n"
             f"Say it once: do not say again what you have already said. A retried or re-emitted line\n"
@@ -215,8 +216,8 @@ class _SpeechCommandFactory:
             f":param as_default: Make the voice state set in this turn the default.\n"
             f":param replace: drop whatever is still being said and say this instead — one call,\n"
             f"  not clear_speech followed by say. Default false: the line queues behind the rest.\n"
-            f"  Finishing the line you are speaking is not an obligation: when his new words\n"
-            f"  change what he means, reply now with replace=True rather than queue behind\n"
+            f"  Finishing the line you are speaking is not an obligation: when new words\n"
+            f"  change the intent, reply now with replace=True rather than queue behind\n"
             f"  your own unfinished sentence.\n"
             f":param chunks__: The text content you speak.\n"
             f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"

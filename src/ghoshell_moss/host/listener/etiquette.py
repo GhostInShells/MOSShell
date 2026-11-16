@@ -260,10 +260,13 @@ once = EtiquetteSpec(
 )
 
 
-# 默认: 打断式自由对话. 起话即打断 (barge-in), 静默 1.5s 交付; 抢不到注意力则 buffer, 闲了再答.
+# Default: interrupt-style free conversation. Speech onset interrupts (barge-in);
+# the turn delivers after 1.5s of quiet; if the challenge loses, the packet
+# buffers and answers when idle.
 always = EtiquetteSpec(
     name="always",
-    description="interruptible turn-taking — commit after 1.5s of quiet",
+    description="The speaker's voice takes priority — speech starts, stops what you are "
+                "doing, and takes the turn.",
     onset=OnsetSpec(emit=True, interrupt=True, priority=Priority.WARNING),
     stop=StopSpec(silence=1.5),
     deliver=DeliverSpec(mode="notify"),
@@ -332,17 +335,16 @@ murmur = EtiquetteSpec(
 )
 
 
-# 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 绝不打断"思考".
-# 这一档是唯一打开"出声即让路"的 —— 我一开口, 他说的话就立刻掐断我的语音, 但不动我的动作.
-# 它的语义是"被点名才说话": 我说的话是应答, 他一开口应答就该让路.
-# 名字**不**写进机制 (这是系统默认, 不是给我一个人做的): 规则写在 description 里,
-# 由 listener 每轮把它带进 instruction; 具体叫什么名字, 以后由 ghost 自己往说明里加.
+# Clause-by-clause: each clause is its own turn and forces the next turn (next);
+# it never interrupts "thinking". This is the only preset with "speaking yields":
+# the moment voice input arrives, the voice in progress is cut, though action is not.
+# The rule is "speak only when addressed" — the reply yields to the next call.
+# The name is **not** hard-coded (this is a system default, not one ghost's): the
+# rule lives in description, and the listener carries it into the instruction.
 cue = EtiquetteSpec(
     name="cue",
     description=(
-        "被点名才开口: 没人叫你, 就别说. 你一出声, 我说到一半的话会被立刻掐断 "
-        "(所以开口前先掂量这句话值不值得被打断). "
-        "Speak only when addressed — your voice is the one that yields here."
+        "Voice input automatically stops your voice — speak only when addressed."
     ),
     onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=0.0),
@@ -353,19 +355,24 @@ cue = EtiquetteSpec(
 )
 
 
-# 全双工: 每句一包 + 段尾一包 paused=true 收口. 尾包**不是**冗余包: 4s 静音期间那句还在长,
-# 最后定稿的那一截、以及二遍识别才出来的文本, 都只能落在尾包里 —— 它既回答"他可能停了",
-# 也可能带着前面没发过的新内容. 静音取 4s: 一句说完的正常停顿 (换气、想一下) 不该把同一段
-# 切成两段, 而 4s 也够我在他真停下时及时接上.
-# 其余照 cue: 不打断、走 next —— 什么时候开口是模型的判断, 不是礼仪的.
-# **这一档不掐语音**: 出声即让路 (barge_in_while_speaking) 只在 cue 上开. 基线的物理性质是
-# 半双工但不抢: 我说到一半他开口, 我把这句说完再让; 谁要立刻拿话筒, 用 cue 或 always.
-# low_confidence=0.8: 火山词级置信度里, 0.8 以下基本就是听岔了 —— 默认开着, 让模型
-# 自己看到哪几个字可疑 (属性只在有可疑字时出现, 正常句子的帧里不会多一个字节).
+# Full duplex: one packet per clause + a closing packet with paused=true. The tail
+# is **not** redundant: the clause is still growing during the 4s quiet, and the
+# final cut plus second-pass recognition can only land in the tail — it both says
+# "the speaker may have stopped" and may carry text not sent before. 4s because a
+# normal pause (a breath, a thought) should not split one stretch, while 4s is
+# still prompt enough to pick up when the speaker really stops.
+# The rest follows cue: no interrupt, next — when to speak is the model's call.
+# **This preset does not cut the voice on input**: barge_in_while_speaking is on
+# only in cue. The baseline is half-duplex without grabbing: if the speaker starts
+# mid-sentence, finish the sentence, then yield; for an immediate floor grab, use
+# cue or always.
+# low_confidence=0.8: below 0.8 is usually a mishearing — on by default so the model
+# sees which characters are doubtful (the attribute appears only when there are any;
+# a normal frame carries no extra byte).
 duplex = EtiquetteSpec(
     name="duplex",
-    description="full duplex — every clause reaches you; a 4s quiet tail says he may have stopped. "
-                "Your voice is never cut here: finish the sentence, then he takes the floor.",
+    description="full duplex — voice input does not automatically stop your voice; "
+                "stopping your own line is your call. Every clause reaches you.",
     onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=4.0),
     deliver=DeliverSpec(
@@ -374,7 +381,8 @@ duplex = EtiquetteSpec(
 )
 
 
-# 长论述判停: 挂一个可编程分类器判"这段说完没有", 打分到阈值提前交付, 静默兜底.
+# Long dictation: a programmable classifier decides "is this thought complete";
+# a score at threshold delivers early, silence is the fallback.
 scored = EtiquetteSpec(
     name="scored",
     description="classifier-decided endpoint over a silence fallback",
@@ -400,7 +408,8 @@ scored = EtiquetteSpec(
 )
 
 
-# 门铃: 空闲降级后的轻量能量检测 — 不做 ASR, 检测到声音发 knock signal, 让模型决定是否 re-engage.
+# Doorbell: lightweight energy detection after idle degradation — no ASR; a detected
+# sound sends a knock signal, and the model decides whether to re-engage.
 knock = EtiquetteSpec(
     name="knock",
     description="idle gate — detect sound, knock, let the model decide whether to re-engage",
@@ -527,7 +536,8 @@ def apply_interaction_patch(spec: "EtiquetteSpec", patch: dict[str, object]) -> 
         elif key == "stop.keywords":
             spec.stop.keywords = [str(word) for word in (value or [])]
         elif key == "stop.classifier":
-            # 只认开关: 有值 = 挂一套默认判官, None = 摘掉. 细调走 set_etiquette_spec.
+            # Switch only: a value mounts a default judge, None removes it. Fine-tuning
+            # goes through the listener's etiquette child channel.
             if value is None:
                 spec.stop.classifier = None
             elif spec.stop.classifier is None:

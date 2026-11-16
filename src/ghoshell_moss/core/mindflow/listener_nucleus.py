@@ -44,7 +44,7 @@ id each**: every clause is its own utterance event, and nothing absorbs it.
 audio file that holds it). It falls back to being the impulse id only when the
 signal carries none, so older producers keep working unchanged.
 
-``paused`` answers one question the model actually asks: **may he have stopped talking?**
+``paused`` answers one question the model actually asks: **may the speaker have stopped talking?**
 ``paused=True`` on the packet that closes a segment, ``paused=False`` on the ones that are
 still in the middle of it. It is information, not permission — a pause is not an ending,
 and speaking is the model's call on every packet.
@@ -82,82 +82,88 @@ __all__ = [
 ]
 
 class ListenerSignal(SignalMeta):
-    """Listener perception signal — a single degenerate form, meta fully self-explaining.
+    """Listener perception signal — one speech packet.
 
-    The listener side has already decided the intent; this signal only states it, and
-    the nucleus maps it mechanically into an impulse. ``complete`` / ``priority`` /
-    ``hint`` / ``description`` are generic ``Signal`` fields (not part of metadata):
-    the listener side sets them directly through
-    ``to_signal(complete=..., priority=..., hint=...)``.
+    ``complete`` is the only protocol branch:
 
-    Metadata fields (read by the nucleus to fill the impulse):
+    - ``complete=False`` opens a turn: it asks for attention, and the matching
+      ``complete=True`` packet (same ``impulse_id``) fills it.
+    - ``complete=True`` delivers: it carries the heard text and closes the turn.
 
-    - ``source``: where the listening came from (asr / wake_word ...), the ``source``
-      attribute of the delivered ``<listen>`` tag.
-    - ``segment_id``: the same-id key, matching the ASR segment id (tail-delimited).
-      The onset (complete=False) and the deliver (complete=True) share it → same-id
-      absorb.
-    - ``interrupt``: whether the attention this packet wins stops the body first via
-      ``shell.clear()`` — the ``Impulse.interrupt`` protocol. Listener-configurable,
-      False by default; it is about stopping the body, not about barge-in.
-    - ``mode``: the loss-side mode (notify / aside / next / ''). Listener-configurable.
-      An onset defaults to ``''`` (losing suppresses it), a deliver falls back to
-      ``notify`` when empty.
-    - ``logos``: a conditioned-reflex command logos, listener-configurable.
-    - ``low_conf``: 缩写 = "low-confidence" (低置信度) 的字 — the characters whose
-      word-level confidence fell below the etiquette's ``deliver.low_confidence``
-      threshold. Rendered as the ``low_conf`` attribute of the delivered ``<listen>``
-      tag (deliver only). Empty = none.
-    - ``boost``: a one-shot priority raise (提权) — empty by default. When set, the packet
-      challenges at ``max(priority, boost)`` instead of ``priority``; winning an attention
-      still lowers it back to the run tier (``Priority.INFO``). It moves the priority
-      *tier*, which is what decides a challenge; ``strength`` only arbitrates at equal
-      tier. Note the attention protection window is tier-relative: a same-tier challenge
-      inside it loses, a higher tier wins on priority.
-    - ``db``: this packet's mean loudness (dB) — the capture side already computes
-      ``rms_db`` per frame, so the listener only averages. Rendered as the ``db``
-      attribute of the ``<listen>`` tag. A measurement, not a judgment about anyone.
-    - ``strength``: a challenge strength the listener computed from loudness before
-      firing; empty = keep the nucleus's normal one. Loudness is a fact only the sending
-      side holds, so that side computes the number and the nucleus just uses it.
+    The fields describe the packet; they are not instructions:
 
-    Text, speaker, voiceprint and similar extras are fields an impulse does not have —
-    the listener side organizes them into the message body.
+    - ``source``: where the listening came from (asr / wake_word ...); rendered
+      as the ``<listen>`` tag's ``source``.
+    - ``impulse_id``: the turn identity an onset and its closing packet share.
+    - ``segment_id``: the audio segment's address, not an identity; it becomes
+      the identity only when ``impulse_id`` is empty.
+    - ``paused``: the listening side's reading — true when the stretch may have
+      closed, false when more is coming.
+    - ``interrupt``: whether the attention this packet wins stops the body first
+      via ``shell.clear()``; false by default.
+    - ``mode``: loss-side mode (notify / aside / next / ''); empty = onset
+      suppresses on loss, deliver falls back to notify.
+    - ``logos``: a conditioned-reflex command logos, sent with the impulse.
+    - ``low_conf``: characters whose word-level confidence was low; rendered as
+      the ``<listen>`` tag's ``low_conf``.
+    - ``boost``: a one-shot priority raise; empty = none.
+    - ``db``: the packet's mean loudness (dB); rendered as the ``<listen>``
+      tag's ``db``.
+    - ``strength``: the challenge strength the sending side computed; empty =
+      the default strength.
     """
 
-    source: str = Field(default="asr", description="where the listening came from — the upstream source producing the packet (asr / wake_word ...)")
+    source: str = Field(
+        default="asr",
+        description="where the listening came from (asr / wake_word ...); rendered as the "
+                    "<listen> tag's source",
+    )
     impulse_id: str = Field(
         default="",
-        description="听侧规划的 impulse 身份: 同一次话语的 onset 与尾包共用, 每个分句各自一枚新 id. "
-                    "空 = 回落到 segment_id (老行为).",
+        description="the turn identity: an onset and its closing packet share it; each clause "
+                    "packet gets its own. Empty = fall back to segment_id.",
     )
     segment_id: str = Field(
         default="",
-        description="地址, 不是身份 — ASR segment id (将来对应这段音频的文件). "
-                    "只在本包没带 impulse_id 时兼任身份.",
+        description="the audio segment's address, not an identity; it becomes the identity only "
+                    "when impulse_id is empty.",
     )
     paused: bool | None = Field(
         default=None,
-        description="他这一轮说话已经停了 —— 尾包为 true, 中间的分句为 false. "
-                    "它是信息, 不是许可: 任何一个包都可以开口, 说完没说完全由模型自己判.",
+        description="the listening side's reading: true when the stretch may have closed, false "
+                    "when more is coming. Information, not permission.",
     )
-    interrupt: bool = Field(default=False, description="whether the attention won by this packet calls shell.clear() first (Impulse.interrupt)")
-    mode: str = Field(default="", description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' (suppress on loss); a deliver falls back to notify when empty")
-    logos: str = Field(default="", description="conditioned-reflex command logos, sent with the impulse")
+    interrupt: bool = Field(
+        default=False,
+        description="whether the attention this packet wins stops the body first (shell.clear())",
+    )
+    mode: str = Field(
+        default="",
+        description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' "
+                    "(suppress on loss); a deliver falls back to notify when empty",
+    )
+    logos: str = Field(
+        default="",
+        description="a conditioned-reflex command logos, sent with the impulse",
+    )
     boost: Priority | None = Field(
         default=None,
-        description="one-shot raise: 非空时这一包按 max(priority, boost) 挑战注意力; 赢下之后照旧降回运行档. 空 = 不提权.",
+        description="one-shot priority raise: when set, the packet challenges at "
+                    "max(priority, boost); after winning it returns to the run tier. Empty = none.",
     )
-    low_conf: str = Field(default="", description="缩写 = low-confidence (低置信度): 词级置信度低于阈值 (deliver.low_confidence) 的字, 渲染为 <listen> 的 low_conf 属性; 空 = 无")
+    low_conf: str = Field(
+        default="",
+        description="low-confidence characters: word-level confidence below the etiquette's "
+                    "deliver.low_confidence; rendered as the <listen> tag's low_conf. Empty = none",
+    )
     db: float | None = Field(
         default=None,
-        description="这一包的平均响度 (dB, capture 侧预算的 rms_db 的均值), 渲染为 <listen> 的 db 属性. "
-                    "空 = 这一包没有可量的声音. 它是测量值, 不是判断.",
+        description="the packet's mean loudness (dB); rendered as the <listen> tag's db. "
+                    "A measurement, not a judgment.",
     )
     strength: int | None = Field(
         default=None,
-        description="听侧按响度水位算好的挑战强度; 空 = 用 nucleus 的常态强度. "
-                    "响度只有现场知道, 所以强度由发射方算好再交过来, nucleus 只照着用.",
+        description="the challenge strength the sending side computed; empty = the default strength.",
     )
 
     @classmethod
@@ -170,26 +176,15 @@ class ListenerSignal(SignalMeta):
 
     @classmethod
     def xml_tag(cls) -> str:
-        """The xml tag wrapping delivered messages — every listening packet shares one tag, told apart by the ``source`` attribute."""
+        """The xml tag wrapping delivered messages — every listening packet shares one
+        tag, told apart by the ``source`` attribute."""
         return "listen"
 
 
 class ListenerNucleus(Nucleus):
-    """Listener perception unit — a pure protocol mapping from listener signal to impulse.
+    """Listener perception unit — maps one listener signal into one impulse, mechanically.
 
-    It does exactly two things: an onset (complete=False → slot-holding impulse) and a
-    deliver (complete=True → content impulse). It does not accumulate clauses, diff
-    them, or manage delivery etiquette — all of that understanding lives on the
-    listener side.
-
-    ``interrupt`` belongs to neither packet type exclusively: onset and deliver each
-    read the field from their own signal (listener-configured, False by default) to
-    decide whether the attention they win stops the body. See the module docstring
-    for the orthogonal axes.
-
-    Two-tier cooldown: ``suppress`` (long) + ``attended`` (short), both holding back
-    onset emission only — deliver is never held back (the content must not be lost).
-    same-id = ``segment_id``.
+    It does not accumulate, diff, or decide delivery; the listener side owns that.
     """
 
     NAME = "listener_nucleus"
@@ -208,21 +203,21 @@ class ListenerNucleus(Nucleus):
         self._name = name
         self._logger = logger or get_moss_logger()
 
-        self._first_strength = first_strength        # 首包强度 — 同级强度仲裁时用于抢占
-        self._normal_strength = normal_strength      # attended 后降回 (运行强度)
-        self._suppress_seconds = suppress_seconds    # 仲裁失败大冷却
-        self._attended_seconds = attended_seconds    # 抢占成功小冷却
-        self._strength_decay_seconds = strength_decay_seconds  # 赢得 attention 后的强度 TTL
+        self._first_strength = first_strength        # first-packet strength — wins ties at equal priority
+        self._normal_strength = normal_strength      # run strength after attended
+        self._suppress_seconds = suppress_seconds    # long cooldown after losing the challenge
+        self._attended_seconds = attended_seconds    # short cooldown after winning
+        self._strength_decay_seconds = strength_decay_seconds  # strength TTL after winning attention
 
         self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
 
-        # 冷却双档 + impulse cache.
+        # Two-tier cooldown + impulse cache.
         self._suppress_until = 0.0
         self._attended_until = 0.0
         self._impulse_cache: Impulse | None = None
 
-        # 反身 channel — 惰性构建, 一次生成后持有.
+        # Reflexive channel — built lazily and held after the first build.
         self._channel: Channel | None = None
 
     # ── Nucleus ABC ──
@@ -231,8 +226,7 @@ class ListenerNucleus(Nucleus):
         return self._name
 
     def description(self) -> str:
-        return ("listener sense nucleus — onset (complete=False) and deliver "
-                "(complete=True) packets mapped verbatim into impulses")
+        return "hearing — speech packets, delivered as <listen>"
 
     def status(self) -> str:
         if self._impulse_cache:
@@ -251,7 +245,8 @@ class ListenerNucleus(Nucleus):
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
-            # 探针 (D13 丢尾包排查): nucleus 没在跑时信号是静默丢的, 这里让它出声.
+            # Probe (tail-packet debugging): a signal dropped while the nucleus is not
+            # running is silent; log it here.
             self._logger.info(
                 "%s signal dropped — nucleus not running (complete=%s)",
                 self._name, signal.complete,
@@ -276,23 +271,27 @@ class ListenerNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # 契约 (``Nucleus.peek``): suppressed 后 impulse **仍保留、可被 peek**, 只是冷却期内不再
-        # 主动 fire —— rank 输掉不等于完结, 由下一轮 re-rank 捞回.
-        # 这里不能清缓存: ``_rank_best_impulse_from_nuclei`` 对同一轮里**任何**落选者都调 suppress,
-        # 落选的若是携带内容的发送包, 清缓存就把它整包抹掉, 而它占着的那个 attention 永远等不到
-        # complete (尾包补不齐 → thinking 通路停摆).
+        # Contract (``Nucleus.peek``): a suppressed impulse **stays peekable**; it just
+        # stops firing during the cooldown — losing the rank is not the end; the next
+        # re-rank can pick it up.
+        # Do not clear the cache here: ``_rank_best_impulse_from_nuclei`` suppresses
+        # every loser in the round. If a losing deliver packet were cleared, its whole
+        # content would vanish and the attention it holds would never see ``complete``
+        # (the tail cannot arrive → thinking stalls).
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> Impulse | None:
         if impulse is self._impulse_cache:
             self._impulse_cache = None
-        # 抢占成功也进小冷却 — 防同一源抢到后立刻又被自己下一个包抢.
+        # Winning also enters the short cooldown — one source must not be preempted by
+        # its own next packet right after winning.
         self._attended_until = time.monotonic() + self._attended_seconds
         if impulse is None:
             return None
-        # challenge → run 参数分离: 抢到 attention 后降为运行优先级(INFO) + 运行强度.
-        # 运行中的 listener attention 停在最低一档, 下一个包才进得来 — 优先级更高的
-        # 包按优先级直接赢, 同为 INFO 级则靠强度仲裁 (同源 challenger ×1.1 加权).
+        # Separate challenge from run parameters: after winning, drop to the run
+        # priority (INFO) and run strength. A live listener attention stays at the
+        # lowest tier so the next packet can enter — a higher tier wins on priority,
+        # and an equal tier is decided by strength (same-source challenger ×1.1).
         if impulse.priority != Priority.INFO or impulse.strength != self._normal_strength:
             impulse.priority = Priority.INFO
             impulse.strength = self._normal_strength
@@ -323,13 +322,15 @@ class ListenerNucleus(Nucleus):
         self._is_running = False
         self.clear()
 
-    # ── 两套协议映射 ──
+    # ── The two protocol mappings ──
 
     def _on_onset(self, meta: ListenerSignal, signal: Signal) -> None:
-        # 首包 (onset): 占坑 impulse — complete=False 供 same-id absorb; interrupt
-        # 由端侧配. 冷却期 (suppress 或 attended) 内不发射 — 防抢占风暴.
+        # Onset: a slot-holding impulse — complete=False for same-id absorb; interrupt
+        # is configured by the sender. Not emitted during cooldown (suppress or
+        # attended) — this prevents a preemption storm.
         if self._in_cooldown():
-            # 探针 (D13 丢尾包排查): 冷却期丢掉的 onset 必须看得见 — 它决定后面还有没有槽可吸收.
+            # Probe (tail-packet debugging): an onset dropped in cooldown must be
+            # visible — it decides whether there is still a slot to absorb.
             self._logger.info(
                 "%s onset dropped in cooldown segment=%s", self._name, meta.segment_id,
             )
@@ -355,14 +356,15 @@ class ListenerNucleus(Nucleus):
         self._fire(impulse)
 
     def _on_deliver(self, meta: ListenerSignal, signal: Signal) -> None:
-        # 发送包 (deliver): mode 为空兜底 notify + 端侧配 priority. 不受冷却约束 —
-        # 内容绝不丢.
-        # 提权 (boost): 端侧要这一包赢的时候把它填上, 挑战按 max(priority, boost);
-        # 赢下之后 attended() 照旧降回运行档, 只赢这一局.
+        # Deliver: empty mode falls back to notify + sender-configured priority. Not
+        # held by cooldown — the content must never be lost.
+        # Boost: the sender fills it when this packet must win; the challenge uses
+        # max(priority, boost); after winning, attended() drops back to the run tier —
+        # only this round is won.
         challenge_priority = signal.priority if meta.boost is None else max(
             Priority(signal.priority), Priority(meta.boost),
         )
-        # 探针 (D13 丢尾包排查): 尾包到达 nucleus 的那一刻留一行.
+        # Probe (tail-packet debugging): log the moment the tail reaches the nucleus.
         self._logger.info(
             "%s deliver ← segment=%s len=%d priority=%s boost=%s mode=%s",
             self._name, meta.segment_id, len(self._signal_text(signal)),
@@ -390,10 +392,12 @@ class ListenerNucleus(Nucleus):
 
     @staticmethod
     def _identity(meta: ListenerSignal) -> str:
-        """这一包的 impulse 身份: 听侧规划的 ``impulse_id``, 缺省才回落到 ``segment_id``.
+        """This packet's impulse identity: the ``impulse_id`` planned by the listener,
+        falling back to ``segment_id`` only when empty.
 
-        身份与地址是两件事: 同一次话语的 onset 与尾包共用一个身份 (同 id 吸收),
-        每个分句各有自己的身份 (彼此不吸收); ``segment_id`` 只是这段音频的地址.
+        Identity and address are two things: an onset and its closing packet share
+        one identity (same-id absorb); each clause packet has its own (no absorb);
+        ``segment_id`` is only the audio segment's address.
         """
         return meta.impulse_id or meta.segment_id or unique_id()
 
@@ -414,10 +418,12 @@ class ListenerNucleus(Nucleus):
         data = self._signal_text(signal)
         if not data and paused is not True:
             return []
-        # 空正文 + paused=true (分句交付里, 段结束但这一包没带新文字) 是合法的:
-        # 它回答的是机制问题 —— 听侧判了这一段的停, 没有新的字. 正文就空着.
-        # 不往正文里填任何替代文字: 那句替代会把机制语义翻译成一句"事实", 而正文
-        # 只该放他真正说过的话. 怎么读一个空正文的包, 写在 listener 的 instruction 里.
+        # Empty body + paused=true is legal (clause delivery: the stretch closed but
+        # this packet carries no new text). It answers a mechanism question — the
+        # listener decided the stretch stopped, with no new words; the body stays
+        # empty. Do not fill it with substitute text: that would translate mechanism
+        # semantics into a "fact", and the body must hold only what was actually said.
+        # How to read an empty-body packet belongs in the listener instruction.
         return [self._listen_message(data, source, low_conf, signal.created_at, paused, db)]
 
     def _signal_text(self, signal: Signal) -> str:
@@ -447,7 +453,7 @@ class ListenerNucleus(Nucleus):
         message.meta.created = created_at
         return message.with_content(data)
 
-    # ── 反身 channel (最小平面) ──
+    # ── Reflexive channel (minimal surface) ──
 
     def _build_channel(self) -> Channel:
         from ghoshell_moss.core.blueprint.states_channel import new_prime_channel
@@ -490,8 +496,7 @@ class ListenerNucleusMeta(NucleusMeta):
         return ListenerNucleus.NAME
 
     def description(self) -> str:
-        return ("listener nucleus that maps onset (complete=False) and deliver "
-                "(complete=True) packets into impulses")
+        return "hearing — speech packets, delivered as <listen>"
 
     def signals(self) -> Iterable[type[SignalMeta]]:
         yield ListenerSignal
