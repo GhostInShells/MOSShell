@@ -9,6 +9,7 @@ import pytest
 from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import (
     CommitNoteEvent,
     StartupEvent,
+    StepEndEvent,
     ThinkingStartEvent,
 )
 from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle_bus import EgoLifecycleBus
@@ -129,3 +130,23 @@ async def test_fire_after_close_is_dropped():
     bus.fire_commit_note(CommitNoteEvent(commit_id="1-2", note="n"))
     await asyncio.sleep(0)
     assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_step_end_is_non_blocking_until_drained():
+    """The session event dispatcher awaits handlers serially — a listener must never stall it."""
+    seen: list[StepEndEvent] = []
+    gate = asyncio.Event()
+
+    async with EgoLifecycleBus() as bus:
+        async def listener(event: StepEndEvent) -> None:
+            await gate.wait()
+            seen.append(event)
+
+        bus.on_step_end(listener)
+        bus.fire_step_end(StepEndEvent(turn=1, step=2, seq=9))
+        assert seen == []
+        gate.set()
+        await bus.wait_all_done(timeout=1.0)
+
+    assert seen == [StepEndEvent(turn=1, step=2, seq=9)]

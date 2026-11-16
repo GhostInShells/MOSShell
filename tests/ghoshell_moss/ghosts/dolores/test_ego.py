@@ -605,7 +605,13 @@ class TestDoloresEgoCommit:
         return event_from_dict({"type": "turn/end", "seq": turn, "data": {"turn": turn}})
 
     @staticmethod
-    def _set_up(tmp_path: Path, *, force_tokens: int = 0, warn_tokens: int = 50_000):
+    def _step_end(turn: int, step: int, seq: int):
+        from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
+
+        return event_from_dict({"type": "step/end", "seq": seq, "data": {"turn": turn, "step": step}})
+
+    @staticmethod
+    def _set_up(tmp_path: Path, *, force_tokens: int = 0, warn_tokens: int = 50_000, lifecycle=None):
         from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
@@ -627,9 +633,27 @@ class TestDoloresEgoCommit:
                 facade=None,
             ),
             memento_manager=manager,
+            lifecycle=lifecycle,
         )
         ego._ego_session_id = "s1"
         return ego, memento
+
+    @pytest.mark.asyncio
+    async def test_step_end_reaches_the_lifecycle_with_its_log_position(self, tmp_path: Path):
+        """step/end 是 per-step 机制的边: 事件必须带上 turn/step 与日志位置 seq."""
+        from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import StepEndEvent
+        from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle_bus import EgoLifecycleBus
+
+        lifecycle = EgoLifecycleBus()
+        ego, _ = self._set_up(tmp_path, lifecycle=lifecycle)
+        seen: list[StepEndEvent] = []
+
+        async with lifecycle:
+            lifecycle.on_step_end(seen.append)
+            await ego._on_step_end(self._step_end(turn=3, step=7, seq=42))
+            await lifecycle.wait_all_done(timeout=1.0)
+
+        assert seen == [StepEndEvent(turn=3, step=7, seq=42)]
 
     @pytest.mark.asyncio
     async def test_each_turn_commit_span_is_chained(self, tmp_path: Path):

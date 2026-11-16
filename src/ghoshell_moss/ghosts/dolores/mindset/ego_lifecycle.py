@@ -26,6 +26,7 @@ __all__ = [
     "EgoLifecycle",
     "ListenerResult",
     "StartupEvent",
+    "StepEndEvent",
     "ThinkingExitEvent",
     "ThinkingStartEvent",
 ]
@@ -70,6 +71,20 @@ class CommitNoteEvent:
     branch: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class StepEndEvent:
+    """One dsh step has ended: its tool result is in the log, the next step has not begun.
+
+    ``seq`` is the log position of the ``step/end`` event — the anchor a per-step watcher
+    reads the session at. ``step`` is the step's own number inside ``turn``; a ticket issued
+    at step N must not start before step N ends, which is exactly the edge this event marks.
+    """
+
+    turn: int = 0
+    step: int = 0
+    seq: int = 0
+
+
 class EgoLifecycle(ABC):
     """Register lifecycle listeners. The ego fires; this surface only observes.
 
@@ -108,4 +123,14 @@ class EgoLifecycle(ABC):
 
         **Non-blocking phase**: fired when a commit's note becomes ready; listeners
         run as tasks. Exceptions are logged and never propagated to the ego.
+        """
+
+    @abstractmethod
+    def on_step_end(self, callback: Callable[[StepEndEvent], ListenerResult]) -> Discard:
+        """Register a step-end listener.
+
+        **Non-blocking phase**: the dsh session event stream is dispatched serially and
+        awaits each handler, so a slow listener would stall every later event. The bus
+        schedules listeners as tasks; they must not block the dispatch (spawn, do not
+        await model calls). Exceptions are logged and never propagated to the ego.
         """

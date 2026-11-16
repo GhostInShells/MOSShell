@@ -44,6 +44,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     RequestHeader,
     SessionEvent,
     SessionSummary,
+    StepEnd,
     TurnEnd,
     model_from_event,
 )
@@ -58,7 +59,7 @@ from ._ego_memento import (
 )
 from ._prompts import dolores_model_notice
 from .constants import ALIVE_EGO_SESSION, ARCHIVED_EGO_SESSION
-from .mindset.ego_lifecycle import ThinkingExitEvent, ThinkingStartEvent
+from .mindset.ego_lifecycle import StepEndEvent, ThinkingExitEvent, ThinkingStartEvent
 from .mindset.ego_lifecycle_bus import EgoLifecycleBus
 from .nucleus import new_dolores_ego_signal
 
@@ -525,7 +526,19 @@ class DoloresEgo:
         self._session.on_session_event("assistant/message", self._on_assistant_message)
         # 模型身份: request/header 是变更时记录的下一次请求配置 (provider/model/reasoningEffort).
         self._session.on_session_event("request/header", self._on_request_header)
+        # step 边界: step/end 是「本步工具结果已落日志、下一步未开始」的唯一时刻;
+        # beside 等 per-step 机制在这里签发/消费. 分发器串行 await handler, 所以 handler
+        # 只允许 fire(内部起 task), 不允许 await 模型调用.
+        self._session.on_session_event("step/end", self._on_step_end)
         return self._ego_session_id
+
+    def current_session(self) -> DshSession | None:
+        """The live ego session handle — None before create_session and after close.
+
+        Public-internal: beside paths anchor their off-record calls on it. A checkout replaces
+        the underlying session, so callers must ask every time instead of capturing the handle.
+        """
+        return self._session
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit: seal the last unanchored span (封尾), then close the ego session.
@@ -809,6 +822,21 @@ class DoloresEgo:
             self._commit(message=note)
             return
         self._maybe_commit()
+
+    async def _on_step_end(self, event: SessionEvent) -> None:
+        """step/end 回调 — 把边界交给 lifecycle bus, 自己不做任何等待.
+
+        The dispatcher awaits this handler serially; the bus turns it into tasks. ``seq`` is the
+        event's log position, which is what a per-step reader anchors on.
+        """
+        step_end = model_from_event(StepEnd, event)
+        if step_end is None or self._lifecycle is None:
+            return
+        self._lifecycle.fire_step_end(StepEndEvent(
+            turn=step_end.turn,
+            step=step_end.step,
+            seq=event.meta.seq,
+        ))
 
     def _maybe_commit(self) -> None:
         """阈值判定: 到 T 强制 commit (封一段), 到 K 提醒一次 (notice 排队列, 下次 enter 注入)."""

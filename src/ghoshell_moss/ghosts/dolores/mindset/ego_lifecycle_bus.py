@@ -33,6 +33,7 @@ from .ego_lifecycle import (
     EgoLifecycle,
     ListenerResult,
     StartupEvent,
+    StepEndEvent,
     ThinkingExitEvent,
     ThinkingStartEvent,
 )
@@ -51,6 +52,7 @@ class EgoLifecycleBus(EgoLifecycle):
         self._thinking_start: list[Listener] = []
         self._thinking_exit: list[Listener] = []
         self._commit_note: list[Listener] = []
+        self._step_end: list[Listener] = []
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
 
@@ -74,6 +76,11 @@ class EgoLifecycleBus(EgoLifecycle):
     ) -> Discard:
         return self._register(self._commit_note, callback)
 
+    def on_step_end(
+            self, callback: Callable[[StepEndEvent], ListenerResult],
+    ) -> Discard:
+        return self._register(self._step_end, callback)
+
     # ── firing ──────────────────────────────────────────────────────
 
     async def fire_startup(self, event: StartupEvent | None = None) -> None:
@@ -91,6 +98,14 @@ class EgoLifecycleBus(EgoLifecycle):
     def fire_commit_note(self, event: CommitNoteEvent) -> None:
         """Non-blocking phase: schedule every commit-note listener as a task."""
         self._spawn("commit_note", self._commit_note, event)
+
+    def fire_step_end(self, event: StepEndEvent) -> None:
+        """Non-blocking phase: schedule every step-end listener as a task.
+
+        The session event dispatcher awaits handlers serially; this method only schedules,
+        so a listener that starts a model call cannot stall the event stream.
+        """
+        self._spawn("step_end", self._step_end, event)
 
     # ── lifecycle ──────────────────────────────────────────────────
 
