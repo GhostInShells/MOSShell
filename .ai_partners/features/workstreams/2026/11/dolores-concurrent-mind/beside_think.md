@@ -171,6 +171,33 @@ Helper: `mindset/emanation.py::emanation_position`; every beside path uses it.
 - A slow/failed direction does not block the session event stream; the group reports the
   error and the other conclusions.
 
+## Live run — what the first real acceptance cost (D17 00:5x)
+
+Five directions issued in one `think`, read back as `<beside-think>` deliveries. Four of the
+five came back and were substantive; the rest of the run exposed three defects, all of them
+mechanism, none of them the model.
+
+1. **A wrong separator is silent.** The first call separated five directions with newlines;
+   the runtime split on `|`, saw one part, and queued one group. The input was valid, so
+   nothing failed — only `beside think #1 delivered: 1 direction(s)` in the log said so, after
+   the fact. Fixed: `sep` is a parameter (`||` by default), and the receipt carries the parsed
+   count as plain text — `beside-think #2: 4 direction(s), 1 dropped by the cap`. The receipt
+   is read once, to check what the call understood.
+2. **The cap was invisible.** `directions_max` defaulted to 4 and dropped the fifth direction
+   without a word; finding that out meant reading `config.py`. Fixed: the cap is in the
+   channel instruction (read live from the config store on each refresh) and in the receipt.
+3. **The tools menu leaks into an off-record round.** 6 of 10 direction rounds came back as
+   *"asked to run a tool instead of answering: bash"* — including one whose whole text was
+   `只回一个字：好`. The seed asks the emanation not to run tools; an ask is not a switch.
+   Clearing tools (`tools=[]`) is the wrong fix: the tool menu is part of the prefix, so
+   clearing it invalidates the prefix cache — the very thing an off-record round exists to
+   reuse. The failure therefore stays content (`<error i="n">`, what was asked for), and the
+   seed keeps the `NEED-WORLD` fallback as the intended shape of the answer.
+
+What the run did establish: the emanation container reads correctly (the four answers each
+described their own position, not a misdelivery), the group arrives as one delivery, and the
+identity line holds under a question that invites identity confusion.
+
 ## Open
 
 - Whether the delivery nucleus is shared by `memento/chat` and `beside/think` or split per
