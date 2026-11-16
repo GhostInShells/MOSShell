@@ -10,7 +10,7 @@
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
 - **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个一次性 ``asyncio.Task``; task 在
   commit 的 ``end_seq`` 上跑一轮 ``chat_off_record`` (effort off; 保留会话自己的 tools —— 清空
-  tools 会另起一条前缀缓存族, 整段上下文重读), 消息体是 ``<mindfork task="memento.note">``
+  tools 会另起一条前缀缓存族, 整段上下文重读), 消息体是 ``<emanation-reminder task="memento.note">``
   容器: 静态格式规则在 memento channel 的 instruction 里, 应身身份与输出契约在容器里.
   取回 plain text 写进 note. 重试 / 失败 / fallback 全在 task 内: 模型不可用按 ``note_retry_timeout``
   退避重试, 到 deadline 仍失败就留空 + named notice; 内容失败写 terminal error note.
@@ -47,6 +47,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     render_transcript,
 )
 from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA_REMINDER, NIRMANAKAYA
+from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
 from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitNoteEvent
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
@@ -64,7 +65,7 @@ from ghoshell_moss.memento.abcd import (
     Memento,
     Note,
 )
-from ghoshell_moss.message import Message
+from ghoshell_moss.message import Message, format_zone
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection
@@ -122,15 +123,7 @@ def _local(created: datetime) -> datetime:
 
 def stamp_zone(created: datetime) -> str:
     """``+8`` / ``-5`` / ``+5:30`` — the offset of the clock being displayed; empty when naive."""
-    offset = created.utcoffset()
-    if offset is None:
-        return ""
-    total = int(offset.total_seconds())
-    sign = "+" if total >= 0 else "-"
-    total = abs(total)
-    hours, remainder = divmod(total, 3600)
-    minutes = remainder // 60
-    return f"{sign}{hours}" if minutes == 0 else f"{sign}{hours}:{minutes:02d}"
+    return format_zone(created)
 
 
 def stamp_day(created: datetime) -> str:
@@ -644,14 +637,16 @@ class EgoMementoManager:
 
         The static rules live in the memento channel instruction (read from the active
         ``memento.note`` prompt); this message carries what only the request knows: that the
-        reader is an emanation (the same mind, forked for one task), which span to record, and
-        that the reply *is* the note — nothing is executed, so a tool call would be an empty
-        answer. The prose is one task sentence; the budget rides as a container attribute, and
-        the format rules already ride in the prompt — repeating them here is how the container
-        grows.
+        reader is an emanation (the same mind, forked for one task), when it is being asked,
+        which span to record, and that the reply *is* the note — nothing is executed, so a
+        tool call would be an empty answer. The prose is one task sentence; the budget and
+        the position ride as container attributes, and the format rules already ride in the
+        prompt — repeating them here is how the container grows.
         """
         commit = self._find_commit(commit_id)
         seq = commit.seq if commit is not None else 0
+        branch = self._branch()
+        coord = f"{branch.index}-{seq}" if commit is not None else ""
         latest_coord, prior = self._note_context(seq)
         if latest_coord is None:
             connection = "This is the first commit: it covers the whole conversation so far."
@@ -667,7 +662,8 @@ class EgoMementoManager:
         prior_block = "\n".join(prior_lines)
         return (
             f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_NOTE}\""
-            f" budget=\"{self._config.note_body_tokens}\">\n"
+            f" budget=\"{self._config.note_body_tokens}\""
+            f"{emanation_position(coord=coord)}>\n"
             f"<connection>{escape(connection)}</connection>\n"
             f"<prior>{escape(prior_block)}</prior>\n"
             f"You are a concurrent {NIRMANAKAYA} of yourself above: write the note for the commit\n"
@@ -675,13 +671,19 @@ class EgoMementoManager:
             f"</{NIRMANAKAYA_REMINDER}>"
         )
 
-    def _chat_message(self, question: str) -> str:
-        """Build the ``<emanation-reminder>`` container for one chat round: instruction + question."""
+    def _chat_message(self, question: str, coord: str = "") -> str:
+        """Build the ``<emanation-reminder>`` container for one chat round: instruction + question.
+
+        ``at`` and ``coord`` say when this round is asked and which span it is about. The fork's
+        own view ends at the anchor, so without them its clock stops at the last frame it saw —
+        a question asked hours or months later would read as if it had been asked back then.
+        """
         preamble = MEMENTO_CHAT_SEED
         if self._prompt_manager is not None:
             preamble = self._prompt_manager.render(DefaultPrompterKeys.MEMENTO_CHAT)
         return (
-            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_CHAT}\">\n"
+            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_CHAT}\""
+            f"{emanation_position(coord=coord)}>\n"
             f"<instruction>{escape(preamble)}</instruction>\n"
             f"<question>{escape(question)}</question>\n"
             f"</{NIRMANAKAYA_REMINDER}>"
@@ -733,9 +735,10 @@ class EgoMementoManager:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
         坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
-        处境说明与问题装进一个 ``<mindfork task="memento.chat">`` 容器: 同一个 mindfork
-        容器, instruction 是 ``memento.chat`` asset, question 是动态输入. 只发一条 user
-        message; 插件按容器原样说, 不建 session、不落盘.
+        处境说明与问题装进一个 ``<emanation-reminder task="memento.chat">`` 容器: instruction
+        是 ``memento.chat`` asset, question 是动态输入; 容器属性 ``at`` 是被问的那一刻,
+        ``coord`` 是被问的那一段 —— 分身的视界止于锚点, 不给它这两件, 它的「现在」就停在
+        最后一条它见过的帧上. 只发一条 user message; 插件按容器原样说, 不建 session、不落盘.
         """
         view = self._require_commit(coord)
         if view.is_broken:
@@ -747,7 +750,7 @@ class EgoMementoManager:
         try:
             # No `readonly`: see ``_note_call`` — emptying the tools menu costs the prefix cache.
             reply = await session.chat_off_record(
-                [[ContentBlock(type="text", text=self._chat_message(prompt))]],
+                [[ContentBlock(type="text", text=self._chat_message(prompt, view.coord))]],
                 anchor=anchor,
                 llm={"reasoningEffort": _BYPASS_EFFORT},
             )

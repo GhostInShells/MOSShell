@@ -103,6 +103,9 @@ class TestEgoMementoSidecar:
         assert kwargs["max_tokens"] > 0
         text = self._note_text(conn)
         assert '<emanation-reminder task="memento.note"' in text
+        # The request states when it asks and which span it is about; the fork's view cannot.
+        assert re.search(r' at="\d{4}-\d{2}-\d{2} ', text), text
+        assert f'coord="{memento.get_branch("main").get_commit(anchor.seq).coord}"' in text
         assert "concurrent Emanation of yourself above" in text
         assert "Your final output is the note itself" in text
         assert self._state(manager, anchor.id) == "ready"
@@ -652,7 +655,10 @@ class TestMementoReadSurface:
         # one emanation-reminder container: instruction + question ride together.
         assert len(messages) == 1
         container = messages[0][0].text
-        assert '<emanation-reminder task="memento.chat">' in container
+        assert '<emanation-reminder task="memento.chat"' in container
+        # The fork's clock stops at its view's last frame; the request says when it is asked.
+        assert re.search(r' at="\d{4}-\d{2}-\d{2} ', container), container
+        assert f'coord="{self._coord(memento, anchor.seq)}"' in container
         assert "concurrent Emanation of yourself above" in container
         assert "this message is your task" in container
         assert "outside your view" in container
@@ -839,3 +845,31 @@ class TestBranchGround:
 
         assert 'title="the split"' in text
         assert 'ground="1"' in text
+
+
+class TestEmanationPosition:
+    """A beside container states when it is asked and which span it is about.
+
+    The emanation inherits the source view's clock, so the request is the only thing that can
+    say "now is later than your view". And a coordinate is the only address that survives a
+    checkout: a line name points at whatever runs on that line next.
+    """
+
+    def test_renders_the_ask_instant_on_the_body_clock(self):
+        from datetime import datetime
+
+        from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
+
+        text = emanation_position(at=datetime(2026, 11, 17, 0, 4, 53), coord="1-756")
+
+        assert re.fullmatch(r' at="2026-11-17 00:04:53[+-]\d{1,2}(:\d{2})?" coord="1-756"', text), text
+
+    def test_omits_an_empty_coordinate_instead_of_rendering_it_blank(self):
+        from datetime import datetime
+
+        from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
+
+        text = emanation_position(at=datetime(2026, 11, 17, 0, 4, 53))
+
+        assert text.startswith(' at="2026-11-17 00:04:53')
+        assert " coord=" not in text

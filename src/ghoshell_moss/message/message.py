@@ -22,6 +22,7 @@ __all__ = [
     "ContextType",
     "unique_id",
     "format_timestamp",
+    "format_zone",
 ]
 
 # 实现一个消息协议容器. 这个容器经过了几个阶段的改造:
@@ -51,20 +52,30 @@ def unique_id() -> str:
     return default_unique_id_gen()
 
 
+def format_zone(value: datetime) -> str:
+    """``+8`` / ``-5`` / ``+5:30`` — the offset of the clock being displayed; empty when naive.
+
+    One source for the suffix: a bare clock is ambiguous without it, and the shell, the
+    memento stamps and the beside containers must all say it the same way.
+    """
+    offset = value.utcoffset()
+    if offset is None:
+        return ""
+    total = int(offset.total_seconds())
+    sign = '+' if total >= 0 else '-'
+    total = abs(total)
+    hours, remainder = divmod(total, 3600)
+    minutes = remainder // 60
+    return f"{sign}{hours}" if minutes == 0 else f"{sign}{hours}:{minutes:02d}"
+
+
 def format_timestamp(value: datetime) -> str:
     """短时间戳, 形如 ``D19 00:01:17+8``.
 
-    只保留日 (跨天可辨), 年/月由会话的 "today" 概念承担. 无时区信息时省略 tz 后缀.
+    只保留日 (跨天可辨), 年/月由会话的 "today" 概念承担 —— 会话内的帧总是新的, 读者已经
+    知道年月. 跨月跨年的容器不要用它, 用完整日期. 无时区信息时省略 tz 后缀.
     """
-    tz_str = ""
-    if (offset := value.utcoffset()) is not None:
-        total = int(offset.total_seconds())
-        sign = '+' if total >= 0 else '-'
-        total = abs(total)
-        hours, remainder = divmod(total, 3600)
-        minutes = remainder // 60
-        tz_str = f"{sign}{hours}" if minutes == 0 else f"{sign}{hours}:{minutes:02d}"
-    return f"D{value.strftime('%d')} {value.strftime('%H:%M:%S')}{tz_str}"
+    return f"D{value.strftime('%d')} {value.strftime('%H:%M:%S')}{format_zone(value)}"
 
 
 class HasAdditional(Protocol):
