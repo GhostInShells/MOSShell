@@ -5,11 +5,12 @@ description: The first beside slice — ghost.beside.think, per-step issuance, o
 
 # beside think
 
-> **Status:** design settled 2026-11-16; the lifecycle bus is committed (`8203bc51`);
-> the delivery nucleus, the `memento.chat` reroute, and the three-slot delivery fix are
-> implemented; concurrent-chat acceptance passed 5/5 on D17 00:01 (five chats to `1-756`,
-> every answer delivered). The beside channel is not built. This is a construction plan,
-> not a discussion. The workstream's `FEATURE.md` is the index.
+> **Status:** design settled 2026-11-16; the delivery nucleus, the `memento.chat` reroute,
+> the three-slot delivery fix and the beside container's position are committed and accepted
+> (5/5 concurrent chats, D17 00:01). **The beside slice is implemented** (D17 00:2x): the
+> `step/end` lifecycle hook, `EgoBesideMindConfig`, `BesideRuntime`, and the
+> `ghost.beside` factory gate. Not yet exercised on a live shell — acceptance needs a restart.
+> This is a construction record, not a discussion. The workstream's `FEATURE.md` is the index.
 
 ## What it is
 
@@ -137,16 +138,27 @@ Helper: `mindset/emanation.py::emanation_position`; every beside path uses it.
 
 ## Build order
 
-1. Add `on_step_end` to `EgoLifecycle` / `EgoLifecycleBus` (non-blocking; event
-   `turn` / `step` / `seq`); the ego subscribes to `StepEnd` and fires it.
-2. Re-export `StepEnd` from the `ghoshell_moss.deepseek_harness.v0_2_0` seam.
-3. Add the message-preserving FIFO nucleus; route `memento.chat` to it; verify 3/3 and 4/4
-   answers, including a forced failure signal.
-4. Build `BesideRuntime` + `ghost.beside` channel: ticket queue, `on_step_end` registration,
-   `chat_off_record` fan-out, result signal.
-5. Add the `beside.think` prompt asset (ghost-home editable) and the direction/result protocol.
-6. Tests: registration/discard; ticket consumption at step end; concurrent off-record
-   fan-out; signal delivery; channel close cancels.
+1. ~~Add `on_step_end` to `EgoLifecycle` / `EgoLifecycleBus`~~ — `StepEndEvent(turn, step, seq)`,
+   non-blocking, fired by the ego's `step/end` subscription.
+2. ~~Re-export `StepEnd` from the seam~~ — `StepEnd` / `StepStart` are on the v0.2.0 face.
+3. ~~The FIFO delivery nucleus; `memento.chat` routed to it~~ — accepted 5/5.
+4. ~~`BesideRuntime` + `ghost.beside`~~ — ticket queue, `on_step_end` consumption,
+   `chat_off_record` fan-out, one `<beside-think seq>` delivery per group.
+5. ~~The `beside.think` prompt asset~~ — ghost-home editable; the runtime falls back to the
+   module seed when a home has no asset.
+6. ~~Tests~~ — registration/discard, ticket consumption at the edge, fan-out, failure content,
+   cap, no-session, and the factory's three gates.
+
+### Where it lives
+
+- `mindset/ego_lifecycle.py` / `_bus.py`: `on_step_end` + `fire_step_end` (non-blocking task).
+- `mindset/beside/config.py`: `EgoBesideMindConfig` (`enabled` / `directions_max` / `effort` /
+  `max_tokens` / `timeout`), materialized in `<ghost_home>/.dolores/configs`.
+- `mindset/beside/runtime.py`: `BesideRuntime` — tickets, the step edge, the group delivery.
+- `mindset/beside/channel.py`: `EgoBesideChannel.factory` — `IoC → config store → config`;
+  disabled (or no runtime built) returns `None`, so no channel, no listener.
+- `_runtime.py`: builds the runtime after the ego, binds it (and the config store) into the
+  ghost channel for the factory; `channel.py` imports the factory.
 
 ## Acceptance
 
