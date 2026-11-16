@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from ._ego_memento import EgoMementoManager
     from ._meta import DoloresMeta
     from ._startup import StartupDoc
+    from .mindset.ego_lifecycle_bus import EgoLifecycleBus
 
 __all__ = ["Dolores"]
 
@@ -299,6 +300,8 @@ class Dolores(Ghost):
         # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
         self._memento: FsMemento | None = None
         self._memento_manager: EgoMementoManager | None = None
+        # ego lifecycle bus — ghost-owned; modules see only the EgoLifecycle registry in IoC.
+        self._lifecycle: EgoLifecycleBus | None = None
         # memento view cache — rendered async in __aenter__ and before every compact; read
         # synchronously by memories(). It is a snapshot of the trajectory at the moment it is
         # formed, which is exactly what boot memory is.
@@ -659,6 +662,15 @@ class Dolores(Ghost):
             self._ground_set = DefaultGroundSet(root=self._home)
         # render the ground text, cached for synchronous read by memories() (ego create_session consumes it via closure).
         self._ground_text = await self.ground_instruction()
+        # ego lifecycle: the concrete bus is ghost-owned; the IoC surface is the registry only.
+        from .mindset.ego_lifecycle import EgoLifecycle
+        from .mindset.ego_lifecycle_bus import EgoLifecycleBus
+
+        self._lifecycle = await self._exit_stack.enter_async_context(
+            EgoLifecycleBus(logger=self.logger)
+        )
+        if self._container is not None:
+            self._container.set(EgoLifecycle, self._lifecycle)
         if self._matrix is not None:
             await self._exit_stack.enter_async_context(self._dsh())
             # memento: the ego trajectory index at ghost_home/.memento/ego; the branch is the ego line.
@@ -703,6 +715,7 @@ class Dolores(Ghost):
                         config=self._load_config().memento,
                         prompt_manager=prompt_manager,
                         seed_ground=self._home / ".dolores/seeds/branch_ground",
+                        on_note_ready=self._lifecycle.fire_commit_note,
                         logger=self.logger,
                     )
                 )
@@ -717,6 +730,7 @@ class Dolores(Ghost):
                     memories=self.memories,
                     memory_refresh=self.refresh_memory,
                     memento_manager=self._memento_manager,
+                    lifecycle=self._lifecycle,
                     # logger 逐层传下去: ghost → ego → run → 每个 tool 调用. 不传 = ego 掉回兜底的
                     # get_moss_logger(), 整个 ghost 的日志就从当前 node 的语境里漂走了.
                     logger=self.logger,
@@ -750,6 +764,12 @@ class Dolores(Ghost):
         """
         if self._matrix is None:
             return
+        if self._lifecycle is not None:
+            from .mindset.ego_lifecycle import StartupEvent
+
+            await self._lifecycle.fire_startup(
+                StartupEvent(mode=self._matrix.env.mode_name)
+            )
         # The surface is an organ, not a reading of the startup doc: it is announced
         # whether or not a boot doc exists.
         await self._serve_dsh_webview()

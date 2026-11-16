@@ -58,6 +58,8 @@ from ._ego_memento import (
 )
 from ._prompts import dolores_model_notice
 from .constants import ALIVE_EGO_SESSION, ARCHIVED_EGO_SESSION
+from .mindset.ego_lifecycle import ThinkingExitEvent, ThinkingStartEvent
+from .mindset.ego_lifecycle_bus import EgoLifecycleBus
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -298,6 +300,7 @@ class DoloresEgo:
             memories: Callable[[], list[Message]] | None = None,
             memory_refresh: Callable[[str | None], Awaitable[None]] | None = None,
             memento_manager: EgoMementoManager | None = None,
+            lifecycle: EgoLifecycleBus | None = None,
             default_thinking_effort: str = "",
     ) -> None:
         """Construct before the ghost enters its lifecycle; side-effect free (no httpx / session / matrix.processes).
@@ -316,6 +319,7 @@ class DoloresEgo:
             of that cache after boot. Without it a compact would re-deliver the boot snapshot and
             every commit made since boot would vanish from the model's view.
         :param memento_manager: ghost-held memento 旁路服务; 锚点写入与阈值判定都过它. None = 无 memento.
+        :param lifecycle: the ego lifecycle bus; None = no lifecycle listeners (embedded tests).
         :param default_thinking_effort: boot-time thinking depth declaration (from startup doc). Empty =
             declare nothing — the depth stays whatever dsh/UI holds.
         """
@@ -326,6 +330,7 @@ class DoloresEgo:
         self._memories = memories
         self._memory_refresh = memory_refresh
         self._memento_manager = memento_manager
+        self._lifecycle = lifecycle
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
@@ -1205,6 +1210,10 @@ class DoloresEgo:
             self.default_thinking_effort = None
         else:
             effort = ""
+        if self._lifecycle is not None:
+            await self._lifecycle.fire_thinking_start(
+                ThinkingStartEvent(seq=thinking_seq, turn=self._last_turn, effort=effort)
+            )
         # 模型声明与档位同一条路: 一次性, 由下一帧带走. 帧上没有与之竞争的第二来源, 所以任何
         # 一帧 (含 'none' 背景帧) 带上它都是有效的 —— 插件在判定 turn 驱动之前就把它写掉了.
         provider = ""
@@ -1251,6 +1260,7 @@ class DoloresEgo:
         so a stalled plugin degrades instead of hanging the exit. ``thinking_seq`` is the one this
         frame's enter carried — the plugin closes only that enter's gate.
         """
+        ok = True
         try:
             await self._launcher.call(
                 _DOLORES_THINKING_EXIT,
@@ -1261,7 +1271,13 @@ class DoloresEgo:
                 timeout=_EXIT_RPC_TIMEOUT,
             )
         except Exception:
+            ok = False
             self._logger.exception("thinking/exit failed — degraded; state may be stale")
+        finally:
+            if self._lifecycle is not None:
+                self._lifecycle.fire_thinking_exit(
+                    ThinkingExitEvent(seq=thinking_seq, ok=ok)
+                )
 
     def _context_message(self, moment: Moment, moment_id: str) -> Message | None:
         """context slot — as_moment_message excluding percept/hint (echoes/dynamic/executing).

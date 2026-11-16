@@ -31,7 +31,7 @@ import shutil
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, Field
@@ -47,6 +47,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     render_transcript,
 )
 from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA_REMINDER, NIRMANAKAYA
+from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitNoteEvent
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
     PromptManager,
@@ -331,6 +332,7 @@ class EgoMementoManager:
             config: EgoMementoConfig | None = None,
             prompt_manager: PromptManager | None = None,
             seed_ground: Path | None = None,
+            on_note_ready: Callable[[CommitNoteEvent], None] | None = None,
             logger: LoggerItf | None = None,
     ) -> None:
         self._connection = connection
@@ -343,6 +345,7 @@ class EgoMementoManager:
         # ``seed_ground`` is the directory a new line's ground is planted from — a ghost-home
         # asset (§ego-branch-ground). None = no seeding; the render falls back to absence.
         self._seed_ground = Path(seed_ground) if seed_ground is not None else None
+        self._on_note_ready = on_note_ready
         self._grounds = None  # DefaultGroundSet over the owner's branches/, built on first use
         self._unsubscribe = None
         self._logger = logger or get_moss_logger()
@@ -548,6 +551,14 @@ class EgoMementoManager:
             return
         self._branch().note(run.commit_id, message)
         run.state = BypassState.READY
+        if self._on_note_ready is not None:
+            self._on_note_ready(
+                CommitNoteEvent(
+                    commit_id=run.commit_id,
+                    note=message,
+                    branch=self.active_branch,
+                )
+            )
 
     async def _note_reply_with_retry(self, session, run: BypassCommit):
         """One note call, retried while the model is unavailable.
