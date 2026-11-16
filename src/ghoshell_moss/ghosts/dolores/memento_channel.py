@@ -5,7 +5,8 @@
 
 三层暴露, 边界见 ``channel_builder`` 的 tier:
 
-- cold ``instruction``: 自解释 —— 坐标模型、摘要与原文的区别、轨迹的磁盘位置.
+- cold ``instruction``: 机制介绍 —— memento 是什么 (git-like 轨迹控制器)、坐标拓扑、召回
+  路径三段. 不点任何命令名: 控制面由 command 的签名与 docstring 自解释.
 - warm ``notice``: branch 一览, 一条线一行. 每 refresh 重算, 但 shell trajectory 会 diff
   增量重供 —— 没变即零成本; commits_total / latest 本来每次落锚就变, 是温数据.
 - hot: 不占. 刻意自省, 不做每帧轮询.
@@ -20,8 +21,8 @@
 坐标在落地后的 notice 里. 没有锚点后端 (``commit_anchor``) 时**不挂这条命令** —— 挂出来
 却只会答"做不了"的命令, 就是在骗模型.
 
-另有 ``node`` —— 打开某条锚点自己的节点空间 (get-or-create) 并列一层内容. 它不动轨迹,
-只给写者一块地 (纪念品 / 给未来自己的字条), 写内容仍走 ghost 自带的文件工具.
+另有 ``memento_dir`` —— 算出某条锚点自己的目录地址, 不建、不读、不列. 目录内容归写者
+(ghost 自带的文件工具); memento 只遵守 ``MEMENTO.md`` 这个索引约定.
 
 面向模型的文本 (instruction / notice / 命令 docstring 与返回值) 一律英文 —— 与 dolores
 的提示词体系一致; 中文只留给开发者注释.
@@ -30,8 +31,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
@@ -47,61 +48,27 @@ from .nucleus import new_dolores_ego_signal
 __all__ = ["build_memento_channel"]
 
 
-def _instruction_text(
-    manager: EgoMementoManager,
-    storage_root: Path | None,
-    prompt_manager: PromptManager | None,
-) -> str:
-    """自解释 —— 只讲控制面 (分支 / 坐标 / 读路径). memento 概念由系统指令解释, 这里不重复."""
-    lines = [
+def _instruction_text() -> str:
+    """Mechanism, not a command list: what memento is, how places are addressed, how to recall.
+
+    No command names: the interface reflects them, and a hand-written inventory drifts into a
+    lie as the code changes. The notice self-explains the live map; durability under compaction
+    is the shell's promise, not this channel's fact to restate.
+    """
+    return "\n".join([
         "## Memento (control)",
         "",
-        "Reflexive control over your memento trajectory.",
+        "Memento is a git-like trajectory controller. A commit anchors one span of a session: a",
+        "note of what happened, and a ref back to the raw conversation. Anchors outlive the",
+        "session — readable, chat-able, recallable.",
         "",
-        f"- You are on branch `{manager.active_branch}`; the notice lists every branch.",
-        "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
-        "- `view(branch=…, coord=…)` scrolls: the window is the one *before* that coordinate,"
-        " so walking back a line costs one window at a time instead of a re-read.",
-        "- `history(branch=…, from_date=…, until_date=…)` reads a range instead — `from_date` and"
-        " `until_date` are ISO timestamps; a timestamp without an offset is read on your clock"
-        " (the same one the commits are dated with).",
-        _checkout_instruction(),
-        "- A commit may carry a node of its own. When its line shows `node=\"1\"`, that commit"
-        " has a space on disk — `node` opens it and lists what is in there; nothing here"
-        " manages what you put in it.",
-        "- `commit` queues an anchor for the end of this turn; write its note yourself, or leave"
-        " it empty and the background summarizer writes it for you. The coordinate arrives in"
-        " the notice after the anchor lands.",
-        "- `node` opens an anchor's own space on disk (created on first use) and lists what is in"
-        " it — where a souvenir or a note to your future self lives.",
-        "- A line is forked from the current position (`fork`), grows by commits, and is closed by"
-        " `archive` — closing releases the name, never the trajectory. `main` never closes, and"
-        " neither does the line you are living on.",
-    ]
-    if storage_root is not None:
-        lines.append(
-            f"- Durable at `{storage_root}`; compacting your context does not touch it."
-        )
-    lines.extend([
+        "The trajectory forks into branches, and branches carry confluents — references received",
+        "from other lines. Locate a place by its coordinate `{branch}-{seq}`, e.g. `1-27`; an",
+        "anchor may own a directory for the mementos tied to that moment.",
         "",
-        "read returns a span's raw conversation. chat talks with the context of a span — the other",
-        "side is not the commit but the conversation that had happened by the time it was made. chat",
-        "returns a receipt at once and the answer arrives later as its own delivery, so it never",
-        "holds the turn; it is still a real round of inference, so read first when you only need",
-        "to recall.",
+        "Recall by walking the topology: branch → anchor → its content, its conversation, or its",
+        "directory.",
     ])
-    if prompt_manager is not None:
-        try:
-            rules = prompt_manager.get(DefaultPrompterKeys.MEMENTO_NOTE).content
-        except PromptError as exc:
-            rules = f"(commit note rules unavailable: {exc})"
-        lines.extend(["", "## Commit note", "", rules.strip()])
-        # 字数预算归配置, 不写死在提示词资产里 —— 提示词讲格式, 配置讲尺度.
-        lines.append("")
-        lines.append(
-            f"Body budget: {manager.config.note_body_tokens} tokens; the title line is extra."
-        )
-    return "\n".join(lines)
 
 
 def _branches_text(manager: EgoMementoManager) -> str:
@@ -126,21 +93,24 @@ def _branches_text(manager: EgoMementoManager) -> str:
     return "\n".join(lines)
 
 
-def _human_size(size: int) -> str:
-    """字节数 → 人眼尺度. 与 ``core/file_editor/_default.py`` 的 ``_human_size`` 同形 ——
-    模型不该在两处 ls 之间学两种写法."""
-    if size < 1024:
-        return f"{size}B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f}K"
-    return f"{size / (1024 * 1024):.1f}M"
+def _zone(tz: str | None) -> tzinfo:
+    """``tz`` → tzinfo. Empty = the machine's clock; ``+08:00`` = a fixed offset; else IANA."""
+    text = (tz or "").strip()
+    if not text:
+        return datetime.now().astimezone().tzinfo
+    if text[0] in "+-":
+        sign = 1 if text[0] == "+" else -1
+        hours, _, minutes = text[1:].partition(":")
+        return timezone(sign * timedelta(hours=int(hours), minutes=int(minutes or 0)))
+    return ZoneInfo(text)
 
 
-def _parse_date(value: str | None, field: str) -> datetime | None:
+def _parse_date(value: str | None, field: str, tz: str | None = None) -> datetime | None:
     """ISO 时间串 → aware datetime; 空 = None. 解析不了抛 ValueError (命令侧转成文本提示).
 
-    不带时区的时间按**本机时钟**解释 —— 与渲染出来的 ``<day date="2026-11-13+8">`` 同一套口径.
-    按 UTC 解释会让 19:30 的区间查到凌晨, 而且不报错: 差八小时比报错更难发现.
+    不带偏移的时间按 ``tz`` 解释 (IANA 名或 ``+08:00``); ``tz`` 空 = 本机时钟 —— 与渲染出来的
+    ``<day date="2026-11-13+8">`` 同一套口径. 按 UTC 解释会让 19:30 的区间查到凌晨, 而不报错:
+    差八小时比报错更难发现.
     """
     if value is None or not value.strip():
         return None
@@ -151,50 +121,71 @@ def _parse_date(value: str | None, field: str) -> datetime | None:
             f"{field} is not an ISO timestamp: {value!r} "
             "(e.g. 2026-09-01 or 2026-09-01T10:00:00+08:00)"
         ) from None
-    # 无时区 = 说话的人用的时钟, 也就是这台机器的; 带了就尊重它.
-    return parsed if parsed.tzinfo is not None else parsed.astimezone()
+    if parsed.tzinfo is not None:
+        return parsed
+    try:
+        zone = _zone(tz)
+    except Exception:
+        raise ValueError(f"tz is not a timezone: {tz!r} (an IANA name or an offset like `+08:00`)") from None
+    return parsed.replace(tzinfo=zone)
 
 
-# The two anchors a checkout writes. Their description lives here once: the channel instruction
-# and the command's own doc both render from this table, so a wording change cannot rot in one
-# of them while the other keeps the old story.
+# The two anchors a checkout writes. Their description lives here once: the command's own doc
+# renders from this table, so a wording change cannot rot in one place while the other keeps
+# the old story.
 _CHECKOUT_OPS: tuple[tuple[str, str], ...] = (
     ("depart", "written on the line you leave; its target is the line you move to"),
     ("arrive", "written on the line you enter; its target is the source line and coordinate"),
 )
 
 
-def _checkout_ops_text() -> str:
-    return "; ".join(f"`{name}` — {text}" for name, text in _CHECKOUT_OPS)
-
-
-def _checkout_instruction() -> str:
-    return (
-        "- `checkout(name, title, …)` moves you onto another line at the end of this turn —"
-        " the session does not change. Two anchors are written, both titled by you: "
-        f"{_checkout_ops_text()}."
-    )
-
-
 def _checkout_doc() -> str:
     return (
-        "Move the ego onto another line — effective at the end of this turn, never inside it.\n\n"
+        "Move this session onto another line — effective at the end of this turn, never inside it.\n\n"
         "The session does not move: the next turn opens with the destination's memory surface\n"
         "delivered, and every later commit belongs to the new line. Two anchors are written,\n"
-        "and both carry the title you give here:\n"
+        "both titled by you:\n"
         + "\n".join(f"- `{name}` — {text}" for name, text in _CHECKOUT_OPS)
         + "\n\n"
-        ":param name: the branch to move to; it must be active, and not the one you are on.\n"
+        ":param name: the line to move to; it must be active, and not the one you are on.\n"
         ":param title: one line saying why you are leaving; it titles both anchors.\n"
         ":param text__: the note body; both anchors carry it."
     )
+
+
+def _commit_doc(prompt_manager: PromptManager | None, manager: EgoMementoManager) -> str:
+    """The write protocol: when the anchor lands, who authors the note, and the note's guide.
+
+    Rendered from the live ``memento.note`` prompt on every refresh — the guide is not copied
+    into the docstring, so editing the prompt edits the surface, and the bypass summarizer reads
+    the same text.
+    """
+    if prompt_manager is not None:
+        try:
+            guide = prompt_manager.get(DefaultPrompterKeys.MEMENTO_NOTE).content.strip()
+        except PromptError as exc:
+            guide = f"(commit note rules unavailable: {exc})"
+    else:
+        guide = ""
+    parts = [
+        "Queue an anchor — it takes effect at the end of this turn.",
+        "A commit is a request, not a write: the span ends at the last completed turn. Write the\n"
+        "note yourself and you are its author; leave it empty and the background summarizer writes\n"
+        "it. The coordinate arrives in the branch notice after the anchor lands.",
+    ]
+    if guide:
+        parts.append(guide)
+    parts.append(
+        f":param text__: the note — a one-line title, then the body "
+        f"(≤ {manager.config.note_body_tokens} tokens)."
+    )
+    return "\n\n".join(parts)
 
 
 def build_memento_channel(
     manager: EgoMementoManager,
     *,
     prompt_manager: PromptManager | None = None,
-    storage_root: str | Path | None = None,
     commit_anchor: Callable[[str], str] | None = None,
     checkout_hook: Callable[[str, str, str], str] | None = None,
     name: str = "memento",
@@ -204,8 +195,7 @@ def build_memento_channel(
 
     :param manager: ghost 持有的 EgoMementoManager (锚点 / 阈值 / 旁路都归它治理).
     :param prompt_manager: prompt registry; its active ``memento.note`` body becomes the
-        channel's "Commit note" section — the same rules the bypass task uses.
-    :param storage_root: 轨迹的磁盘位置, 进 instruction 自解释. None = 略去那一行.
+        ``commit`` command's note rules — the same rules the bypass task uses.
     :param commit_anchor: 落锚后端 (收 note, 返回一条给模型的回执). None =
         不挂 ``commit`` 命令 —— 写面归 ego (turn span 记账在它手里), 这里只透传.
     :param checkout_hook: 换线后端 (收 name / title / note, 返回回执). None = 不挂 ``checkout``;
@@ -215,17 +205,15 @@ def build_memento_channel(
     """
     if description is None:
         description = (
-            "Memento — your own memory: trajectory branches, coordinates (branch_index-seq), "
-            "branch lifecycle (fork / archive), raw reads (read), conversation with a span's "
-            "context (chat), anchoring a span (commit), and a commit's own space on disk (node)."
+            "Your own trajectory — commits as anchors, lines as directions, and a directory "
+            "per anchor."
         )
-    root = Path(storage_root).resolve() if storage_root is not None else None
 
     chan = new_channel(name=name, description=description)
 
     @chan.build.instruction
     async def _instruction() -> str:
-        return _instruction_text(manager, root, prompt_manager)
+        return _instruction_text()
 
     @chan.build.notice
     async def _branches() -> str:
@@ -237,13 +225,13 @@ def build_memento_channel(
         limit: int | None = None,
         coord: str | None = None,
     ) -> str:
-        """Look at one branch's view — the window at the tip, or one scrolled back by coordinate.
+        """Look at one line's view — the window at the tip, or one scrolled back by coordinate.
 
-        :param branch: branch name. None = the one you are living on.
+        :param branch: branch name. None = the line you are on.
         :param limit: at most how many commits, counted back from the window's end.
         :param coord: cursor — render the trajectory *before* this commit, e.g. `1-700`.
             The commit itself is excluded: it is the place you already stand, not the view.
-            Reading a whole line is `history`; this moves one window at a time.
+            `history` reads a range instead.
         """
         if coord:
             hit = manager.resolve(coord)
@@ -276,7 +264,7 @@ def build_memento_channel(
         carries its own ground. Fork from a coordinate when the direction started earlier than
         now.
 
-        :param name: the new branch's name — unique, no path separators, not the main line's.
+        :param name: the new line's name — unique, no path separators, not `main`'s.
         :param description: one line on what this line is for; it rides the branch list.
         :param coord: fork from this commit (`{index}-{seq}`) instead of the tip; must be on the current line.
         """
@@ -341,16 +329,20 @@ def build_memento_channel(
         branch: str | None = None,
         from_date: str | None = None,
         until_date: str | None = None,
+        tz: str = "",
     ) -> str:
-        """List one branch's commits over a time range — like `git log --oneline`, with detail.
+        """List one line's commits over a time range — like `git log --oneline`, with detail.
 
-        :param branch: branch name. None = the one you are living on.
-        :param from_date: start of the range, inclusive; ISO such as `2026-09-01` or `2026-09-01T10:00:00`.
-        :param until_date: end of the range, inclusive; same format.
+        A timestamp without an offset is read in `tz`; an offset it carries itself wins.
+
+        :param branch: None = the line you are on.
+        :param from_date: start of the range, inclusive; ISO.
+        :param until_date: end of the range, inclusive; ISO.
+        :param tz: an IANA name or an offset like `+08:00`; empty = this machine's clock.
         """
         try:
-            start = _parse_date(from_date, "from_date")
-            end = _parse_date(until_date, "until_date")
+            start = _parse_date(from_date, "from_date", tz)
+            end = _parse_date(until_date, "until_date", tz)
         except ValueError as error:
             return f"[memento] {error}"
         digests = manager.list_commits(branch, from_date=start, until_date=end)
@@ -368,10 +360,9 @@ def build_memento_channel(
     async def chat(coord: str, prompt: str) -> str:
         """Talk one round with the context of a span — the answer arrives later.
 
-        The other side is not the commit but the conversation that had happened by the time it was
-        made, so anything after it is outside its view. This returns a receipt at once and the
-        answer comes back as a delivery of its own (role `mind`), so nothing holds the turn while
-        the other side thinks. It is still a real round of inference: slow and token-hungry.
+        The other side sees only what had happened by the time that commit was made. This returns
+        a receipt at once, and the answer arrives as a delivery of its own, so nothing holds the
+        turn. Slow and token-hungry: read the span first when you only need to recall it.
 
         :param coord: commit coordinate, e.g. `1-27`.
         :param prompt: what you want to ask.
@@ -406,41 +397,28 @@ def build_memento_channel(
 
     if commit_anchor is not None:
 
-        @chan.build.command(name="commit", always_observe=True)
+        @chan.build.command(
+            name="commit",
+            always_observe=True,
+            doc=lambda: _commit_doc(prompt_manager, manager),
+        )
         async def commit(text__: str = "") -> str:
-            """Queue an anchor — it takes effect at the end of this turn.
-
-            A commit is a request, not a write: the span ends at the last completed turn, and the
-            turn you are in is not complete yet. Write the note yourself and you are its author —
-            the background summarizer stands down. Leave it empty and the summarizer writes the
-            note instead. The receipt says the anchor is queued; its coordinate arrives in the
-            branch notice after the anchor lands.
-
-            :param text__: the note — a one-line title, then short prose on what this span was.
-            """
             return commit_anchor(text__)
 
-    @chan.build.command(name="node", always_observe=True)
-    async def node(coord: str) -> str:
-        """Open a commit's own space on disk — and see what is inside it.
+    @chan.build.command(name="memento_dir", always_observe=True)
+    async def memento_dir(coord: str) -> str:
+        """The directory this commit owns — where the mementos of that moment live.
 
-        Created on first use, so the space is there the moment you want it; what you put in it
-        stays (memento only lists it, never rewrites it). This is where you keep what a summary
-        cannot carry — a souvenir, a note to your future self, a file. Write into it with your
-        own file tools; nothing here speaks for the disk.
+        Only the address: the directory is not created for you, and nothing here reads or lists
+        it. Write into it with your own file tools. `MEMENTO.md` is its index — its presence is
+        what marks this anchor as having a memento space.
 
         :param coord: commit coordinate, e.g. `1-27`.
         """
         try:
-            path, entries = await manager.open_node(coord)
+            path = manager.memento_dir(coord)
         except KeyError:
             return f"[memento] no commit at `{coord}`"
-        lines = [f"Directory: {path}"]
-        if not entries:
-            lines.append("(empty)")
-        for name, size, kind in entries:
-            shown = _human_size(size) if size >= 0 else "?"
-            lines.append(f"  {name:<40} {shown:>8}  {kind}")
-        return "\n".join(lines)
+        return path
 
     return chan

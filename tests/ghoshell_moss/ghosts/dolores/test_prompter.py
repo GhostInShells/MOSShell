@@ -174,6 +174,6 @@ def test_provider_resolves_from_the_registered_ghost_home(tmp_path: Path):
     manager = con.force_fetch(PromptManager)
 
     assert manager.spec("memento.note").key == "memento.note"
-    assert "Record the commit" in manager.get(DefaultPrompterKeys.MEMENTO_NOTE).content
+    assert "Record the span" in manager.get(DefaultPrompterKeys.MEMENTO_NOTE).content
     assert (tmp_path / ".dolores" / "configs" / "prompts.yml").is_file()
     assert manager.root == tmp_path / ".dolores" / "prompts"

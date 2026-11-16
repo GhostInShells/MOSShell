@@ -96,7 +96,6 @@ class TestMementoChannel:
         manager, memento = self._manager(tmp_path, connection)
         chan = build_memento_channel(
             manager,
-            storage_root=tmp_path / "owner",
             commit_anchor=self._committer(manager) if with_commit else None,
         )
         return chan, manager, memento
@@ -105,46 +104,29 @@ class TestMementoChannel:
     async def test_read_surface_is_exposed(self, tmp_path: Path):
         chan, _, _ = self._channel(tmp_path)
         async with chan.bootstrap() as runtime:
-            for name in ("view", "read", "history", "chat", "node", "fork", "archive", "branches"):
+            for name in ("view", "read", "history", "chat", "memento_dir", "fork", "archive", "branches"):
                 assert runtime.get_command(name) is not None
 
     @pytest.mark.asyncio
-    async def test_node_is_created_on_first_use(self, tmp_path: Path):
+    async def test_memento_dir_returns_the_address_without_creating_it(self, tmp_path: Path):
+        """An address is not a write: the directory appears only when its writer creates it."""
         chan, manager, memento = self._channel(tmp_path)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         async with chan.bootstrap() as runtime:
-            listing = await runtime.execute_command(
-                "node", args=(self._coord(memento, anchor.seq),)
+            path = await runtime.execute_command(
+                "memento_dir", args=(self._coord(memento, anchor.seq),)
             )
         node_dir = (
             memento.get_branch("main").get_commit(anchor.seq).memento_path(memento.root).parent
         )
-        assert listing.startswith(f"Directory: {node_dir}")
-        assert "MEMENTO.md" in listing
-        assert (node_dir / "MEMENTO.md").exists()
+        assert path == str(node_dir)
+        assert not node_dir.exists()
 
     @pytest.mark.asyncio
-    async def test_node_lists_what_was_left_there_without_touching_it(self, tmp_path: Path):
-        """节点是写者的地盘 —— memento 只列, 不重写."""
-        chan, manager, memento = self._channel(tmp_path)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        coord = self._coord(memento, anchor.seq)
-        node_dir = (
-            memento.get_branch("main").get_commit(anchor.seq).memento_path(memento.root).parent
-        )
-        async with chan.bootstrap() as runtime:
-            await runtime.execute_command("node", args=(coord,))
-            (node_dir / "souvenir.md").write_text("for my future self", encoding="utf-8")
-            listing = await runtime.execute_command("node", args=(coord,))
-        assert "souvenir.md" in listing
-        assert "MEMENTO.md" in listing
-        assert (node_dir / "souvenir.md").read_text(encoding="utf-8") == "for my future self"
-
-    @pytest.mark.asyncio
-    async def test_node_on_unknown_coord_returns_hint(self, tmp_path: Path):
+    async def test_memento_dir_on_unknown_coord_returns_hint(self, tmp_path: Path):
         chan, _, _ = self._channel(tmp_path)
         async with chan.bootstrap() as runtime:
-            result = await runtime.execute_command("node", args=("1-99",))
+            result = await runtime.execute_command("memento_dir", args=("1-99",))
         assert result == "[memento] no commit at `1-99`"
 
     @pytest.mark.asyncio
@@ -214,20 +196,6 @@ class TestMementoChannel:
         async with chan.bootstrap() as runtime:
             result = await runtime.execute_command("read", args=("1-99",))
         assert result == "[memento] no commit at `1-99`"
-
-    @pytest.mark.asyncio
-    async def test_instruction_names_trajectory_and_storage(self, tmp_path: Path):
-        chan, manager, memento = self._channel(tmp_path)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        memento.get_branch("main").note(anchor.id, "note")
-        async with chan.bootstrap() as runtime:
-            await runtime.refresh_metas()
-            meta = runtime.self_meta()
-        assert "memento trajectory" in meta.instruction
-        assert str((tmp_path / "owner").resolve()) in meta.instruction
-        assert "main" in meta.notice
-        assert "#1" in meta.notice
-        assert "commits=1" in meta.notice
 
     @pytest.mark.asyncio
     async def test_notice_counts_only_the_current_branch(self, tmp_path: Path):

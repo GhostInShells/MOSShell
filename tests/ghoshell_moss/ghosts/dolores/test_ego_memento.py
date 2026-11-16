@@ -102,7 +102,7 @@ class TestEgoMementoSidecar:
         assert kwargs["llm"]["reasoningEffort"] == "low"
         assert kwargs["max_tokens"] > 0
         text = self._note_text(conn)
-        assert '<emanation-reminder task="memento.note">' in text
+        assert '<emanation-reminder task="memento.note"' in text
         assert "concurrent Emanation of yourself above" in text
         assert "Your final output is the note itself" in text
         assert self._state(manager, anchor.id) == "ready"
@@ -120,7 +120,7 @@ class TestEgoMementoSidecar:
         manager.schedule_note(anchor.id)
         await manager.drain_bypass()
 
-        assert "1234 tokens" in self._note_text(conn)
+        assert 'budget="1234"' in self._note_text(conn)
 
     @pytest.mark.asyncio
     async def test_note_reports_its_token_usage(self, tmp_path: Path, caplog):
@@ -431,28 +431,30 @@ class TestMementoReadSurface:
 
         assert "&lt;memento&gt;" in text
         assert "&amp;" in text
-        assert "<memento>" in text, "the container itself is still markup"
+        assert "<memento root=" in text, "the container itself is still markup"
 
     @pytest.mark.asyncio
-    async def test_view_message_marks_a_node_without_shipping_its_path(self, tmp_path: Path):
-        """A node's presence is one flag; its path is derivable and would be pure noise.
+    async def test_view_points_at_memento_md_with_a_path_relative_to_the_container_root(self, tmp_path: Path):
+        """Existence is ``MEMENTO.md``; the view gives its path, not a boolean.
 
-        The commit line used to carry the absolute path of ``MEMENTO.md`` — hundreds of
-        characters per anchor, recomputed on every render, for a fact ``node(coord)``
-        answers on demand.
+        The container states the root once, every anchor's path is relative to it — so a
+        commit with a memento reads as a file you can open, and no anchor carries an absolute
+        path.
         """
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
         branch.note(anchor.id, "main-note")
 
-        assert 'node="' not in (await manager.aview_message()).to_content_string()
+        assert 'memento="' not in (await manager.aview_message()).to_content_string()
 
-        node = branch.ensure_memento(anchor.seq)
+        index = branch.ensure_memento(anchor.seq)
         text = (await manager.aview_message()).to_content_string()
 
-        assert 'node="1"' in text
-        assert str(node) not in text
+        assert f'root="{memento.root}"' in text
+        assert f'memento="{index.relative_to(memento.root)}"' in text
+        # The anchor's own line never carries the absolute path.
+        assert str(index) not in text
 
     @pytest.mark.asyncio
     async def test_view_message_groups_the_window_by_day(self, tmp_path: Path):

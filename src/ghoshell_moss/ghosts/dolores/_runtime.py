@@ -496,7 +496,6 @@ class Dolores(Ghost):
                 project_ground=project_ground,
                 memento_manager=self._memento_manager,
                 prompt_manager=prompt_manager,
-                memento_root=self._home / _EGO_MEMENTO_DIR,
                 commit_anchor=self._commit_anchor,
                 checkout_hook=self._checkout_hook,
                 model=self._model_organ(),

@@ -35,7 +35,6 @@ def build_dolores_channel(
     project_ground: str | Path | None = None,
     memento_manager: EgoMementoManager | None = None,
     prompt_manager: PromptManager | None = None,
-    memento_root: str | Path | None = None,
     commit_anchor: Callable[[str], str] | None = None,
     checkout_hook: Callable[[str, str, str], str] | None = None,
     model: ModelOrgan | None = None,
@@ -49,8 +48,7 @@ def build_dolores_channel(
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
     :param prompt_manager: prompt registry — memento 子 channel 读 ``memento.note``
-        的 active 正文作为 "Commit note" 规则.
-    :param memento_root: 轨迹的磁盘位置 (进自解释). None = 不复述路径.
+        的 active 正文作为 ``commit`` 的 note 规则.
     :param commit_anchor: 主动落锚的后端 (memento 子 channel 的写面透传; 收 note, 返回
         一条给模型的回执). None = 不挂 ``commit`` 命令.
     :param checkout_hook: 换线的后端 (收 name / title / note, 返回回执). None = 不挂
@@ -89,7 +87,6 @@ def build_dolores_channel(
             build_memento_channel(
                 memento_manager,
                 prompt_manager=prompt_manager,
-                storage_root=memento_root,
                 commit_anchor=commit_anchor,
                 checkout_hook=checkout_hook,
             )

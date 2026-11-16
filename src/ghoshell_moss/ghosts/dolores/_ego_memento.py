@@ -439,34 +439,15 @@ class EgoMementoManager:
 
     # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
 
-    async def open_node(self, coord: str) -> tuple[str, list[tuple[str, int, str]]]:
-        """打开某条 commit 自己的节点空间 —— get-or-create, 再列一层内容.
+    def memento_dir(self, coord: str) -> str:
+        """某条 commit 自己的目录地址 —— 只算地址, 不建、不读、不列.
 
-        返回 ``(节点目录绝对路径, [(名字, 字节数, 类型)])``; 字节数 ``-1`` = 读不到 (调用侧
-        按 ``?`` 显示, 不当 0). 排列与 ``core/file_editor`` 的 ``ls`` 同形 (目录先、名字序).
-
-        **一碰就建**: 调一次就 ensure 目录 + 种子索引, 于是 ``memento=`` 从此挂在那条锚点上.
-        契约上"节点存在"因此只说明"有人开过这个空间", 不说明里面有东西 —— 别拿存在当内容.
-
-        **磁盘活整体丢进线程**: 一次 CTML 调用不该把 shell 的 event loop 压在几次 stat 上.
-        坐标不存在抛 ``KeyError`` (命令侧转文本提示, 与 read/chat 同一条约定).
+        目录内容归写者; store 只遵守 ``MEMENTO.md`` 这个索引约定 —— 它的存在就是"这条锚点
+        有 memento"的标记, 也是 ``_probe_memento`` 认的东西. 坐标不存在抛 ``KeyError``
+        (命令侧转文本提示, 与 read/chat 同一条约定).
         """
-
-        def _work() -> tuple[str, list[tuple[str, int, str]]]:
-            view = self._require_commit(coord)
-            index = self._branch().ensure_memento(view.seq)  # 已在则绝不覆盖
-            node_dir = index.parent
-            entries: list[tuple[str, int, str]] = []
-            for entry in sorted(node_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-                try:
-                    size = entry.stat().st_size
-                except OSError:
-                    size = -1
-                kind = "dir" if entry.is_dir() else "symlink" if entry.is_symlink() else "file"
-                entries.append((entry.name, size, kind))
-            return str(node_dir), entries
-
-        return await asyncio.to_thread(_work)
+        view = self._require_commit(coord)
+        return str(view.memento_path(self._memento.root).parent)
 
     # ── 旁路 (慢腿: 排任务归 manager, 生命周期同 ghost) ───────────────
 
@@ -654,8 +635,9 @@ class EgoMementoManager:
         ``memento.note`` prompt); this message carries what only the request knows: that the
         reader is an emanation (the same mind, forked for one task), which span to record, and
         that the reply *is* the note — nothing is executed, so a tool call would be an empty
-        answer. The prose is deliberately one task sentence plus the budget; the format rules
-        already ride in the prompt, and repeating them here is how the container grows.
+        answer. The prose is one task sentence; the budget rides as a container attribute, and
+        the format rules already ride in the prompt — repeating them here is how the container
+        grows.
         """
         commit = self._find_commit(commit_id)
         seq = commit.seq if commit is not None else 0
@@ -673,12 +655,12 @@ class EgoMementoManager:
                 prior_lines.append(f"- {coord}: {message}")
         prior_block = "\n".join(prior_lines)
         return (
-            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_NOTE}\">\n"
+            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_NOTE}\""
+            f" budget=\"{self._config.note_body_tokens}\">\n"
             f"<connection>{escape(connection)}</connection>\n"
             f"<prior>{escape(prior_block)}</prior>\n"
             f"You are a concurrent {NIRMANAKAYA} of yourself above: write the note for the commit\n"
-            "that ends this span. Your final output is the note itself; do not call tools. "
-            f"Body budget: {self._config.note_body_tokens} tokens; the title line is extra.\n"
+            "that ends this span. Your final output is the note itself; do not call tools.\n"
             f"</{NIRMANAKAYA_REMINDER}>"
         )
 
@@ -1124,7 +1106,11 @@ class EgoMementoManager:
         The container nests the line's own field first: ``<memento><branch><ground/>…``.
         Async only because the ground is (exec pins); everything else here is a cached read.
         """
-        container = Message.new(tag="memento")
+        container = Message.new(
+            tag="memento",
+            # 容器讲一次根; 里面所有 memento 路径都相对它 —— 不再让每一条锚点背绝对路径.
+            attributes={"root": str(self._memento.root)},
+        )
         branch = Message.new(
             tag="branch",
             attributes={
@@ -1195,7 +1181,7 @@ class EgoMementoManager:
         history = view.history
         assert history is not None  # the caller guards
         body = "\n".join(
-            f"· {cv.coord}  {escape(cv.title)}" + ("  [node]" if cv.memento is not None else "")
+            f"· {cv.coord}  {escape(cv.title)}"
             for cv in history.titles
         )
         return Message.new(
@@ -1208,7 +1194,8 @@ class EgoMementoManager:
                 "first": history.first,
                 "last": history.last,
                 "titles": str(len(history.titles)),
-                "nodes": str(history.nodes),
+                # 折叠段只报"有多少条锚点带 memento"; 具体是哪条, view 到 detail 窗口就有路径.
+                "mementos": str(history.nodes),
                 # 折叠段原先完全没有时间 —— "这段记忆有多老"无处可查.
                 "since": stamp_day(history.since) if history.since is not None else "",
                 "until": stamp_day(history.until) if history.until is not None else "",
@@ -1220,8 +1207,8 @@ class EgoMementoManager:
         if cv.is_broken:
             attributes["error"] = "1"
         if cv.memento is not None:
-            # 有没有自己的空间就够了; 路径是可算的, 用它去 ``node`` 取.
-            attributes["node"] = "1"
+            # 存在 = 这个文件在. 给出它在容器根下的相对路径, 模型直接去看, 不用再问一次.
+            attributes["memento"] = str(cv.memento_path(self._memento.root).relative_to(self._memento.root))
         container = Message.new(tag="commit", attributes=attributes)
         relations = self._render_relations(cv)
         if relations:

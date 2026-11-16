@@ -11,21 +11,17 @@ __all__ = ["MEMENTO_CHAT_SEED", "MEMENTO_NOTE_SEED"]
 
 
 MEMENTO_NOTE_SEED = """\
-Record the commit that ends the span above. The note is the only trace future-you will have of
-this span; write it to be read and grepped, not performed.
+Record the span this note closes. The note is the only trace future-you will have of it;
+write it to be read and grepped, not performed.
 
-Format: one-line title (<= 20 words), then a body within the budget stated below. Write only as
-much as the span's substance needs; a complete record is usually shorter, not longer.
+Format: a one-line title, then the body — only as long as the span's substance needs.
 
-- Process (<= half the body): who was involved, what happened, in short prose — no play-by-play.
-- Thoughts: one short paragraph — what you now think, or want to remember.
-- Facts: the new, key facts this span produced, each with how to get it again (file path,
-  command, tool call, ID). This is the most valuable part.
-- Effects: the key side effects of what you did — files changed, processes started, configs
-  written, state changed.
+- Process (at most half the body): who was involved, what happened, in short prose.
+- Thoughts: what you now think, or want to remember.
+- Facts: the new, key facts, each with how to get it again (path, command, tool, ID).
+- Effects: what changed — files, processes, configs, state.
 
-Use searchable names (paths, commands, tool names, IDs), not pronouns. Do not restate
-persistent identity or ground; record only what changed.
+Use searchable names, not pronouns. Do not restate persistent identity or ground.
 """
 
 
