@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from ._ego_memento import EgoMementoManager
     from ._meta import DoloresMeta
     from ._startup import StartupDoc
+    from .mindset.beside.runtime import BesideRuntime
     from .mindset.ego_lifecycle_bus import EgoLifecycleBus
 
 __all__ = ["Dolores"]
@@ -302,6 +303,9 @@ class Dolores(Ghost):
         self._memento_manager: EgoMementoManager | None = None
         # ego lifecycle bus — ghost-owned; modules see only the EgoLifecycle registry in IoC.
         self._lifecycle: EgoLifecycleBus | None = None
+        # beside: the first parallel-thought organ. Built only when config enables it; the
+        # channel factory reads the same config and mounts nothing when it is absent.
+        self._beside_runtime: BesideRuntime | None = None
         # memento view cache — rendered async in __aenter__ and before every compact; read
         # synchronously by memories(). It is a snapshot of the trajectory at the moment it is
         # formed, which is exactly what boot memory is.
@@ -503,6 +507,18 @@ class Dolores(Ghost):
                 checkout_hook=self._checkout_hook,
                 model=self._model_organ(),
             )
+            # Bind what the beside factory resolves from IoC. The factory sees the channel's
+            # container, not this one; binding here keeps the dependency explicit instead of
+            # relying on parent-scope lookup that a raw container would not provide.
+            if self._beside_runtime is not None:
+                from .configs import DoloresConfigStore
+                from .mindset.beside import BesideRuntime
+
+                self._channel.build.with_binding(BesideRuntime, self._beside_runtime)
+                if self._container is not None:
+                    self._channel.build.with_binding(
+                        DoloresConfigStore, self._container.force_fetch(DoloresConfigStore)
+                    )
         return self._channel
 
     def memories(self) -> list[Message]:
@@ -742,6 +758,28 @@ class Dolores(Ghost):
             )
             # bind the self-wake signal outlet to the MOSS session — matrix.session.add_signal routes to mindflow.
             self._ego.bind_signal_broadcast(self._matrix.session.add_signal)
+            # beside: built here because it needs three things that exist only now — the live ego
+            # session (a checkout replaces it, so it is asked each time), the lifecycle bus, and the
+            # config store. The ghost channel only mounts it when the same config says enabled.
+            if self._container is not None:
+                from .configs import DoloresConfigStore
+                from .mindset.beside import BesideRuntime, EgoBesideMindConfig
+                from .mindset.prompter import PromptManager
+
+                store = self._container.force_fetch(DoloresConfigStore)
+                _config = store.get_or_create(EgoBesideMindConfig())
+                if _config.enabled:
+                    self._beside_runtime = await self._exit_stack.enter_async_context(
+                        BesideRuntime(
+                            lifecycle=self._lifecycle,
+                            session_source=self._ego.current_session,
+                            send_signal=self._matrix.session.add_signal,
+                            config_source=lambda: store.get_or_create(EgoBesideMindConfig()),
+                            prompt_manager=self._container.force_fetch(PromptManager),
+                            logger=self.logger,
+                        )
+                    )
+                    self._container.set(BesideRuntime, self._beside_runtime)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

@@ -91,6 +91,11 @@ def build_dolores_channel(
                 checkout_hook=checkout_hook,
             )
         )
+    # beside — mounted by its factory, not here: the factory reads the ghost's config store and
+    # returns None when the organ is disabled or no runtime was built for this boot.
+    from .mindset.beside import EgoBesideChannel
+
+    chan.import_channels(EgoBesideChannel.factory)
     if model is not None:
         chan.import_channels(new_model_channel(model))
 
