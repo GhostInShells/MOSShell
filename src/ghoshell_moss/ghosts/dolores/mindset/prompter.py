@@ -28,7 +28,11 @@ from ghoshell_moss.contracts import ConfigType
 from ghoshell_moss.core.blueprint.ghost import GhostHome
 from ghoshell_moss.ghosts.dolores.configs import DoloresConfigStore
 from ghoshell_moss.ghosts.dolores.constants import DOLORES_PROMPTS_DIRECTORY
-from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED, MEMENTO_NOTE_SEED
+from ghoshell_moss.ghosts.dolores.mindset.seeds import (
+    BESIDE_THINK_SEED,
+    MEMENTO_CHAT_SEED,
+    MEMENTO_NOTE_SEED,
+)
 
 __all__ = [
     "DefaultPrompterKeys",
@@ -76,6 +80,7 @@ class DefaultPrompterKeys:
 
     MEMENTO_NOTE = "memento.note"
     MEMENTO_CHAT = "memento.chat"
+    BESIDE_THINK = "beside.think"
 
 
 def _validate_key(key: str) -> str:
@@ -401,6 +406,12 @@ def default_specs() -> list[PromptSpec]:
             description="Talk one round with a commit's context.",
             slots={},
             seed=MEMENTO_CHAT_SEED,
+        ),
+        PromptSpec(
+            key=DefaultPrompterKeys.BESIDE_THINK,
+            description="Think one direction through, off-record, beside the main path.",
+            slots={},
+            seed=BESIDE_THINK_SEED,
         ),
     ]
 

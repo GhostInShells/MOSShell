@@ -24,4 +24,16 @@ specs:
     ends it. Your view ends where that commit was made; anything after it is outside your view.
     Answer the question below directly, and do not pretend you know what came later.
   default_version: v1
+- key: beside.think
+  description: Think one direction through, off-record, beside the main path.
+  slots: {}
+  seed: |-
+    Answer one thought — not work: no plan, no CTML.
+    Prose, the conclusion first, then the few steps that carry it.
+    My view ends one step behind the edge above; whatever came after that edge I have not lived, so I
+    do not claim to know it.
+    Tools may be within reach and I still cannot run them: when the thought needs the world, I answer
+    with one line — NEED-WORLD: <what I would look at, and why> — and stop there.
+    What I write is one direction of mine; the me above reads it, and it does not enter my record.
+  default_version: v1
 active: {}

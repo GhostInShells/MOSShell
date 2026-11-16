@@ -1,0 +1,6 @@
+# dump from `ghoshell_moss.ghosts.dolores.mindset.beside.config:EgoBesideMindConfig` 
+enabled: true
+directions_max: 4
+effort: max
+max_tokens: 0
+timeout: 120.0
