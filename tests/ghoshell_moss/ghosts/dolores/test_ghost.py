@@ -143,18 +143,6 @@ class TestDoloresMemories:
 
 class TestBuildChannel:
     @pytest.mark.asyncio
-    async def test_mounts_frame_channel_when_frame_root_given(self, tmp_path: Path):
-        from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
-
-        frame_root = tmp_path / "frames"
-        frame_root.mkdir()
-        chan = build_dolores_channel(frame_root=frame_root)
-        async with chan.bootstrap() as runtime:
-            await runtime.refresh_metas()
-            names = {m.name for m in runtime.metas().values()}
-            assert "frame" in names
-
-    @pytest.mark.asyncio
     async def test_ghost_home_ground_is_not_an_organ(self, tmp_path: Path):
         """认知场不是器官: ghost home 的场渲染进 instruction, 不挂 channel (ground 重做 D12)."""
         from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
@@ -164,7 +152,6 @@ class TestBuildChannel:
             await runtime.refresh_metas()
             names = {m.name for m in runtime.metas().values()}
             assert "ground" not in names
-            assert "frame" not in names
 
     @pytest.mark.asyncio
     async def test_model_organ_mounts_and_its_identity_rides_the_ghost_notice(self, tmp_path: Path):
@@ -239,22 +226,6 @@ class TestBuildChannel:
         assert "deepseek-flash" in text
         assert "off/max" in text
         assert "default off" in text
-
-    @pytest.mark.asyncio
-    async def test_init_frame_lands_in_notice(self, tmp_path: Path):
-        from ghoshell_moss.channels.frame_channel import Frame
-
-        from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
-
-        frame_root = tmp_path / "frames"
-        frame_root.mkdir()
-        seed = Frame(label="orient", questions=["Where am I?"])
-        chan = build_dolores_channel(frame_root=frame_root, init_frame=seed
-        )
-        async with chan.bootstrap() as runtime:
-            await runtime.refresh_metas()
-            frame_meta = next(m for m in runtime.metas().values() if m.name == "frame")
-        assert "Where am I?" in frame_meta.named_notices["orient"]
 
 
 class TestDoloresMomentPayload:

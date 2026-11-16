@@ -5,8 +5,8 @@ home), 把子 channel 挂成静态子节点. 由 ``Ghost.channel()`` 返回, run
 名注册, CTML 路径即 ``ghost.*``.
 
 子 channel 都是 ghost 自己的器官 —— ``ghost.memento`` 是它的记忆, ``ghost.model`` 是它
-的大脑, ``ghost.frame`` 是它的自我模型. **认知场不在器官之列**: ghost home 的场内容由
-``_runtime`` 渲染进 instruction, 直接作为认知本身 (见 ghost-ground-governance FEATURE).
+的大脑. **认知场不在器官之列**: ghost home 的场内容由 ``_runtime`` 渲染进 instruction,
+直接作为认知本身 (见 ghost-ground-governance FEATURE).
 
 Example:
     from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
@@ -19,7 +19,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from ghoshell_moss.channels.frame_channel import Frame, new_frame_channel
 from ghoshell_moss.channels.ground_channel import new_ground_channel
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 
@@ -39,8 +38,6 @@ def build_dolores_channel(
     memento_root: str | Path | None = None,
     commit_anchor: Callable[[str], str] | None = None,
     checkout_hook: Callable[[str, str, str], str] | None = None,
-    frame_root: str | Path | None = None,
-    init_frame: Frame | None = None,
     model: ModelOrgan | None = None,
     name: str = "ghost",
     description: str | None = None,
@@ -58,10 +55,6 @@ def build_dolores_channel(
         一条给模型的回执). None = 不挂 ``commit`` 命令.
     :param checkout_hook: 换线的后端 (收 name / title / note, 返回回执). None = 不挂
         ``checkout`` 命令 —— 转场归 ego, channel 只做校验与排队.
-    :param frame_root: 思维框架 (frame) 的发现根目录, 边界 = project home. None = 不挂
-        frame 器官.
-    :param init_frame: 开机注入的首帧 (来自 startup doc). None = frame channel 空启动,
-        由模型自己 load / define. 需要 frame_root 一起提供才生效.
     :param name: channel 名 (runtime 以 ``ghost`` 为键注册, 同名保持一致).
     :param description: 覆盖默认描述.
     """
@@ -74,9 +67,8 @@ def build_dolores_channel(
     async def _instruction() -> str:
         return (
             "## Ghost (reflexive)\n"
-            "Your own control surface: the sub-channels are your organs, not external tools. "
-            "Their state refreshes with your cognitive field; command signatures are reflected, "
-            "not restated here."
+            "Your own control surface — the sub-channels are your organs, not external tools. "
+            "Their state refreshes with your cognitive field."
         )
 
     if project_ground is not None:
@@ -100,18 +92,6 @@ def build_dolores_channel(
                 storage_root=memento_root,
                 commit_anchor=commit_anchor,
                 checkout_hook=checkout_hook,
-            )
-        )
-    if frame_root is not None:
-        chan.import_channels(
-            new_frame_channel(
-                root=frame_root,
-                init_frame=init_frame,
-                name="frame",
-                description=(
-                    "Your thinking frame — a question set you resolve from context "
-                    "to hold a stable self-model across context loss."
-                ),
             )
         )
     if model is not None:

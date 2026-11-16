@@ -420,15 +420,6 @@ class Dolores(Ghost):
         # disagrees with what `moss ground render` reports for the same field.
         return await self._ground_set.render()
 
-    def _frame_root(self) -> "Path | None":
-        """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.
-
-        无 matrix (纯测试 / 未入网) 时返回 None, channel() 不挂 frame 器官.
-        """
-        if self._matrix is None:
-            return None
-        return self._matrix.env.project_path / ".ai_partners" / "frames"
-
     def _commit_anchor(self, note: str) -> str:
         """memento channel 的落锚后端 —— 排队归 ego (turn span 记账在它手里), 这里只透传.
 
@@ -508,8 +499,6 @@ class Dolores(Ghost):
                 memento_root=self._home / _EGO_MEMENTO_DIR,
                 commit_anchor=self._commit_anchor,
                 checkout_hook=self._checkout_hook,
-                frame_root=self._frame_root(),
-                init_frame=self._startup_doc.frame if self._startup_doc is not None else None,
                 model=self._model_organ(),
             )
         return self._channel
@@ -756,9 +745,9 @@ class Dolores(Ghost):
     async def startup(self) -> None:
         """Lifecycle hook (born) — announce the ghost's own web face, then boot-wake.
 
-        The doc is loaded once in ``__aenter__`` so both ``channel()`` (for ``init_frame``)
-        and ``startup()`` (for command + instruction) read the same snapshot. Boot is
-        silent when the doc is absent or when both command and instruction are empty.
+        The doc is loaded once in ``__aenter__`` so ``channel()`` and ``startup()`` read
+        the same snapshot. Boot is silent when the doc is absent or when both command
+        and instruction are empty.
         """
         if self._matrix is None:
             return

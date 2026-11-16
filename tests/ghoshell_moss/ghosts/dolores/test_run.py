@@ -55,10 +55,10 @@ class TestDoloresRun:
 
         class _Facade:
             def channel_metas(self, available_only=True):
-                return {"ghost.frame": _Meta("the frame"), "ghost.voice": _Meta("the voice")}
+                return {"ghost.memento": _Meta("the memory"), "ghost.voice": _Meta("the voice")}
 
             def get_channel_full_facade(self, path):
-                return f"<{path}>full surface</{path}>" if path == "ghost.frame" else ""
+                return f"<{path}>full surface</{path}>" if path == "ghost.memento" else ""
 
         session = FakeRunSession()
         ego = FakeDispatchEgo(session)
@@ -69,11 +69,11 @@ class TestDoloresRun:
             dsh_tool_call("moss_channel_facade", '{"channel_path": "ghost"}', call_id="call_rec"), {},
         )
         await run._handle_tool_use_event(
-            dsh_tool_call("moss_channel_facade", '{"channel_path": "ghost.frame", "recursive": false}', call_id="call_one"), {},
+            dsh_tool_call("moss_channel_facade", '{"channel_path": "ghost.memento", "recursive": false}', call_id="call_one"), {},
         )
 
         results = {call_id: result for call_id, result, *_ in ego.rpc_calls}
-        assert "ghost.frame" in results["call_rec"]
+        assert "ghost.memento" in results["call_rec"]
         assert "the voice" in results["call_rec"]
         assert "full surface" in results["call_one"]
 

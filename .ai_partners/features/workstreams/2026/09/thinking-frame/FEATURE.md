@@ -4,10 +4,10 @@ depends: []
 description: 问题集即思维框架 — 一组问题从上下文抽取结构化自识，作为跨 compact 的会话自识；靠温层时间戳重签把注意力拉回。
 milestone: null
 priority: P2
-status: completed
-status_note: frame channel + startup init_frame + dolores wiring landed (2026-09-25)
+status: dropped
+status_note: frame channel 整体删除：两度实现与设计偏差，不再迭代（D16）
 title: Thinking Frame
-updated: '2026-09-25'
+updated: '2026-11-16'
 ---
 
 # Thinking Frame — 问题集即思维框架

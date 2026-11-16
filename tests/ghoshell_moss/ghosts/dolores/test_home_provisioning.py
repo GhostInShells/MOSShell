@@ -136,6 +136,7 @@ class TestStubsSync:
         assert doc.frame is None
 
     def test_load_startup_parses_frame_block(self, tmp_path: Path):
+        """The frame block is retained as raw config — the frame channel is dropped."""
         (tmp_path / "startup").mkdir(parents=True)
         (tmp_path / "startup" / "default.startup.yml").write_text(
             "instruction: hi\n"
@@ -151,8 +152,8 @@ class TestStubsSync:
         doc = ghost._load_startup()
         assert doc is not None
         assert doc.frame is not None
-        assert doc.frame.label == "orient"
-        assert doc.frame.questions == ["Where am I?", "Who is here?"]
+        assert doc.frame["label"] == "orient"
+        assert doc.frame["questions"] == ["Where am I?", "Who is here?"]
 
     def test_load_startup_parses_thinking_effort(self, tmp_path: Path):
         """boot 思考档声明可读; 手写未加引号的 off (YAML 1.1 bool) 不能把整份 startup 打掉."""
@@ -184,10 +185,10 @@ class TestStubsSync:
         assert stub.is_file()
         data = yaml.safe_load(stub.read_text(encoding="utf-8"))
         doc = StartupDoc.model_validate(data)
-        # The shipped stub carries a seed orientation frame — regression-catch if we ever
-        # remove it silently.
+        # The shipped stub still carries the frame block — retained as raw config after the
+        # frame channel was dropped.
         assert doc.frame is not None
-        assert doc.frame.questions
+        assert doc.frame.get("questions")
 
     def test_override_on_version_mismatch(self, tmp_path: Path):
         (tmp_path / ".dolores.yml").write_text("version: dev_0\n")

@@ -101,14 +101,10 @@ def _instruction_text() -> str:
     return "\n".join([
         "## Model (your own brain)",
         "",
-        "- `list` is the cold read of dsh's live catalog: providers, models, and the thinking",
-        "  depths each model offers. Call it before you think about switching — never guess an id.",
-        "- The warm notice on the ghost channel says what you are running *now*; it is re-sent only",
-        "  when it changes, so you do not have to ask.",
-        "- `select` declares, it does not switch: the declaration rides the next thinking frame and",
-        "  takes effect at that turn's boundary — one request later.",
-        "- The write path is single. The plugin writes it once into dsh's own selection at the turn",
-        "  boundary; the global default stays the human's, never yours.",
+        "- The `model` notice on the ghost channel says what you are running now — re-sent only",
+        "  when it changes.",
+        "- `select` declares; the declaration takes effect at the next request. The write path is",
+        "  single: the human's global default is never touched.",
         "- Your eyes are a property of the model. A model without image input turns them off",
         "  silently, and the catalog does not report modality — do not trade sight for speed",
         "  without knowing which model you are going to.",
@@ -128,11 +124,7 @@ def new_model_channel(
     :param description: 覆盖默认描述.
     """
     if description is None:
-        description = (
-            "Your own model: `list` reads dsh's live catalog (providers, models, each model's"
-            " thinking depths), `select` declares the model for the next request. What you are"
-            " running now rides the ghost channel's `model` notice."
-        )
+        description = "Your own brain — what you run on, and what you declare to run next."
     chan = new_channel(name=name, description=description)
 
     @chan.build.instruction
@@ -157,11 +149,10 @@ def new_model_channel(
     async def select(provider: str, model: str, effort: str = "") -> str:
         """Declare the model for the next request — effective at the next turn boundary.
 
-        Nothing is written here: the declaration rides the next thinking frame, and the plugin
-        writes it once through dsh's official selection API. That is the only write path, so the
-        human's global default is never touched.
+        Nothing is written here: the declaration rides the next request and is applied by the
+        plugin at the turn boundary.
 
-        :param provider: provider id from `list`, e.g. `deepseek-official`.
+        :param provider: provider id from `list`; never guess one.
         :param model: model id from `list`, e.g. `deepseek-flash`.
         :param effort: depth to travel with the switch (off/low/high/max). Empty = keep the depth
             you are on. A depth the new model does not offer is dsh's problem, not a silent drop.

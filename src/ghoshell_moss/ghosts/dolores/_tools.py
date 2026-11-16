@@ -243,7 +243,7 @@ class ChannelFacadeToolCall(ToolCallParameter):
     changed underneath you or when you are debugging.
     """
 
-    channel_path: str = Field(default="", description="the channel path (a prefix when recursive), e.g. 'ghost.frame'.")
+    channel_path: str = Field(default="", description="the channel path (a prefix when recursive), e.g. 'ghost.memento'.")
     recursive: bool = Field(default=True, description="true lists channels under the path prefix; false reads one channel's full surface.")
 
     @classmethod
