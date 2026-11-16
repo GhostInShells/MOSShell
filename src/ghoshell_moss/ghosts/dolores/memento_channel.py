@@ -9,6 +9,8 @@
   路径三段. 不点任何命令名: 控制面由 command 的签名与 docstring 自解释.
 - warm ``notice``: branch 一览, 一条线一行. 每 refresh 重算, 但 shell trajectory 会 diff
   增量重供 —— 没变即零成本; commits_total / latest 本来每次落锚就变, 是温数据.
+  另有 ``chat`` 有名片段: 当前还在跑的 chat 任务数, 空态显式渲染 ``none`` —— 空槽本身
+  是"机制还在"的证据, 不能与"没有这个片段"混为一谈.
 - hot: 不占. 刻意自省, 不做每帧轮询.
 
 命令以读为主 (``always_observe=True``): 结果是"信息", 模型要基于内容做下一步推理.
@@ -30,20 +32,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
+from ghoshell_moss.core.mindflow.mind_delivery_nucleus import new_mind_delivery_signal
 from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoManager
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
     PromptError,
     PromptManager,
 )
-
-from .nucleus import new_dolores_ego_signal
 
 __all__ = ["build_memento_channel"]
 
@@ -211,6 +214,12 @@ def build_memento_channel(
 
     chan = new_channel(name=name, description=description)
 
+    # Live chat tasks. The receipt returns at once; the answer arrives as a mind delivery.
+    # This set is the only truth of "how many chats are still running" — the named notice
+    # reads it cold, and a cancelled or failed task removes its token in finally, so the
+    # count cannot drift away from the tasks it counts.
+    running_chats: set[object] = set()
+
     @chan.build.instruction
     async def _instruction() -> str:
         return _instruction_text()
@@ -218,6 +227,13 @@ def build_memento_channel(
     @chan.build.notice
     async def _branches() -> str:
         return _branches_text(manager)
+
+    @chan.build.named_notices
+    async def _chat_tasks() -> dict[str, str | None]:
+        # "none" is a business zero, not "unchanged": the fragment is always present, so an
+        # idle channel and a channel whose chat mechanism is broken cannot look the same.
+        count = len(running_chats)
+        return {"chat": "none" if count == 0 else f"{count} running"}
 
     @chan.build.command(name="view", always_observe=True)
     async def view(
@@ -373,24 +389,47 @@ def build_memento_channel(
         if view.is_broken:
             return f"[memento] `{coord}` has no context to talk to; read it instead"
 
+        logger = CommandUtil.logger()
+
         async def _answer() -> Signal:
             # The delivery is the only way back once the receipt is out: a failure must
-            # come back as content, not as an exception nobody will ever read.
-            # It goes out on Dolores' own ego signal — a body-carrying ego signal is a
-            # delivery, and that nucleus buffers it instead of dropping it under load.
+            # come back as content, not as an exception nobody will ever read. It goes
+            # out as a mind delivery (role=mind, mode=next) and is buffered by the
+            # MindDeliveryNucleus until the next turn — a lost arbitration never loses it.
+            token = object()
+            running_chats.add(token)
+            started_at = time.monotonic()
+            outcome = "aborted"
             try:
-                text = await manager.chat(coord, prompt)
-            except Exception as exc:  # noqa: BLE001
-                return new_dolores_ego_signal(
-                    f"[memento] chat with {coord} failed: {exc}",
-                    role='mind',
-                    description=f"chat with {coord} failed",
+                try:
+                    text = await manager.chat(coord, prompt)
+                except asyncio.CancelledError:
+                    # Cancellation is not a failure, but it must not look like success in
+                    # the trail either: the token is removed and the reason is recorded.
+                    outcome = "cancelled"
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    outcome = f"failed: {exc}"
+                    return new_mind_delivery_signal(
+                        f"[memento] chat with {coord} failed: {exc}",
+                        kind="memento.chat",
+                        description=f"chat with {coord} failed",
+                    )
+                outcome = "ok"
+                return new_mind_delivery_signal(
+                    text,
+                    kind="memento.chat",
+                    description=f"answer from {coord}",
                 )
-            return new_dolores_ego_signal(
-                text,
-                role='mind',
-                description=f"answer from {coord}",
-            )
+            finally:
+                # One line per finished task: which span, how it ended, how long it held,
+                # and how many are left. A task cancelled before it delivers still leaves
+                # a trace here, so a silent disappearance is always debuggable.
+                running_chats.discard(token)
+                logger.info(
+                    "[memento] chat with %s finished: %s in %.1fs, %d still running",
+                    coord, outcome, time.monotonic() - started_at, len(running_chats),
+                )
 
         await CommandUtil.create_signal_task(closure=_answer)
         return f"[memento] asking {coord} — the answer will arrive as a signal"

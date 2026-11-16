@@ -185,10 +185,87 @@ class TestMementoChannel:
                 await asyncio.sleep(0.01)
         assert receipt.startswith("[memento] asking")
         assert len(sent) == 1
-        # 投递走 Dolores 自己的 ego signal, 而不是全局的 input signal.
-        assert sent[0].name == "dolores/ego"
-        assert sent[0].role == "mind"
+        # 投递走 mind/delivery; role=mind / mode=next 由 MindDeliveryNucleus 在 impulse 上设置.
+        assert sent[0].name == "mind/delivery"
         assert sent[0].messages[0].to_content_string() == "the answer"
+
+    @pytest.mark.asyncio
+    async def test_chat_notice_says_none_when_no_chat_is_running(self, tmp_path: Path):
+        """The fragment is always present: idle is a readable state, not an absent one."""
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            meta = runtime.self_meta()
+        assert meta.named_notices.get("chat") == "none"
+
+    @pytest.mark.asyncio
+    async def test_chat_notice_counts_running_tasks_and_returns_to_none(self, tmp_path, monkeypatch):
+        """In flight it says how many; when the answer lands the count returns to zero."""
+        from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class _SlowSession(self._Connection._Session):
+            async def chat_off_record(self, messages, *, anchor=None, **kwargs):
+                entered.set()
+                await release.wait()
+                return await super().chat_off_record(messages, anchor=anchor, **kwargs)
+
+        class _SlowConnection(self._Connection):
+            def attach_session(self, session_id, logger=None, *, follow=True):
+                return _SlowSession(self, session_id)
+
+        conn = _SlowConnection({"text": "the answer"})
+        chan, manager, memento = self._channel(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        sent = []
+        monkeypatch.setattr(CommandUtil, "send_signal", lambda signal: sent.append(signal))
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command(
+                "chat", args=(self._coord(memento, anchor.seq), "why?")
+            )
+            await asyncio.wait_for(entered.wait(), 2)
+            await runtime.refresh_metas()
+            running = runtime.self_meta().named_notices.get("chat")
+            release.set()
+            for _ in range(100):
+                if sent:
+                    break
+                await asyncio.sleep(0.01)
+            await runtime.refresh_metas()
+            idle = runtime.self_meta().named_notices.get("chat")
+        assert receipt.startswith("[memento] asking")
+        assert running == "1 running"
+        assert idle == "none"
+        assert len(sent) == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_failure_is_delivered_instead_of_disappearing(self, tmp_path, monkeypatch):
+        """A failed chat comes back as content; the notice returns to none either way."""
+        from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
+
+        conn = self._Connection(RuntimeError("connection lost"))
+        chan, manager, memento = self._channel(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        sent = []
+        monkeypatch.setattr(CommandUtil, "send_signal", lambda signal: sent.append(signal))
+        async with chan.bootstrap() as runtime:
+            receipt = await runtime.execute_command(
+                "chat", args=(self._coord(memento, anchor.seq), "why?")
+            )
+            for _ in range(100):
+                if sent:
+                    break
+                await asyncio.sleep(0.01)
+            await runtime.refresh_metas()
+            idle = runtime.self_meta().named_notices.get("chat")
+        assert receipt.startswith("[memento] asking")
+        assert len(sent) == 1
+        text = sent[0].messages[0].to_content_string()
+        assert "failed" in text
+        assert "connection lost" in text
+        assert idle == "none"
 
     @pytest.mark.asyncio
     async def test_read_on_unknown_coord_returns_hint(self, tmp_path: Path):

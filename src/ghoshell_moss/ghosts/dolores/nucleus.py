@@ -4,11 +4,11 @@ A specialized nucleus: it receives self-wake signals from the Dolores ego's turn
 produces a low-key BACKGROUND challenge impulse with an empty body; when attended, the impulse is
 upgraded to INFO to wake a silent mindflow into a normal challenge round.
 
-The same signal also carries the ego's own asynchronous thoughts back: a signal with a body is a
-**delivery**, not a wake. A delivery takes the buffer path (``ChallengeMode.notify`` at BACKGROUND),
-so it never preempts anything, and a lost arbitration buffers the whole impulse instead of dropping
-it — the moment then routes its messages by ``role``. A mind delivery therefore has exactly one way
-back: it is queued, never gone.
+This nucleus belongs to the **ego lifecycle**. Content deliveries do not belong here: a memento
+chat answer or a beside-think conclusion is a ``mind/delivery`` signal handled by
+:class:`~ghoshell_moss.core.mindflow.mind_delivery_nucleus.MindDeliveryNucleus`, which buffers
+every result and sends them together on the next turn instead of discarding on a lost
+arbitration. The body-carrying branch below is kept only for compatibility with old producers.
 """
 
 from collections.abc import Iterable
@@ -245,8 +245,11 @@ def new_dolores_ego_signal(
     ``kind`` / ``command`` / ``instruction`` extend the signal for the startup boot
     protocol; leaving them empty keeps the ordinary step wake.
 
-    Pass ``messages`` to make it a delivery instead: the ego nucleus then buffers the
-    impulse rather than dropping it, and the moment routes it by ``role``.
+    This helper is the **ego wake** path. Content deliveries (a memento chat answer, a
+    beside-think conclusion) use
+    :func:`~ghoshell_moss.core.mindflow.mind_delivery_nucleus.new_mind_delivery_signal`
+    instead, so they are buffered by ``MindDeliveryNucleus`` rather than the one-shot
+    wake nucleus. Passing messages here is kept only for old producers.
     """
     meta = DoloresEgoSignalMeta(kind=kind, command=command, instruction=instruction)
     return meta.to_signal(
