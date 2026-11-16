@@ -1407,10 +1407,14 @@ def new_default_mindflow(
         logger: logging.Logger | None = None,
         gate: bool = True,
 ) -> BaseMindflow:
-    from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
-    return BaseMindflow(
-        InputSignalNucleus(),
-        *nuclei,
-        logger=logger,
-        gate=gate,
-    )
+    """Assemble an empty default mindflow; nucleus registration belongs to manifests.
+
+    The host discovers nuclei from ``MOSS.manifests.nuclei`` (openbox baseline plus the
+    project's own additions) and injects them with ``with_nucleus`` after construction.
+    """
+    # 禁止在这里注册全局 nucleus.
+    # 开箱可用的 nucleus 一律注册到 ghoshell_moss/matrix/openbox/nuclei.py (项目
+    # manifests 继承它); 项目级 nucleus 走项目自己的 manifests, 用
+    # `moss manifests nuclei` 查注册位置. 这里写死等于绕过 manifest 发现 —— 项目换了
+    # manifest 也看不到它, 且会让"开箱能力"出现第二份真源.
+    return BaseMindflow(*nuclei, logger=logger, gate=gate)

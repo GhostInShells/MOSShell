@@ -1,6 +1,6 @@
 # Openbox nucleus manifest — canonical default mindflow perception nuclei.
 #
-# Shipped baseline: 8 NucleusMeta instances covering the full perception surface.
+# Shipped baseline: 9 NucleusMeta instances covering the full perception surface.
 # Matrix scans via isinstance(obj, NucleusMeta) and registers each factory
 # into the Mindflow runtime.
 #
@@ -15,6 +15,7 @@ from ghoshell_moss.core.mindflow import (
     InputNucleusMeta,
     CellEventNucleusMeta,
     ListenerNucleusMeta,
+    MindDeliveryNucleusMeta,
 )
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     'aside_nucleus',
     'cell_event_nucleus',
     'listener_nucleus',
+    'mind_delivery_nucleus',
 ]
 
 # input — user message (aggregate buffer, turn toward the user)
@@ -50,3 +52,6 @@ aside_nucleus = AsideNucleusMeta()
 cell_event_nucleus = CellEventNucleusMeta()
 
 listener_nucleus = ListenerNucleusMeta()
+
+# mind_delivery — beside-path results buffered until the next turn
+mind_delivery_nucleus = MindDeliveryNucleusMeta()
