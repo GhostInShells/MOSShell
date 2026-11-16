@@ -30,29 +30,31 @@ def build_beside_channel(
 
     @chan.build.instruction
     async def _instruction() -> str:
+        # Only what the interface cannot say: the timing, and the one number that is config,
+        # not signature. Command usage belongs in the command's own docstring.
         return (
             "## Beside (parallel thought)\n"
-            "`think` issues a group of directions that runs one step behind you, off-record, and\n"
-            "returns as one `<beside-think seq=\"k\">` delivery. It does not move you and does not\n"
-            "touch the world."
+            "A group dispatched now is read one step behind: it does not move you and does not\n"
+            f"touch the world. At most {runtime.directions_max()} directions per call."
         )
 
     @chan.build.command(name="think")
-    async def think(text__: str) -> str:
+    async def think(text__: str, sep: str = "||") -> str:
         """Think several directions through in parallel, without holding the conversation.
 
-        Each direction is one independent thought, started at the next step and answered off the
-        record on this session's own context. The receipt is immediate; the conclusions arrive
-        later as one delivery, shaped `<beside-think seq="k"><direction i="1">…</direction>
-        </beside-think>`, with `<error i="n">` where a direction failed.
+        Each direction is one independent round on this session's own context: no tools, nothing
+        runs, nothing enters the record. The conclusions arrive later as one delivery —
+        `<beside-think seq="k">` carrying one `<direction i="n">` per direction, and an
+        `<error i="n">` where a direction failed.
 
         Use it when a decision needs several independent angles and you must keep interacting
         meanwhile. Do not use it to think for yourself now — if you can focus, think directly.
         Do not re-think directions you already issued: they come back as one group.
 
-        :param text__: directions separated by `|`; each is a self-contained instruction.
+        :param text__: the directions, each a self-contained instruction.
+        :param sep: what separates them; `||` unless the text needs something else.
         """
-        return runtime.think(text__)
+        return runtime.think(text__, sep=sep)
 
     return chan
 

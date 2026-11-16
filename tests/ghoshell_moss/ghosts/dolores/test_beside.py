@@ -63,9 +63,10 @@ async def test_think_returns_a_receipt_and_waits_for_the_step_edge():
 
     async with lifecycle:
         async with _runtime(session, signals, lifecycle=lifecycle) as runtime:
-            receipt = runtime.think("one | two")
-            # The receipt is immediate; nothing is asked before the edge.
-            assert receipt == '<beside-think seq="1"/>'
+            receipt = runtime.think("one || two")
+            # The receipt is immediate; nothing is asked before the edge. It is plain text and
+            # it carries the parsed count — the only feedback a wrong separator ever gets.
+            assert receipt == "beside-think #1: 2 direction(s)"
             assert session.calls == []
 
             lifecycle.fire_step_end(StepEndEvent(turn=2, step=3, seq=30))
@@ -90,7 +91,7 @@ async def test_a_failed_direction_rides_the_same_delivery_as_an_error():
 
     async with lifecycle:
         async with _runtime(session, signals, lifecycle=lifecycle) as runtime:
-            runtime.think("only | two")
+            runtime.think("only || two")
             lifecycle.fire_step_end(StepEndEvent(turn=1, step=1, seq=7))
             await _drain(lifecycle, runtime)
 
@@ -109,11 +110,12 @@ async def test_directions_are_capped_by_config():
         async with _runtime(
                 session, signals, config=EgoBesideMindConfig(directions_max=2), lifecycle=lifecycle,
         ) as runtime:
-            runtime.think("a | b | c | d")
+            receipt = runtime.think("a || b || c || d")
             lifecycle.fire_step_end(StepEndEvent(turn=1, step=1, seq=1))
             await _drain(lifecycle, runtime)
 
     assert len(session.calls) == 2
+    assert receipt == "beside-think #1: 2 direction(s), 2 dropped by the cap"
 
 
 def test_think_refuses_an_empty_group():
@@ -121,7 +123,7 @@ def test_think_refuses_an_empty_group():
     runtime = _runtime(_Session(), [], lifecycle=lifecycle)
 
     with pytest.raises(ValueError):
-        runtime.think("  |  | ")
+        runtime.think("  ||  || ")
 
 
 @pytest.mark.asyncio
@@ -249,3 +251,27 @@ class TestBesideFactoryGate:
         channel = self._factory(enabled=True)
         assert channel is not None
         assert channel.name() == "beside"
+
+
+def test_a_custom_separator_is_honoured():
+    """`sep` exists because a direction's own text may contain the default one."""
+    lifecycle = EgoLifecycleBus()
+    runtime = _runtime(_Session(), [], lifecycle=lifecycle)
+
+    receipt = runtime.think("第一条 ## 第二条 ## 第三条", sep="##")
+
+    assert receipt == "beside-think #1: 3 direction(s)"
+
+
+def test_a_wrong_separator_is_visible_in_the_receipt():
+    """The failure this mechanism actually had: five paragraphs, four newlines, one direction.
+
+    Nothing is wrong with the input — it is a valid one-direction call. The receipt is the
+    only place the mistake can show, so the count it carries is the point of its existence.
+    """
+    lifecycle = EgoLifecycleBus()
+    runtime = _runtime(_Session(), [], lifecycle=lifecycle)
+
+    receipt = runtime.think("第一段\n第二段\n第三段")
+
+    assert receipt == "beside-think #1: 1 direction(s)"

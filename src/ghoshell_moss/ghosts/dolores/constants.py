@@ -15,7 +15,7 @@ DOLORES_CONFIGS_DIRECTORY = "configs"
 """Typed runtime configs under the meta directory (YAML, one file per ConfigType)."""
 
 NIRMANAKAYA_REMINDER = "emanation-reminder"
-"""The container a forked emanation receives: which stream it is on, and what capabilities changed."""
+"""The container a forked emanation receives: where it is — the stream, the point, the capabilities."""
 
 ALIVE_EGO_SESSION = "Ψ"
 """The title of the one live ego session — the current breathing span, and only that one.

@@ -118,21 +118,36 @@ class BesideRuntime:
 
     # ── the command side ───────────────────────────────────────────
 
-    def think(self, text: str) -> str:
+    def directions_max(self) -> int:
+        """The cap the next group is truncated at — read live, so a config edit reaches the
+        instruction on its next refresh without a restart."""
+        return self._config_source().directions_max
+
+    def think(self, text: str, sep: str = "||") -> str:
         """Queue one group and return its receipt; the group starts at the next step end.
 
-        Directions are ``|``-separated. Empty segments are dropped; more than the configured cap
-        is truncated (a cap is a cost bound, not a parse error). No direction at all is a caller
-        error — a group with nothing to think about would produce an empty delivery.
+        The receipt is plain text, not a container: it is read once, to check what the call
+        actually parsed — how many directions went in, how many the cap dropped. That check is
+        the only feedback a wrong separator ever gets, so it must say the count.
+
+        Empty segments are dropped; more than the configured cap is truncated (a cap is a cost
+        bound, not a parse error). No direction at all is a caller error — a group with nothing
+        to think about would produce an empty delivery.
         """
-        directions = tuple(part.strip() for part in text.split("|") if part.strip())
-        if not directions:
-            raise ValueError("beside.think needs at least one non-empty direction, separated by `|`")
-        directions = directions[: self._config_source().directions_max]
+        if not sep:
+            raise ValueError("beside.think needs a non-empty separator")
+        parts = tuple(part.strip() for part in text.split(sep) if part.strip())
+        if not parts:
+            raise ValueError(f"beside.think needs at least one non-empty direction, separated by `{sep}`")
+        directions = parts[: self._config_source().directions_max]
         self._seq += 1
         ticket = BesideTicket(seq=self._seq, directions=directions, issued_at=datetime.now().astimezone())
         self._tickets.append(ticket)
-        return f'<beside-think seq="{ticket.seq}"/>'
+        receipt = f"beside-think #{ticket.seq}: {len(directions)} direction(s)"
+        dropped = len(parts) - len(directions)
+        if dropped:
+            receipt += f", {dropped} dropped by the cap"
+        return receipt
 
     # ── the step edge ──────────────────────────────────────────────
 

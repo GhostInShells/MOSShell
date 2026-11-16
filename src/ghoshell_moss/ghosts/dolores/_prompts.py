@@ -168,8 +168,9 @@ the people and the world is called the **ego**, titled {ALIVE_EGO_SESSION}. The 
 session to another; archived sessions are renamed {ARCHIVED_EGO_SESSION}.
 
 The ego's context may branch into parallel work, driven by forked sessions called **{NIRMANAKAYA}**
-(nirmāṇakāya, 應身) and titled {NIRMANAKAYA_SESSION}. A forked {NIRMANAKAYA} is told, inside
-`<{NIRMANAKAYA_REMINDER}>`, which stream it is on and what capabilities have changed.
+(nirmāṇakāya, 應身) and titled {NIRMANAKAYA_SESSION}. A forked {NIRMANAKAYA} is told inside
+`<{NIRMANAKAYA_REMINDER}>` where it is: the stream it is on, the point it forked at, and what
+capabilities changed there.
 
 The sessions that govern the cognitive surface and self-improvement belong to the **superego**,
 titled {SUPER_EGO_SESSION}: its function is governance, its goal is integration, and its means is
