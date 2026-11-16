@@ -22,6 +22,7 @@ args 键 = Remote 方法的参数名: 多数方法叫 ``request``, ``session/lis
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, TypeVar
 
 import httpx
@@ -32,6 +33,7 @@ from pydantic import BaseModel
 __all__ = [
     "DshClient",
     "DshRpcException",
+    "DshTransportException",
 ]
 
 _ValueT = TypeVar("_ValueT", bound=BaseModel)
@@ -46,13 +48,42 @@ class DshRpcException(Exception):
         super().__init__(f"dsh rpc {method} failed [{error['code']}]: {error['message']}")
 
 
+class DshTransportException(Exception):
+    """The call produced no business answer — transport, HTTP, or envelope failure.
+
+    This is deliberately distinct from :class:`DshRpcException`: that one means the server
+    answered "no"; this one means no answer arrived at all. It carries the method and rpcId
+    so a caller can match the failure to the call that produced it; the original exception
+    stays as ``__cause__``. An RPC never ends in silence — either a value comes back or the
+    caller sees this exception.
+    """
+
+    def __init__(self, method: str, rpc_id: str, cause: BaseException) -> None:
+        self.method = method
+        self.rpc_id = rpc_id
+        self.cause = cause
+        super().__init__(
+            f"dsh rpc {method} (rpcId={rpc_id}) produced no result: "
+            f"{type(cause).__name__}: {cause}"
+        )
+
+
 class DshClient:
     """强类型 unary Remote 动词 facade: 每个方法 = 一个 dsh Remote 动词, 不背业务逻辑."""
 
-    def __init__(self, base_url: str, logger: logging.Logger, *, timeout: float = 10.0) -> None:
+    def __init__(
+            self,
+            base_url: str,
+            logger: logging.Logger,
+            *,
+            timeout: float = 10.0,
+            transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._base_url = base_url
         self._logger = logger
-        self._http_client = httpx.AsyncClient(timeout=timeout)
+        # A transport is an injection point, not a test hook: a deployment may supply its
+        # own stack (proxy, instrumentation). None keeps the default httpx transport.
+        self._http_client = httpx.AsyncClient(timeout=timeout, transport=transport)
         self._rpc_counter = 0
 
     @property
@@ -85,28 +116,53 @@ class DshClient:
         return resp.json()
 
     async def _invoke(self, method: str, args: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-        """信封 + POST + ok/失败分支 —— call / remote 共用的那一半."""
+        """信封 + POST + ok/失败分支 —— call / remote 共用的那一半.
+
+        Every call leaves a perceivable outcome: a value on success, a typed exception on
+        failure. A transport failure is never returned as an empty "maybe" — it becomes
+        :class:`DshTransportException` carrying method + rpcId, and a business failure is
+        :class:`DshRpcException`. Both are logged here, at the layer that knows the call.
+        """
         self._rpc_counter += 1
+        rpc_id = f"rpc-{self._rpc_counter}"
         envelope = {
             "type": "client-request",
-            "rpcId": f"rpc-{self._rpc_counter}",
+            "rpcId": rpc_id,
             "method": method,
             "payload": {"args": args},
         }
-        self._logger.debug("dsh rpc %s (rpcId=%s)", method, envelope["rpcId"])
-        resp = await self._http_client.post(
-            f"{self._base_url}/api/{method}",
-            json=envelope,
-            timeout=timeout if timeout is not None else self._http_client.timeout,
+        started = time.monotonic()
+        try:
+            resp = await self._http_client.post(
+                f"{self._base_url}/api/{method}",
+                json=envelope,
+                timeout=timeout if timeout is not None else self._http_client.timeout,
+            )
+            resp.raise_for_status()
+            result = resp.json()["result"]
+            if not result["ok"]:
+                error = result.get("error")
+                if error is None:
+                    error = {"code": "internal", "message": "no error", "details": {}}
+                raise DshRpcException(method, error)
+            value = result.get("value") or {}
+        except DshRpcException as exc:
+            self._logger.warning(
+                "dsh rpc %s (rpcId=%s) rejected in %.2fs: [%s] %s",
+                method, rpc_id, time.monotonic() - started,
+                exc.error["code"], exc.error["message"],
+            )
+            raise
+        except Exception as exc:
+            self._logger.exception(
+                "dsh rpc %s (rpcId=%s) produced no result in %.2fs",
+                method, rpc_id, time.monotonic() - started,
+            )
+            raise DshTransportException(method, rpc_id, exc) from exc
+        self._logger.info(
+            "dsh rpc %s (rpcId=%s) ok in %.2fs", method, rpc_id, time.monotonic() - started,
         )
-        resp.raise_for_status()
-        result = resp.json()["result"]
-        if not result["ok"]:
-            error = result.get("error")
-            if error is None:
-                error = {"code": "internal", "message": "no error", "details": {}}
-            raise DshRpcException(method, error)
-        return result.get("value") or {}
+        return value
 
     async def call(
         self,
@@ -129,21 +185,48 @@ class DshClient:
         """裸 RPC: POST client-request 信封, 返回 result dict (不校验 value).
 
         供无 value 的动词用 (如 ``$events/result``). ``payload`` 原样作信封 payload.
+        与 ``_invoke`` 同一条结果契约: ``ok:false`` 抛 :class:`DshRpcException`, 传输
+        失败抛 :class:`DshTransportException`, 成功才返回 result —— 错误信封不会被
+        原样交回给一个可能不检查它的调用方.
         """
         self._rpc_counter += 1
+        rpc_id = f"rpc-{self._rpc_counter}"
         envelope = {
             "type": "client-request",
-            "rpcId": f"rpc-{self._rpc_counter}",
+            "rpcId": rpc_id,
             "method": method,
             "payload": payload,
         }
-        self._logger.debug("dsh rpc %s (rpcId=%s)", method, envelope["rpcId"])
-        resp = await self._http_client.post(
-            f"{self._base_url}/api/{method}",
-            json=envelope,
+        started = time.monotonic()
+        try:
+            resp = await self._http_client.post(
+                f"{self._base_url}/api/{method}",
+                json=envelope,
+            )
+            resp.raise_for_status()
+            result = resp.json()["result"]
+            if result.get("ok") is False:
+                error = result.get("error")
+                if error is None:
+                    error = {"code": "internal", "message": "no error", "details": {}}
+                raise DshRpcException(method, error)
+        except DshRpcException as exc:
+            self._logger.warning(
+                "dsh rpc %s (rpcId=%s) rejected in %.2fs: [%s] %s",
+                method, rpc_id, time.monotonic() - started,
+                exc.error["code"], exc.error["message"],
+            )
+            raise
+        except Exception as exc:
+            self._logger.exception(
+                "dsh rpc %s (rpcId=%s) produced no result in %.2fs",
+                method, rpc_id, time.monotonic() - started,
+            )
+            raise DshTransportException(method, rpc_id, exc) from exc
+        self._logger.info(
+            "dsh rpc %s (rpcId=%s) ok in %.2fs", method, rpc_id, time.monotonic() - started,
         )
-        resp.raise_for_status()
-        return resp.json()["result"]
+        return result
 
     async def plugin_call(self, path: str, payload: dict | None = None) -> dict:
         """plugin webServer 面 (非 Remote): 裸 POST ``{base}{path}``, 返回响应 JSON dict.
