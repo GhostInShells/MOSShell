@@ -37,7 +37,7 @@ def make_interfaces(
     if len(commands) == 0:
         return ''
     available_commands = 0
-    blocks = ["```python"]
+    blocks = ["", "```python"]
     for cmd_meta in commands:
         if not cmd_meta.visible:
             # ignore invisible
