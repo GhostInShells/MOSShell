@@ -506,12 +506,14 @@ async function resolveEpoch(ctx: Context, body: ThinkingEnterPayload): Promise<C
 
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
 interface ThinkingEnterPayload {
-  /** moment 拆两条 (python 侧映射): context (inject) + inputs (steer). */
+  /** moment 三槽 (python 侧映射): context (背景) + inputs (默认投递槽) + percepts (role 投递槽). */
   moment?: {
-    /** context — echoes/dynamic/executing 折叠的 <moment> 容器 content blocks (inject). */
+    /** context — echoes/dynamic/executing 折叠的 <moment> 容器 content blocks. */
     context: MomentContentPart[]
-    /** inputs — percepts + hint 的 <inputs> 容器 content blocks (steer, 允许空). */
+    /** inputs — 默认槽投递 + hint 的 <inputs> 容器 content blocks (驱动 turn, 允许空). */
     inputs: MomentContentPart[]
+    /** percepts — 每个 role 一桶的 <percepts><role> 容器 content blocks (允许空). */
+    percepts?: MomentContentPart[]
     moment_id?: string
   }
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
@@ -1105,9 +1107,13 @@ export function apply(ctx: Context) {
             }
           }
         }
-        // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).
+        // moment 三槽 (python 侧映射): context (背景) + inputs (默认投递槽) + percepts
+        // (带 role 的投递槽). 三槽**同等投递**: 槽位只决定模型看到的标签, 不决定这一帧能不能
+        // 送达 —— 少读任何一槽都是静默丢弃 (2026-11-16 实测: initial 帧的 percepts 全丢,
+        // 因为这一路只读了两槽, 而 push 路读三槽).
         const context = await durableMomentContent(ctx, body.moment?.context ?? [])
         const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
+        const percepts = await durableMomentContent(ctx, body.moment?.percepts ?? [])
         // notices (memento commit 提醒等) — 纯文本, 与 moment 同级注入; 只告知不驱动 turn.
         const notices = Array.isArray(body.notices)
           ? body.notices.filter((notice): notice is string => typeof notice === 'string' && notice !== '')
@@ -1116,7 +1122,11 @@ export function apply(ctx: Context) {
         // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
           const epoch = await resolveEpoch(ctx, body)
-          const frame = [...takePendingMemoryFrame(), ...buildMomentFrame(epoch, context, notices)]
+          const frame = [
+            ...takePendingMemoryFrame(),
+            ...buildMomentFrame(epoch, context, notices),
+            ...perceptFrame(percepts),
+          ]
           if (frame.length > 0) {
             pendingMoments.push({ messages: frame })
           }
@@ -1129,7 +1139,11 @@ export function apply(ctx: Context) {
         // 必须先 push 再 openThinking — gate 的 resolve 会同步调度 pre-step 续体为 microtask,
         // 若在 openThinking 后又 await, 续体可能在 push 落地前就 fold pendingMoments (丢帧).
         const epoch = await resolveEpoch(ctx, body)
-        const frame = [...takePendingMemoryFrame(), ...buildMomentFrame(epoch, context, notices)]
+        const frame = [
+          ...takePendingMemoryFrame(),
+          ...buildMomentFrame(epoch, context, notices),
+          ...perceptFrame(percepts),
+        ]
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
         }
@@ -1141,8 +1155,13 @@ export function apply(ctx: Context) {
             content: inputs,
             source: { kind: 'user' },
           }))
-        } else if (body.needsObserve === true) {
-          // observe 续帧 (python 侧 needsObserve): 这一帧是「上一轮的回声要求再看一眼」的自我延续,
+        } else if (percepts.length > 0 || body.needsObserve === true) {
+          // 这一支管两件事, 判据是同一条: 「有东西要看, 但 inputs 槽里没有它」.
+          //
+          // - percepts 有内容: 它已随 context 缓冲进 pendingMoments (上面), 这里只负责把 turn
+          //   叫醒. 不唤醒的话, 一帧只带 percepts 的投递会躺在队列里等下一次真实输入捎带 ——
+          //   2026-11-16 实测, 两条 mind 投递正是这样消失的.
+          // - observe 续帧 (python 侧 needsObserve): 这一帧是「上一轮的回声要求再看一眼」的自我延续,
           // 不是外部输入 — 它往往没有 percepts, 于是 inputs 为空. 但**它必须自己开一轮**:
           // 早先"inputs 为空不起 turn"的规则本意是不为「无 percepts」造占位, 对自我延续不成立 ——
           // 少了这一支, 续帧只能滞留 pendingMoments 等下一次真实输入捎带, 于是 need_observe 亮着
@@ -1743,11 +1762,8 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
     }))
   }
   const perceptBlocks = Array.isArray(percepts) ? await durableMomentContent(ctx, percepts) : []
-  if (perceptBlocks.length > 0) {
-    agent.inject(createUserMessage({
-      content: perceptBlocks,
-      source: { kind: `${name}:percepts` },
-    }))
+  for (const message of perceptFrame(perceptBlocks)) {
+    agent.inject(message)
   }
 }
 
@@ -1780,12 +1796,7 @@ async function queueMomentPayload(ctx: Context, moment: unknown): Promise<void> 
     }))
   }
   const perceptBlocks = Array.isArray(percepts) ? await durableMomentContent(ctx, percepts) : []
-  if (perceptBlocks.length > 0) {
-    messages.push(createUserMessage({
-      content: perceptBlocks,
-      source: { kind: `${name}:percepts` },
-    }))
-  }
+  messages.push(...perceptFrame(perceptBlocks))
   if (messages.length > 0) {
     pendingMoments.push({ messages })
   }
@@ -1847,6 +1858,22 @@ function buildMomentFrame(
     }))
   }
   return messages
+}
+
+/**
+ * percepts 槽 → 消息 — 三条投递路共用这一处.
+ *
+ * 判据: 槽位只换标签, 不换命运. 同一帧的 context / inputs / percepts 里, 任何一个槽有内容,
+ * 就必须有一条对应消息送达; 路与路之间的差别只允许是"投进哪个队列", 不允许是"读不读这个槽".
+ * 2026-11-16 的丢帧就是这条判据被打破: enter 路读两槽、push 路读三槽, 于是同一种投递
+ * (role='mind') 只因仲裁结局不同 (initial vs queued) 就一半能到、一半静默消失.
+ */
+function perceptFrame(percepts: ContentBlock[]): UserMessage[] {
+  if (percepts.length === 0) return []
+  return [createUserMessage({
+    content: percepts,
+    source: { kind: `${name}:percepts` },
+  })]
 }
 
 /** Exit 兜底 — 本交易残余缓冲帧直接投进 inbox (next-step), 由下一次 pre-step 认领, 绝不丢. */

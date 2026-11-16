@@ -294,6 +294,31 @@ class TestDoloresMomentPayload:
         inputs_text = "".join(c["text"] for c in payload["inputs"] if c.get("type") == "text")
         assert "percept" in inputs_text
 
+    def test_moment_payload_carries_the_role_slot_too(self):
+        """role 分类的投递也要出现在载荷里, 而且在它自己的槽 (percepts), 不在 inputs.
+
+        病根与上一条同型, 只是换了一个槽: 槽位由发送方给的 role 决定 (空 → inputs,
+        非空 → percepts[role]), 而一帧走哪条投递路由由仲裁结果决定 (initial → enter,
+        queued → push). 于是任何一条路由只要结构上少读一个槽, 走那个槽的投递就在那一条
+        路上蒸发 —— 2026-11-16 的 mind 投递正是如此: 同一种投递, initial 帧全丢,
+        queued 帧全到.
+        """
+        from ghoshell_moss.core.blueprint.moment import Echoes, Moment
+        from ghoshell_moss.message import Message
+
+        moment = Moment(
+            previous=Echoes(messages=[Message.new().with_content("echo")]),
+            inputs={"test": [Message.new().with_content("said")]},
+            percepts={"mind": {"m-1": [Message.new().with_content("delivery")]}},
+        )
+        payload = self._ego().moment_payload(moment, "0-1")
+        context_text = "".join(c["text"] for c in payload["context"] if c.get("type") == "text")
+        inputs_text = "".join(c["text"] for c in payload["inputs"] if c.get("type") == "text")
+        percepts_text = "".join(c["text"] for c in payload["percepts"] if c.get("type") == "text")
+        assert "echo" in context_text
+        assert "said" in inputs_text and "delivery" not in inputs_text
+        assert "delivery" in percepts_text and "said" not in percepts_text
+
     def test_moment_payload_empty_when_no_content(self):
         from ghoshell_moss.core.blueprint.moment import Moment
 
