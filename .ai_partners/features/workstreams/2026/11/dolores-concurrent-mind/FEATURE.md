@@ -34,10 +34,12 @@ updated: '2026-11-16'
 >   and why jsonl + a cursor is enough to start; **not implemented, not scheduled**),
 >   `checkout.md` (D16: checkout = identity swap at the turn boundary, never a context move —
 >   `depart` / `arrive` anchors, a zero-width arrival so turn spans stay honest, and the ego
->   signal as the surface's only path into the next turn), `beside_think.md` (D16: the first
+>   signal as the surface's only path into the next turn), `beside_think.md` (D16–D17: the first
 >   `beside` slice — `ghost.beside.think`, per-step issuance, the verified dsh `step/end` edge,
->   and the delivery-nucleus bug the concurrent-chat probe exposed; **design settled, not
->   built**).
+>   the delivery-nucleus bug the concurrent-chat probe exposed, and the three defects the first
+>   live run cost; **built, live-exercised**), `explorer.md` (D17: the explorer mechanism — a
+>   one-turn ego fork dispatched by name whose answer is a commit on its own memento branch;
+>   **design settled, not built**).
 > - **Discussion:** `discuss/round1/`, `discuss/round2/`. Do not cite them as decisions.
 > - **Attribution:** `他` = thirdgerb stated it; `我推` = moss's inference, **not ratified** —
 >   attack it; `待定` = known unresolved.

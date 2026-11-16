@@ -31,13 +31,15 @@ issue now, start at the next step, return as a signal. `after` / `ahead` / `main
 ## Command surface
 
 ```
-ghost.beside.think(text__) -> <beside-think seq="k"/>
+ghost.beside.think(text__, sep="||") -> beside-think #k: N direction(s)
 ```
 
-- `text__` is a `|`-separated list of directions; each direction gets one off-record call.
+- `text__` holds the directions, separated by `sep` (`||` by default); each direction gets
+  one off-record call.
 - **No `label`.** The returned `seq` is the group identity; the result carries the same `seq`.
-- The receipt is the container `<beside-think seq="k"/>`; it lands in the command result so
-  the ego's own context carries the identity.
+- The receipt is **plain text** — `beside-think #k: N direction(s)`, plus
+  `, M dropped by the cap` when the cap bit. It carries the parsed count on purpose: a wrong
+  separator is otherwise a silent success (see *Live run*).
 - Result shape:
 
   ```
