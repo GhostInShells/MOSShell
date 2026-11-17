@@ -49,12 +49,46 @@ status: writing
   `DshSessionAnchor(session_id, seq=end_seq, turn=end_turn)` —— turn 回退就是为这种 ref 设计的。
 - `debug.py:131` 用错了 API。修：`DshSessionAnchor.from_ref(ref, at="end")`。
 
-## 验收状态（1-766 的计划）
+## 验收结果（重启后真机，16:56–16:57）
 
-1. 插件重装后工具进 ego 工具表 —— 通过。
-2. `ghost.beside.debug` 存在且唯一 —— 通过。
-3. coord → ref → anchor —— 首跑失败；修复后需重启复验（运行中的进程吃的是旧模块）。
-4. off-record `follow=False`、cacheRead 是否继承 —— 待验。
-5. `resp` 校验通过、返回 JSON —— 待验。
-6. 非 BaseModel 负路径 —— 待验。
-7. 超时/重试路径 —— 待验。
+七项全过：
+
+1. 工具进 ego 工具表 —— `moss_emanation_task_response` 出现在本轮的 function 列表里。
+2. `ghost.beside.debug` 存在且唯一 —— facade 下只有一个 child。
+3. coord → ref → anchor —— `1-769`（turns 4–5，`start_seq`/`end_seq` 全 null）通过；
+   turn-only 修复是真的走通了。
+4. 前缀继承 —— `et-1 attempt=0 in=2679 cache_read=136448 out=2215`；重试那次
+   138,624 → 138,880，工具表稳定的设计意图兑现，不是纸面推论。
+5. 回答形状 —— 一次 tool call，`resp` 过校验，返回 JSON（score 6.0 / 8 条 issues）。
+6. 负路径 —— `json:JSONEncoder` → `error: TypeError: ...`，同批的下一条命令照跑。
+7. 重试与超时 —— 用「不要调用任何工具」的 prompt，两次都答散文 →
+   `EmanationTaskError` 带最后那条 reason；`timeout=0.01` →
+   `DshTransportException: ReadTimeout`（超时在 dsh 传输层，不是 asyncio）。
+
+探针 `/tmp/moss_emanation_probe/ground_friction.py:GroundFriction`，验完已删。
+
+## 异步化（commit cddd771c）
+
+thirdgerb 判它不该是阻塞命令：debug 的代码形状会被真机制继承，所以表面必须是回执 + 投递。
+**不是 `blocking=False`** —— 那只放开 channel 队列，任务仍绑在 scope 上、scope 一关就被
+cancel；这条记成了 kernel issue #141，今天不解决。改成 `memento.chat` 那套：命令立刻回执，
+工作放进 `CommandUtil.create_signal_task`，结果以 `mind/delivery` 信号回来；失败是内容，
+不是没人读的异常；模型引用错了仍在回执里拒绝，不启动任务。
+
+四条新测试（`test_beside_debug.py`）：回执 + 投递、失败作为内容、坏模型拒绝、坏坐标拒绝。
+336 passed。
+
+**运行中的进程仍吃旧模块**，这条表面的真机复验要等下一次重启。
+
+## 异步面真机复验（重启后，19:16）
+
+重启后第一次跑，`coord="1-770"`（上一条 commit，跨进程的 session）：
+
+- 回执 19:16:31，呼叫同一秒返回——命令真的没占 channel。
+- 答案 19:16:44 作为 `mind/delivery` 到达，任务耗时 12.5 秒；日志
+  `[emanation] task at 1-770 ... finished: ok in 12.5s`。
+- 缓存：`in=131270 / cache_read=11136`。跨进程目标的 session 前缀是冷的，
+  跟同会话那次 `cache_read=136448` 对照——"旁路继承前缀"只在同一会话里兑现，
+  跨进程重放继承不到。不是缺陷，是边界。
+- 这一轮期间 dsh 有一次模型调用卡了 10 分钟（thirdgerb 判断是官方 API 侧），
+  与本机制无关，记在这里免得日后误读成回执路径的问题。
