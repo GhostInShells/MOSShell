@@ -108,6 +108,7 @@ def test_pydantic_alias():
         foo: str = Field(default="f", alias="bar")
 
     foo = Foo()
+    Foo.model_json_schema()
     assert 'bar' in foo.model_dump(by_alias=True)
     new_foo = foo.model_validate(foo.model_dump(by_alias=True), by_alias=True)
     assert new_foo.foo == "f"

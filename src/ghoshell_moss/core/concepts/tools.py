@@ -3,7 +3,7 @@ Wrap the MOSS command system as tools for common Agent frameworks, for compatibi
 """
 
 import typing
-from typing import Generic, TypeVar, Callable
+from typing import Any, Generic, TypeVar, Callable
 from typing_extensions import Self
 from pydantic import BaseModel, Field
 from ghoshell_moss.core.concepts.command import CommandMeta, Command, CommandTask, BaseCommandTask
@@ -16,6 +16,62 @@ if typing.TYPE_CHECKING:
     from pydantic_ai import Tool as PydanticTool, ToolReturn
 
 CommandTaskCallback = Callable[[CommandTask], None]
+
+
+def simplify_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline every ``$ref`` and drop presentation noise — a schema a prompt can carry.
+
+    Pydantic renders every nested model and every enum as a ``$ref`` into ``$defs``. That is
+    right for a validator and wrong for a model-facing schema: a reader should not have to
+    resolve references before seeing the shape. This walks the document once, replaces each
+    reference with its target (the ``$ref``'s siblings, e.g. ``default`` or ``description``,
+    merge over it), and removes ``title`` — pydantic writes one on every node and it says
+    nothing the property name does not already say.
+
+    Unions stay as pydantic writes them (``anyOf``): it is the most portable shape for a schema
+    that may also ride in a tool declaration. Everything else is left untouched, so constraints
+    (``pattern`` / ``minimum`` / ``format``) still reach the model.
+
+    :raise ValueError: a ``$ref`` that does not resolve, or a recursive model. A recursive
+        schema cannot be inlined, and a schema with a dangling reference is worse than a loud
+        failure.
+    """
+    definitions = schema.get("$defs") or schema.get("definitions") or {}
+    body = {key: value for key, value in schema.items() if key not in ("$defs", "definitions")}
+    return _inline_schema(body, definitions, ())
+
+
+def model_json_schema_simplified(model: type[BaseModel]) -> dict[str, Any]:
+    """``BaseModel`` → a schema a model can read without resolving references.
+
+    ``by_alias=True`` is pydantic's default and stated here on purpose: the wire name is what a
+    caller must send back, so the schema has to show the alias, never the attribute name.
+    """
+    return simplify_json_schema(model.model_json_schema(by_alias=True))
+
+
+def _inline_schema(node: Any, definitions: dict[str, Any], stack: tuple[str, ...]) -> Any:
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            name = ref.rsplit("/", 1)[-1]
+            if name in stack:
+                raise ValueError(
+                    f"cannot inline a recursive schema: $ref {ref!r} resolves to itself"
+                )
+            target = definitions.get(name)
+            if not isinstance(target, dict):
+                raise ValueError(f"schema $ref {ref!r} does not resolve")
+            merged = {**target, **{key: value for key, value in node.items() if key != "$ref"}}
+            return _inline_schema(merged, definitions, (*stack, name))
+        return {
+            key: _inline_schema(value, definitions, stack)
+            for key, value in node.items()
+            if key != "title"
+        }
+    if isinstance(node, list):
+        return [_inline_schema(item, definitions, stack) for item in node]
+    return node
 
 
 class ToolMeta(BaseModel):
