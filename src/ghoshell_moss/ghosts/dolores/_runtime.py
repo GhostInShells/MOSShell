@@ -641,10 +641,10 @@ class Dolores(Ghost):
         run inside ``BaseMomentsObserver.new_epoch``, which swallows their exceptions — re-reading
         the memory there could silently lose it after the compact already dropped it from surface.
         """
-        moments = self.mindflow().moments
+        observer = self.mindflow().observer
         if memory is not None:
-            moments.with_epoch_recap("memory", lambda: memory)
-        moments.new_epoch([])
+            observer.with_epoch_recap("memory", lambda: memory)
+        observer.new_epoch([])
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()

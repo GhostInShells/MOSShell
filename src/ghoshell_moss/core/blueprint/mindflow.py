@@ -1367,6 +1367,12 @@ class Mindflow(ABC):
         """持有 Moments 轨迹. """
         ...
 
+    @property
+    @abstractmethod
+    def observer(self) -> Observer:
+        """持有 Moments 的唯一观测者. """
+        ...
+
     @abstractmethod
     def clear(self) -> None:
         """

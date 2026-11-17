@@ -16,7 +16,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     ChallengeVerdict, MindflowHook,
     ChallengeMode, Action, Thinking, ActionExitedException
 )
-from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver, Moments, Moment
+from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver, Moments, Moment, Observer
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, Channel
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -331,6 +331,10 @@ class AbsMindflow(Mindflow, ABC):
 
     @property
     def moments(self) -> Moments:
+        return self._moments_observer
+
+    @property
+    def observer(self) -> Observer:
         return self._moments_observer
 
     @staticmethod

@@ -396,7 +396,7 @@ class TestDoloresEpoch:
     def _ghost():
         ghost = _dolores()
         moments = _FakeMoments()
-        ghost._mindflow = SimpleNamespace(moments=moments)
+        ghost._mindflow = SimpleNamespace(moments=moments, observer=moments)
         return ghost, moments
 
     @staticmethod
