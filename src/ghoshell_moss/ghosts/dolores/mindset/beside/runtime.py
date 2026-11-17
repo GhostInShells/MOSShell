@@ -27,10 +27,10 @@ from ghoshell_moss.core.mindflow.mind_delivery_nucleus import new_mind_delivery_
 from ghoshell_moss.deepseek_harness.v0_2_0 import ContentBlock, DshSession, DshSessionAnchor
 from ghoshell_moss.message import Message
 
-from ..ego_lifecycle import Discard, EgoLifecycle, StepEndEvent
-from ..emanation import emanation_position
-from ..prompter import DefaultPrompterKeys, PromptManager
-from ..seeds import BESIDE_SESSION_LINE, BESIDE_THINK_SEED
+from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import Discard, EgoLifecycle, StepEndEvent
+from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
+from ghoshell_moss.ghosts.dolores.mindset.prompter import DefaultPrompterKeys, PromptManager
+from ghoshell_moss.ghosts.dolores.mindset.seeds import BESIDE_SESSION_LINE, BESIDE_THINK_SEED
 from .config import EgoBesideMindConfig
 
 __all__ = ["BesideRuntime", "BesideTicket", "BesideNoAnswer"]

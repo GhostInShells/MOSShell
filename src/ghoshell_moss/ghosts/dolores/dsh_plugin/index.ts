@@ -672,6 +672,24 @@ const egoTools = [
     },
     execute: async (_args, exec) => awaitToolResult('moss_reasoning', String(exec.callId), exec.signal),
   }),
+  defineTool({
+    name: 'moss_emanation_task_response',
+    // 回答一次 <emanation-task-request>: 只带 id 和 resp 对象, 由 python 侧校验.
+    // 它**永不等待** — 请求只发生在 off-record 的 llm.stream 里, 那里工具不会被 execute,
+    // 调用块本身就是答案. 主路调到它, 说明没有请求在等, 直接回一句就够.
+    // 它留在 preset 里的真正作用是稳定工具表: 工具表从会话开始到每次旁路调用完全不变,
+    // 旁路调用才继承得到同一个前缀族.
+    description: 'Answer an <emanation-task-request>: call this exactly once with the request id and the object its response schema describes. Outside such a request there is nothing to answer.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'The id carried by the request.' },
+      resp: { type: 'object', required: true, description: 'The result object, validated against the request\'s response schema.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    execute: async () => ({ ok: false, error: 'no pending request' }),
+  }),
 ]
 
 // ── 模型 + 思考档: 只读写官方那一份 selection (dsh-api-session-controller) ────────

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ghoshell_container import IoCContainer
 
-from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, Channel, new_channel
 
 from .config import EgoBesideMindConfig
 from .runtime import BesideRuntime
@@ -22,6 +22,7 @@ def build_beside_channel(
         *,
         name: str = "beside",
         description: str = "",
+        debug: Channel | None = None,
 ) -> MutableChannel:
     """Build the beside channel around a live runtime."""
     if not description:
@@ -56,6 +57,9 @@ def build_beside_channel(
         """
         return runtime.think(text__, sep=sep)
 
+    if debug is not None:
+        chan.build.add_virtual_channel(debug)
+
     return chan
 
 
@@ -78,4 +82,19 @@ class EgoBesideChannel:
             # enabled but not built (a container without the ghost's wiring): no organ rather
             # than a channel whose only verb raises on first use.
             return None
-        return build_beside_channel(runtime)
+
+        # The debug child is mounted only when the mechanism it exercises is actually wired:
+        # a task runner and a trajectory. A debug verb that can only fail is worse than none.
+        from ghoshell_moss.memento import Memento
+
+        from ghoshell_moss.ghosts.dolores.mindset.emanation_task import EmanationTasks
+        from .debug import build_debug_channel
+
+        tasks = container.get(EmanationTasks)
+        memento = container.get(Memento)
+        debug = (
+            build_debug_channel(tasks, memento)
+            if tasks is not None and memento is not None
+            else None
+        )
+        return build_beside_channel(runtime, debug=debug)

@@ -5,7 +5,7 @@ The manifest carries the seed; the manager materializes it into
 that the file is the edit surface — these strings are only the initial content.
 """
 
-from ..constants import NIRMANAKAYA
+from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA
 
 __all__ = ["BESIDE_SESSION_LINE", "BESIDE_THINK_SEED", "MEMENTO_CHAT_SEED", "MEMENTO_NOTE_SEED"]
 

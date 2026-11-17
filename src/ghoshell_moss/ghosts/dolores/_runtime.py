@@ -695,6 +695,11 @@ class Dolores(Ghost):
 
                 branch_name = self._load_config().memento.branch_name
                 self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR, writable=True)
+                # Same rule as the connection: opened and closed here, so published here. The
+                # debug surface resolves coordinates through it.
+                from ghoshell_moss.memento import Memento
+
+                self._container.set(Memento, self._memento)
                 if self._memento.get_branch(branch_name) is None:
                     self._memento.create_branch(branch_name)
                 # 布局不在这里写: memento 根与 branch 由 new_local_memento 建。目录里不再种子
@@ -944,6 +949,11 @@ class Dolores(Ghost):
     async def _dsh(self):
         launcher = self._build_dsh_launcher()
         self._dsh_launcher = launcher
+        # The connection is a lifecycle object: the runtime owns when it exists, so the runtime
+        # publishes it. A provider must never construct one it could not close.
+        from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection
+
+        self._container.set(DshConnection, launcher)
         launcher.on_exit(self._on_dsh_exit)
         if self._session is not None:
             self._session.output("system", log="starting dsh")
