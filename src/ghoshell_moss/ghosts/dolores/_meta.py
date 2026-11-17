@@ -144,11 +144,13 @@ class DoloresMeta(GhostMeta):
         from .configs import DoloresConfigStoreProvider
         from .mindset.emanation_task import EmanationTasksProvider
         from .mindset.prompter import PromptManagerProvider
+        from .scheduler_recall import SchedulerRecallerProvider
 
         return [
             DoloresConfigStoreProvider(),
             PromptManagerProvider(),
             EmanationTasksProvider(),
+            SchedulerRecallerProvider(),
         ]
 
     # ── factory ─────────────────────────────────────

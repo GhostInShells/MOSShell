@@ -594,6 +594,34 @@ class TestDoloresEgoSelfWake:
 
         assert emitted == []
 
+    @pytest.mark.asyncio
+    async def test_turn_start_records_the_in_flight_turn(self):
+        """The live cursor is written even while this ghost is driving — a writer inside
+        the turn must anchor on it, not on the last completed one."""
+        from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
+
+        ego = self._ego()
+        ego.bind_signal_broadcast(lambda signal: None)
+        ego._thinking_event.set()  # even while articulating, the cursor is the turn's
+        await ego._on_session_activity(
+            event_from_dict({"type": "turn/start", "seq": 3, "data": {"turn": 3}})
+        )
+
+        assert ego._state.turn_in_flight == 3
+
+    @pytest.mark.asyncio
+    async def test_turn_end_clears_the_in_flight_cursor(self):
+        from ghoshell_moss.deepseek_harness.v0_2_0 import event_from_dict
+
+        ego = self._ego()
+        ego._state.turn_in_flight = 3
+        await ego._on_turn_end(
+            event_from_dict({"type": "turn/end", "seq": 4, "data": {"turn": 3}})
+        )
+
+        assert ego._state.turn == 3
+        assert ego._state.turn_in_flight is None
+
 
 class TestDoloresEgoCommit:
     """ego 的锚点 commit — 验证期 force_tokens=0 (每 turn commit) 下检查 memento 锚点数据."""

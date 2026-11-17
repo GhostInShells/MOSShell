@@ -32,6 +32,7 @@ from ghoshell_moss.ghosts.dolores.mindset.seeds import (
     BESIDE_THINK_SEED,
     MEMENTO_CHAT_SEED,
     MEMENTO_NOTE_SEED,
+    SCHEDULER_CHAT_SEED,
 )
 
 __all__ = [
@@ -80,6 +81,7 @@ class DefaultPrompterKeys:
 
     MEMENTO_NOTE = "memento.note"
     MEMENTO_CHAT = "memento.chat"
+    SCHEDULER_CHAT = "scheduler.chat"
     BESIDE_THINK = "beside.think"
 
 
@@ -406,6 +408,12 @@ def default_specs() -> list[PromptSpec]:
             description="Talk one round with a commit's context.",
             slots={},
             seed=MEMENTO_CHAT_SEED,
+        ),
+        PromptSpec(
+            key=DefaultPrompterKeys.SCHEDULER_CHAT,
+            description="Talk one round with the self that wrote a scheduler plan.",
+            slots={},
+            seed=SCHEDULER_CHAT_SEED,
         ),
         PromptSpec(
             key=DefaultPrompterKeys.BESIDE_THINK,

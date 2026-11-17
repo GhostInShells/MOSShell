@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from ghoshell_moss.deepseek_harness.v0_2_0 import DshSessionAnchor
 from ghoshell_moss.ghosts.dolores.mindset.emanation_task import (
     TOOL_NAME,
+    EmanationChatError,
     EmanationTaskError,
     EmanationTasks,
 )
@@ -55,6 +56,13 @@ class _Connection:
         assert follow is False, "an emanation task must not open a follow stream"
         assert session_id == "s-1"
         return self.session
+
+
+class _Prompts:
+    """A prompt registry with one visible convention: the key is the instruction."""
+
+    def render(self, key: str) -> str:
+        return f"PROMPT:{key}"
 
 
 def _body(call) -> str:
@@ -119,3 +127,70 @@ async def test_a_call_for_another_request_id_is_rejected():
     assert value.ok is True
     messages, _ = session.calls[1]
     assert "wrong id" in messages[1][0].text
+
+
+@pytest.mark.asyncio
+async def test_chat_rides_the_emanation_container_and_returns_the_text():
+    session = _Session([_reply("because the release was due")])
+    tasks = EmanationTasks(_Connection(session))
+
+    text = await tasks.chat(
+        "why?",
+        anchor=_anchor(),
+        task_key="scheduler.chat",
+        position=' at="2026-11-18 00:00:00+8" planned_turn="2"',
+        seed="SEED",
+    )
+
+    assert text == "because the release was due"
+    body = _body(session.calls[0])
+    assert '<emanation-reminder task="scheduler.chat"' in body
+    assert ' at="2026-11-18 00:00:00+8" planned_turn="2"' in body
+    assert "<instruction>SEED</instruction>" in body
+    assert "<question>why?</question>" in body
+
+
+@pytest.mark.asyncio
+async def test_chat_renders_the_prompt_asset_when_a_manager_is_bound():
+    session = _Session([_reply("ok")])
+    tasks = EmanationTasks(_Connection(session), prompts=_Prompts())
+
+    await tasks.chat(
+        "why?",
+        anchor=_anchor(),
+        task_key="memento.chat",
+        position=' at="2026-11-18 00:00:00+8"',
+        seed="SEED",
+    )
+
+    assert "<instruction>PROMPT:memento.chat</instruction>" in _body(session.calls[0])
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_a_tool_call_answer():
+    session = _Session([_reply(calls=[_call({}, name="bash")])])
+    tasks = EmanationTasks(_Connection(session))
+
+    with pytest.raises(EmanationChatError, match="tool call"):
+        await tasks.chat(
+            "why?",
+            anchor=_anchor(),
+            task_key="scheduler.chat",
+            position="",
+            seed="SEED",
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_an_answer_with_no_text():
+    session = _Session([_reply("")])
+    tasks = EmanationTasks(_Connection(session))
+
+    with pytest.raises(EmanationChatError, match="returned no text"):
+        await tasks.chat(
+            "why?",
+            anchor=_anchor(),
+            task_key="scheduler.chat",
+            position="",
+            seed="SEED",
+        )

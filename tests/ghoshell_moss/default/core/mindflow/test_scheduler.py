@@ -11,6 +11,7 @@ What is under test:
 - ``chat`` enters the channel surface only when a recaller is bound.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -323,12 +324,24 @@ async def test_list_renders_the_window_as_json(store):
 
 
 @pytest.mark.asyncio
-async def test_chat_round_trips_through_the_recaller(store):
+async def test_chat_returns_a_receipt_and_delivers_the_answer_later(store, monkeypatch):
+    """The channel does not hold the queue: receipt now, answer as a mind delivery."""
+    from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
+
     recaller = FakeRecaller()
     nucleus = make_nucleus(store, recaller=recaller)
     channel = nucleus.as_channel()
     await channel.build.own_commands()["at"](when=at(13).isoformat(), text="x")
+    sent = []
+    monkeypatch.setattr(CommandUtil, "send_signal", lambda signal: sent.append(signal))
+    async with channel.bootstrap() as runtime:
+        receipt = await runtime.execute_command("chat", args=("sch-000001", "why"))
+        for _ in range(100):
+            if sent:
+                break
+            await asyncio.sleep(0.01)
 
-    answer = await channel.build.own_commands()["chat"](task_id="sch-000001", prompt="why")
-    assert answer == "answer to why"
+    assert receipt.startswith("[scheduler] asking sch-000001")
     assert recaller.asked == ["why"]
+    assert sent[0].name == "mind/delivery"
+    assert sent[0].messages[0].to_content_string() == "answer to why"

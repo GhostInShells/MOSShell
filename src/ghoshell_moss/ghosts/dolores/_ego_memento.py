@@ -48,6 +48,11 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
 )
 from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA_REMINDER, NIRMANAKAYA
 from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
+from ghoshell_moss.ghosts.dolores.mindset.emanation_task import (
+    EmanationChatError,
+    EmanationTasks,
+    log_emanation_usage,
+)
 from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitNoteEvent
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
@@ -146,25 +151,6 @@ def stamp(created: datetime) -> str:
     """``2026-11-13 15:09+8`` — the whole stamp, for things that sit outside a ``<day>``."""
     local = _local(created)
     return f"{local.strftime('%Y-%m-%d %H:%M')}{stamp_zone(local)}"
-
-
-def log_emanation_usage(logger: LoggerItf, *, kind: str, subject: str, usage: TokenUsage) -> None:
-    """One INFO line per model call — the ghost's token accounting, both paths.
-
-    ``kind=note`` / ``kind=chat`` are the bypass calls: an off-record call never enters the
-    session log, so without this line the ghost's parallel thinking is invisible to cost
-    statistics. ``kind=ego`` is the main path, logged per step by the run loop — without it a
-    cache question could only be answered by subtracting two bypass notes.
-
-    The format stays flat key=value pairs: a future aggregator greps one prefix instead of
-    parsing prose.
-    """
-    logger.info(
-        "emanation usage kind=%s %s input=%s cache_read=%s cache_write=%s output=%s reasoning=%s",
-        kind, subject,
-        usage.inputTokens, usage.cacheReadTokens, usage.cacheWriteTokens,
-        usage.outputTokens, usage.reasoningTokens,
-    )
 
 
 class BrokenCommitError(RuntimeError):
@@ -324,6 +310,7 @@ class EgoMementoManager:
             memento: Memento,
             config: EgoMementoConfig | None = None,
             prompt_manager: PromptManager | None = None,
+            emanation_tasks: EmanationTasks | None = None,
             seed_ground: Path | None = None,
             on_note_ready: Callable[[CommitNoteEvent], None] | None = None,
             logger: LoggerItf | None = None,
@@ -335,6 +322,9 @@ class EgoMementoManager:
         # a checkout moves this, not the config, so every read of the current line goes here.
         self._branch_name: str = ""
         self._prompt_manager = prompt_manager
+        # The shared off-record caller; None builds one from the same connection/prompt manager
+        # (embedded tests), so the chat path stays one implementation.
+        self._emanation_tasks = emanation_tasks
         # ``seed_ground`` is the directory a new line's ground is planted from — a ghost-home
         # asset (§ego-branch-ground). None = no seeding; the render falls back to absence.
         self._seed_ground = Path(seed_ground) if seed_ground is not None else None
@@ -671,24 +661,6 @@ class EgoMementoManager:
             f"</{NIRMANAKAYA_REMINDER}>"
         )
 
-    def _chat_message(self, question: str, coord: str = "") -> str:
-        """Build the ``<emanation-reminder>`` container for one chat round: instruction + question.
-
-        ``at`` and ``coord`` say when this round is asked and which span it is about. The fork's
-        own view ends at the anchor, so without them its clock stops at the last frame it saw —
-        a question asked hours or months later would read as if it had been asked back then.
-        """
-        preamble = MEMENTO_CHAT_SEED
-        if self._prompt_manager is not None:
-            preamble = self._prompt_manager.render(DefaultPrompterKeys.MEMENTO_CHAT)
-        return (
-            f"<{NIRMANAKAYA_REMINDER} task=\"{DefaultPrompterKeys.MEMENTO_CHAT}\""
-            f"{emanation_position(coord=coord)}>\n"
-            f"<instruction>{escape(preamble)}</instruction>\n"
-            f"<question>{escape(question)}</question>\n"
-            f"</{NIRMANAKAYA_REMINDER}>"
-        )
-
     def _note_context(self, target_seq: int) -> tuple[str | None, list[tuple[str, str]]]:
         """本 commit 的轨迹上下文: 前驱坐标 (None = 首条) + 最近 N 条已就绪 message (老→新).
 
@@ -735,42 +707,41 @@ class EgoMementoManager:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
         坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
-        处境说明与问题装进一个 ``<emanation-reminder task="memento.chat">`` 容器: instruction
-        是 ``memento.chat`` asset, question 是动态输入; 容器属性 ``at`` 是被问的那一刻,
-        ``coord`` 是被问的那一段 —— 分身的视界止于锚点, 不给它这两件, 它的「现在」就停在
-        最后一条它见过的帧上. 只发一条 user message; 插件按容器原样说, 不建 session、不落盘.
+        处境说明与问题走共享的 ``EmanationTasks.chat``: ``<emanation-reminder>`` 容器,
+        instruction 是 ``memento.chat`` asset, question 是动态输入; 容器属性 ``at`` 是
+        被问的那一刻, ``coord`` 是被问的那一段 —— 分身的视界止于锚点, 不给它这两件,
+        它的「现在」就停在最后一条它见过的帧上.
         """
         view = self._require_commit(coord)
         if view.is_broken:
             raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
         anchor = DshSessionAnchor(session_id=ref.session_id, seq=ref.end_seq, turn=ref.end_turn)
-        # follow=False: chat 只借上下文, 不参与这个会话的运行态; 目标会话可能正被 ego follow 着.
-        session = self._connection.attach_session(ref.session_id, self._logger, follow=False)
         try:
-            # No `readonly`: see ``_note_call`` — emptying the tools menu costs the prefix cache.
-            reply = await session.chat_off_record(
-                [[ContentBlock(type="text", text=self._chat_message(prompt, view.coord))]],
+            return await self._emanation().chat(
+                prompt,
                 anchor=anchor,
-                llm={"reasoningEffort": _BYPASS_EFFORT},
+                task_key=DefaultPrompterKeys.MEMENTO_CHAT,
+                position=emanation_position(coord=view.coord),
+                seed=MEMENTO_CHAT_SEED,
+                kind="chat",
+                subject=f"commit {view.coord}",
+                usage_subject=f"coord={view.coord}",
             )
+        except EmanationChatError:
+            raise
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc
-        finally:
-            with contextlib.suppress(Exception):
-                await session.close()
-        log_emanation_usage(
-            self._logger, kind="chat", subject=f"coord={view.coord}", usage=reply.usage,
-        )
-        text = reply.text
-        if text == "":
-            if reply.tool_calls:
-                asked = "; ".join(f"{call.name}({call.arguments[:120]})" for call in reply.tool_calls)
-                raise RuntimeError(
-                    f"chat with commit {view.coord} answered with a tool call instead of prose: {asked}"
-                )
-            raise RuntimeError(f"chat with commit {view.coord} returned no text")
-        return text
+
+    def _emanation(self) -> EmanationTasks:
+        """The shared caller — built once from this manager's deps when not injected."""
+        if self._emanation_tasks is None:
+            self._emanation_tasks = EmanationTasks(
+                self._connection,
+                prompts=self._prompt_manager,
+                logger=self._logger,
+            )
+        return self._emanation_tasks
 
     def _read_failure(self, view: CommitView, ref: DshSessionRef, exc: Exception) -> Exception:
         """读源 session 失败 → 该抛什么.

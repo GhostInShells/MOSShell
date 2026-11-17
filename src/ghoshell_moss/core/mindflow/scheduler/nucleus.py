@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import operator
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,7 +30,7 @@ from ghoshell_container import IoCContainer
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
-from ghoshell_moss.core.blueprint.channel_builder import Channel, new_channel
+from ghoshell_moss.core.blueprint.channel_builder import Channel, CommandUtil, new_channel
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.mindflow import (
     Impulse,
@@ -45,6 +44,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
 from ghoshell_moss.core.mindflow.aside_nucleus import new_aside_signal
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
 from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
+from ghoshell_moss.core.mindflow.mind_delivery_nucleus import new_mind_delivery_signal
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 
 from .models import (
@@ -132,20 +132,17 @@ class SchedulerNucleus(Nucleus):
         return self.DESCRIPTION
 
     def status(self) -> str:
+        """The plan set as a warm fact — never the clock.
+
+        The next firing time is operational state: it changes every minute for a short
+        recurrence, and a notice that tracks it turns the warm slot into hot data. The
+        next instant is read on demand through ``list``; the firing itself carries it.
+        """
         if not self._loaded:
-            return ""
+            return "loading"
         if not self._tasks:
             return "no plans"
-        now = self._clock()
-        ahead = [
-            (task.next_instant_after(now), task)
-            for task in self._tasks.values()
-        ]
-        ahead = [(instant, task) for instant, task in ahead if instant is not None]
-        if not ahead:
-            return f"{len(self._tasks)} plan(s) armed, none ahead"
-        instant, task = min(ahead, key=operator.itemgetter(0))
-        return f"{len(self._tasks)} plan(s) · next {instant:%H:%M} {task.id}"
+        return f"{len(self._tasks)} plan(s) armed"
 
     def signals(self) -> list[SignalName]:
         # The scheduler is a producer only. Listening to nothing is the design, not an
@@ -556,12 +553,15 @@ class SchedulerNucleus(Nucleus):
             self._reload()
             return f"{len(self._tasks)} plan(s) armed"
 
-        @chan.build.command(name="chat", available=lambda: self._recaller is not None)
+        @chan.build.command(name="chat", available=lambda: self._recaller is not None,
+                            always_observe=True)
         async def _chat(task_id: str, prompt: str) -> str:
-            """Talk with the self that wrote a plan — one round, blocking.
+            """Talk with the self that wrote a plan — the answer arrives later.
 
             Use it when a plan fires and you no longer know why you wrote it. The other
-            side sees only what had happened when the plan was written.
+            side sees only what had happened when the plan was written. This returns a
+            receipt at once, and the answer arrives as a delivery of its own, so nothing
+            holds the turn.
 
             :param task_id: the id from `list` (archived one-shots work too).
             :param prompt: what you want to ask that self.
@@ -571,11 +571,29 @@ class SchedulerNucleus(Nucleus):
                 return f"no plan {task_id}"
             if self._recaller is None:
                 return "error: no recaller is bound, so there is no way back to that self"
-            try:
-                return await self._recaller.chat(task.anchor, prompt)
-            except Exception as error:
-                self._logger.exception("scheduler: chat with %s failed", task_id)
-                return f"error: {type(error).__name__}: {error}"
+
+            async def _answer() -> Signal:
+                # The delivery is the only way back once the receipt is out: a failure must
+                # come back as content, not as an exception nobody will ever read.
+                try:
+                    text = await self._recaller.chat(task.anchor, prompt)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    self._logger.exception("scheduler: chat with %s failed", task_id)
+                    return new_mind_delivery_signal(
+                        f"[scheduler] chat with {task_id} failed: {error}",
+                        kind="scheduler.chat",
+                        description=f"chat with {task_id} failed",
+                    )
+                return new_mind_delivery_signal(
+                    text,
+                    kind="scheduler.chat",
+                    description=f"answer from {task_id}",
+                )
+
+            await CommandUtil.create_signal_task(closure=_answer)
+            return f"[scheduler] asking {task_id} — the answer will arrive as a signal"
 
         return chan
 

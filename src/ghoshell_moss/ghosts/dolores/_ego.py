@@ -46,6 +46,7 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     SessionSummary,
     StepEnd,
     TurnEnd,
+    TurnStart,
     model_from_event,
 )
 from ghoshell_moss.message import Content, Message
@@ -302,11 +303,15 @@ class EgoState:
     - ``session_id``: the current ego session, None before ``create_session``.
     - ``turn``: the last completed turn of that session — the same value ``_commit``
       anchors on, so an anchor taken here and a commit cover the same position.
+    - ``turn_in_flight``: the turn currently being written, set on ``turn/start`` and
+      cleared on ``turn/end``. A writer inside a turn must use this, not ``turn`` —
+      anchoring on ``turn`` while the turn is still open seals the previous one.
     """
 
     def __init__(self) -> None:
         self.session_id: str | None = None
         self.turn: int = 0
+        self.turn_in_flight: int | None = None
 
 
 class DoloresEgo:
@@ -754,7 +759,14 @@ class DoloresEgo:
         Otherwise external activity on the dsh side means the ghost should wake — emit a self-wake
         signal. Discardable: the nucleus builds a BACKGROUND impulse; if mindflow is busy the
         challenge fails and is dropped, so it only wakes when idle.
+
+        The turn cursor is written before the gate: a writer inside a turn needs the live turn
+        even while this ghost is the one driving, and the wake decision is unrelated to it.
         """
+        if event is not None:
+            turn_start = model_from_event(TurnStart, event)
+            if turn_start is not None:
+                self._state.turn_in_flight = turn_start.turn
         if self.is_thinking:
             return
         self._emit_self_wake()
@@ -837,6 +849,7 @@ class DoloresEgo:
             return
         self._last_turn = max(self._last_turn, turn_end.turn)
         self._state.turn = self._last_turn
+        self._state.turn_in_flight = None
         if self._pending_checkout is not None:
             request, self._pending_checkout = self._pending_checkout, None
             await self._run_checkout(request)

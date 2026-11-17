@@ -714,20 +714,15 @@ class Dolores(Ghost):
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
             from ._ego import DoloresEgo, DoloresEgoContext, EgoState
-            from .scheduler_recall import DshSchedulerRecaller
             from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
-            from ghoshell_moss.core.mindflow.scheduler import SchedulerRecaller
 
-            # live ego state: the ego writes it at session-create / turn-end, and anything
-            # that needs "where is the ego now" reads it from IoC instead of reaching in.
-            # The scheduler's recaller is the first consumer: it stamps every plan it arms.
+            # live ego state: the ego writes it at session-create / every turn boundary, and
+            # anything that needs "where is the ego now" reads it from IoC instead of reaching
+            # in. The scheduler recaller provider consumes it; the runtime binds no concrete
+            # recaller here — that implementation lives behind DoloresMeta.providers().
             self._ego_state = EgoState()
             if self._container is not None:
                 self._container.set(EgoState, self._ego_state)
-                self._container.set(
-                    SchedulerRecaller,
-                    DshSchedulerRecaller(self.dsh_launcher, self._ego_state, logger=self.logger),
-                )
 
             self._facade = MShellContextFacade(self._shell)
             ctx = DoloresEgoContext(
@@ -743,10 +738,15 @@ class Dolores(Ghost):
             # 生命周期入 exit stack —— 旁路任务归它治理, ghost 关停时随栈取消.
             if self._memento is not None:
                 from ._ego_memento import EgoMementoManager
+                from .mindset.emanation_task import EmanationTasks
                 from .mindset.prompter import PromptManager
 
                 prompt_manager = (
                     self._container.force_fetch(PromptManager)
+                    if self._container is not None else None
+                )
+                emanation_tasks = (
+                    self._container.force_fetch(EmanationTasks)
                     if self._container is not None else None
                 )
                 self._memento_manager = await self._exit_stack.enter_async_context(
@@ -755,6 +755,7 @@ class Dolores(Ghost):
                         memento=self._memento,
                         config=self._load_config().memento,
                         prompt_manager=prompt_manager,
+                        emanation_tasks=emanation_tasks,
                         seed_ground=self._home / ".dolores/seeds/branch_ground",
                         on_note_ready=self._lifecycle.fire_commit_note,
                         logger=self.logger,

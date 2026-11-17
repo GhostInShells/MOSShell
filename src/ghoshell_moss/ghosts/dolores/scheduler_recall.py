@@ -1,20 +1,20 @@
 """DshSchedulerRecaller — a scheduler anchor that points at a dsh session turn.
 
 The scheduler stores an opaque anchor with every plan. This is the dolores binding that
-knows what that anchor means: a ``(session_id, turn)`` pair — the same position an ego
-commit covers, so a plan written in turn N can be reopened exactly the way memento reopens
-a commit's context.
+knows what that anchor means: a ``(session_id, turn)`` pair — the position the plan was
+written in. The turn comes from the ego's live cursor (``turn/start`` → ``turn/end``),
+never from a fabricated offset.
 
-It depends on ``DshConnection`` only. Memento is not involved: coordinates are memento's
-vocabulary, and a plan has no coordinate until someone looks one up — the recaller talks
-to the session directly, which is what "chat with the self who wrote this" actually needs.
+It depends on ``EmanationTasks`` for the off-record round: the same transport, container,
+prompt asset, failure mapping and usage line as memento chat. The recaller owns only the
+anchor semantics and the plan-specific position.
 """
 
 from __future__ import annotations
 
-import contextlib
 from datetime import datetime
-from xml.sax.saxutils import escape
+
+from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.core.mindflow.scheduler import (
@@ -23,43 +23,30 @@ from ghoshell_moss.core.mindflow.scheduler import (
     decode_anchor,
     encode_anchor,
 )
-from ghoshell_moss.deepseek_harness.v0_2_0 import (
-    ContentBlock,
-    DshConnection,
-    DshSessionAnchor,
-)
+from ghoshell_moss.deepseek_harness.v0_2_0 import DshSessionAnchor
 from ghoshell_moss.ghosts.dolores._ego import EgoState
-from ghoshell_moss.ghosts.dolores._ego_memento import log_emanation_usage
-from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA_REMINDER
 from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
+from ghoshell_moss.ghosts.dolores.mindset.emanation_task import EmanationTasks
+from ghoshell_moss.ghosts.dolores.mindset.prompter import DefaultPrompterKeys
+from ghoshell_moss.ghosts.dolores.mindset.seeds import SCHEDULER_CHAT_SEED
 
-__all__ = ["METATYPE", "DshSchedulerRecaller"]
+__all__ = ["METATYPE", "DshSchedulerRecaller", "SchedulerRecallerProvider"]
 
 METATYPE = "dsh-session"
 """Anchor convention: ``{session: <id>, turn: <n>}`` — one point in one ego session."""
 
-_ANCHOR_INSTRUCTION = (
-    "这是一条从未来发回的问题：你在过去写下了一条定时计划，现在它到期了。"
-    "你当时只留下了计划本身，没有留下别的说明。"
-    "回答来者的提问，只依据你到这个时点为止知道的东西；不知道就说不知道。"
-)
-
-#: Off-record calls use the low reasoning tier: the note/chat bypass paths share one prefix
-#: cache family, and switching tiers would break it (see ``_ego_memento._BYPASS_EFFORT``).
-_BYPASS_EFFORT = "low"
-
 
 class DshSchedulerRecaller(SchedulerRecaller):
-    """Stamp the live ego position; reopen it through ``chat_off_record``."""
+    """Stamp the live ego turn; reopen it through the shared emanation chat."""
 
     def __init__(
             self,
-            connection: DshConnection,
+            tasks: EmanationTasks | None,
             state: EgoState,
             *,
             logger: LoggerItf | None = None,
     ) -> None:
-        self._connection = connection
+        self._tasks = tasks
         self._state = state
         self._logger = logger or get_moss_logger()
 
@@ -72,7 +59,14 @@ class DshSchedulerRecaller(SchedulerRecaller):
             # Before the ego session exists there is no "self" to point at; the plan is
             # still valid, it just cannot be asked why it exists.
             return None
-        return encode_anchor(METATYPE, session=session_id, turn=int(self._state.turn))
+        turn = self._state.turn_in_flight
+        if turn is None:
+            turn = self._state.turn
+        if not turn:
+            # No turn has started (or ended) yet: an anchor at turn 0 would point at a
+            # position that does not exist. Honest absence beats a fabricated coordinate.
+            return None
+        return encode_anchor(METATYPE, session=session_id, turn=int(turn))
 
     def describe(self, anchor: AnchorRef) -> str:
         data = decode_anchor(anchor)
@@ -92,35 +86,31 @@ class DshSchedulerRecaller(SchedulerRecaller):
                 "this plan carries no session anchor — it was written before the ego "
                 "session existed, so there is no past self to talk to"
             )
+        if self._tasks is None:
+            raise RuntimeError("no emanation caller is bound; the scheduler cannot chat")
         target = DshSessionAnchor(session_id=str(session_id), turn=int(turn))
-        # follow=False: this only borrows the context; the live ego may still be following it.
-        session = self._connection.attach_session(str(session_id), self._logger, follow=False)
-        try:
-            reply = await session.chat_off_record(
-                [[ContentBlock(type="text", text=self._message(prompt, int(turn)))]],
-                anchor=target,
-                llm={"reasoningEffort": _BYPASS_EFFORT},
-            )
-        finally:
-            with contextlib.suppress(Exception):
-                await session.close()
-        log_emanation_usage(
-            self._logger, kind="scheduler.chat", subject=f"turn={turn}", usage=reply.usage,
+        return await self._tasks.chat(
+            prompt,
+            anchor=target,
+            task_key=DefaultPrompterKeys.SCHEDULER_CHAT,
+            position=emanation_position(at=datetime.now().astimezone())
+                     + f' planned_turn="{int(turn)}"',
+            seed=SCHEDULER_CHAT_SEED,
+            kind="scheduler.chat",
+            subject=f"plan turn={int(turn)}",
+            usage_subject=f"turn={int(turn)}",
         )
-        if not reply.text:
-            raise RuntimeError(
-                f"the self of turn {turn} answered nothing"
-                + (f" (tool calls: {[call.name for call in reply.tool_calls]})"
-                   if reply.tool_calls else "")
-            )
-        return reply.text
 
-    @staticmethod
-    def _message(prompt: str, turn: int) -> str:
-        position = emanation_position(at=datetime.now().astimezone())
-        return (
-            f"<{NIRMANAKAYA_REMINDER} task=\"scheduler.plan\"{position} planned_turn=\"{turn}\">\n"
-            f"<instruction>{escape(_ANCHOR_INSTRUCTION)}</instruction>\n"
-            f"<question>{escape(prompt)}</question>\n"
-            f"</{NIRMANAKAYA_REMINDER}>"
+
+class SchedulerRecallerProvider(Provider[SchedulerRecaller]):
+    """IoC provider — the runtime depends on the contract, not on this concrete class."""
+
+    def singleton(self) -> bool:
+        return True
+
+    def factory(self, con: IoCContainer) -> SchedulerRecaller:
+        return DshSchedulerRecaller(
+            con.force_fetch(EmanationTasks),
+            con.force_fetch(EgoState),
+            logger=con.get(LoggerItf),
         )

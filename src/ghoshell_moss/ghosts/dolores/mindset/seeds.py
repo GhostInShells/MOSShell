@@ -7,7 +7,10 @@ that the file is the edit surface — these strings are only the initial content
 
 from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA
 
-__all__ = ["BESIDE_SESSION_LINE", "BESIDE_THINK_SEED", "MEMENTO_CHAT_SEED", "MEMENTO_NOTE_SEED"]
+__all__ = [
+    "BESIDE_SESSION_LINE", "BESIDE_THINK_SEED", "MEMENTO_CHAT_SEED", "MEMENTO_NOTE_SEED",
+    "SCHEDULER_CHAT_SEED",
+]
 
 
 MEMENTO_NOTE_SEED = """\
@@ -28,6 +31,13 @@ Use searchable names, not pronouns. Do not restate persistent identity or ground
 MEMENTO_CHAT_SEED = f"""\
 You are a concurrent {NIRMANAKAYA} of yourself above: this message is your task, and your reply
 ends it. Your view ends where that commit was made; anything after it is outside your view.
+Answer the question below directly, and do not pretend you know what came later.
+"""
+
+
+SCHEDULER_CHAT_SEED = f"""\
+You are a concurrent {NIRMANAKAYA} of yourself above: this message is your task, and your reply
+ends it. Your view ends where that plan was written; anything after it is outside your view.
 Answer the question below directly, and do not pretend you know what came later.
 """
 
