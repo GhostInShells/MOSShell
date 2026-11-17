@@ -2,8 +2,8 @@
 
 A virtual child of beside, mounted only when its dependencies exist. It exists so the
 mechanism can be exercised by the one who runs it, without a caller in the code: point it at
-any commit of this trajectory, a prompt, and a model reference, and it returns the validated
-answer.
+any commit of this trajectory, a prompt, and a model reference; the call returns a receipt and
+the validated answer arrives later as a delivery of its own.
 
 The model reference has two forms:
 
@@ -18,13 +18,17 @@ target — including commits whose session has long been archived (the read is a
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
+from ghoshell_moss.core.mindflow.mind_delivery_nucleus import new_mind_delivery_signal
 from ghoshell_moss.deepseek_harness.v0_2_0 import DshSessionAnchor, DshSessionRef
 from ghoshell_moss.memento import Memento
 
@@ -112,7 +116,8 @@ def build_debug_channel(
             "## Beside / debug (self-test)\n"
             "These commands exist to prove a mechanism works at runtime, not to get work done.\n"
             "`emanation_task` asks one structured question to this trajectory at any historical\n"
-            "commit and returns the validated answer. Nothing here writes to the record."
+            "commit: the call returns a receipt and the validated answer arrives later as a\n"
+            "delivery. Nothing here writes to the record."
         )
 
     @chan.build.command(name="emanation_task")
@@ -125,8 +130,10 @@ def build_debug_channel(
     ) -> str:
         """Run one emanation task against any commit of this trajectory.
 
-        The commit must carry a session reference (every ego commit does). The answer is
-        validated against the model and returned as JSON.
+        Returns a receipt at once; the validated answer arrives later as a delivery of its own,
+        so nothing holds the turn. A bad model reference is refused in the receipt — that is a
+        mistake in the call, not a result. The commit must carry a session reference (every ego
+        commit does).
 
         :param coord: branch coordinate, e.g. `1-764`
         :param prompt: what to ask at that position
@@ -145,12 +152,51 @@ def build_debug_channel(
         box: Sandbox | None = None
         try:
             cls, box = load_debug_model(model, source=source)
-            value = await tasks.request(prompt, cls, anchor=anchor, timeout=timeout)
-            return value.model_dump_json(indent=2)
-        except Exception as error:  # noqa: BLE001 — a debug tool reports, it never breaks the channel
+        except Exception as error:  # noqa: BLE001 — the call is wrong; say so before any work starts
             return f"error: {type(error).__name__}: {error}"
-        finally:
+
+        logger = CommandUtil.logger()
+        started = time.monotonic()
+
+        async def _answer() -> Signal:
+            # The delivery is the only way back once the receipt is out: a failure has to come
+            # back as content, not as an exception nobody will ever read.
+            outcome = "aborted"
+            try:
+                try:
+                    value = await tasks.request(prompt, cls, anchor=anchor, timeout=timeout)
+                except asyncio.CancelledError:
+                    outcome = "cancelled"
+                    raise
+                except Exception as error:  # noqa: BLE001
+                    reason = f"{type(error).__name__}: {error}"
+                    outcome = f"failed: {reason}"
+                    return new_mind_delivery_signal(
+                        f"[emanation] {coord} · {model} failed: {reason}",
+                        kind="beside.debug:emanation_task",
+                        description=f"emanation task at {coord} failed",
+                    )
+                outcome = "ok"
+                return new_mind_delivery_signal(
+                    f"[emanation] {coord} · {model}\n{value.model_dump_json(indent=2)}",
+                    kind="beside.debug:emanation_task",
+                    description=f"answer from {coord}",
+                )
+            finally:
+                # The sandbox owns the model class, so it outlives the receipt but not the task.
+                if box is not None:
+                    box.close()
+                logger.info(
+                    "[emanation] task at %s with %s finished: %s in %.1fs",
+                    coord, model, outcome, time.monotonic() - started,
+                )
+
+        try:
+            await CommandUtil.create_signal_task(closure=_answer)
+        except BaseException:
             if box is not None:
                 box.close()
+            raise
+        return f"[emanation] asking {coord} with {model} — the answer will arrive as a delivery"
 
     return chan
