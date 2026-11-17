@@ -682,7 +682,9 @@ const egoTools = [
     description: 'Answer an <emanation-task-request>: call this exactly once with the request id and the object its response schema describes. Outside such a request there is nothing to answer.',
     parameters: {
       id: { type: 'string', required: true, description: 'The id carried by the request.' },
-      resp: { type: 'object', required: true, description: 'The result object, validated against the request\'s response schema.' },
+      // object 参数必须显式给 additionalProperties, 否则 dsh-tools 在 defineTool 时抛
+      // UNSUPPORTED_SCHEMA, 整个插件模块加载失败, 所有路由不注册 → ego/create 405.
+      resp: { type: 'object', required: true, additionalProperties: true, description: 'The result object, validated against the request\'s response schema.' },
     },
     output: {
       schema: { type: 'json' },

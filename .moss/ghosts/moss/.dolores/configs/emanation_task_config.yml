@@ -1,0 +1,4 @@
+# dump from `ghoshell_moss.ghosts.dolores.mindset.emanation_task:EmanationTaskConfig` 
+timeout: 60.0
+retries: 1
+effort: low

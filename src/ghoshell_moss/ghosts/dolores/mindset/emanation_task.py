@@ -33,6 +33,7 @@ from pydantic import BaseModel, ValidationError
 from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
+from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.core.concepts.tools import model_json_schema_simplified
 from ghoshell_moss.deepseek_harness.v0_2_0 import ContentBlock, DshSessionAnchor
 
@@ -70,12 +71,16 @@ class EmanationTaskError(RuntimeError):
     """No valid answer arrived within the attempts; the message carries the last reason."""
 
 
-class EmanationTaskConfig(BaseModel):
+class EmanationTaskConfig(ConfigType):
     """Defaults for every request — per-call arguments override them."""
 
     timeout: float = 60.0
     retries: int = 1
     effort: str = "low"
+
+    @classmethod
+    def conf_name(cls) -> str:
+        return 'emanation_task_config'
 
 
 class EmanationTasks:

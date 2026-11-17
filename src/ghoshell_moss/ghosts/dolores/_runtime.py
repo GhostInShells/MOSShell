@@ -16,7 +16,7 @@ from ._meta import DoloresProviderSpec
 from .constants import DOLORES_META_DIRECTORY
 from typing_extensions import Self
 
-from ghoshell_container import IoCContainer
+from ghoshell_container import IoCContainer, Contracts
 
 from ghoshell_moss.contracts.logger import get_moss_logger
 
@@ -130,7 +130,6 @@ yaml.SafeDumper.add_representer(
     _JsExpression,
     lambda dumper, value: dumper.represent_scalar("tag:yaml.org,2002:js", str(value)),
 )
-
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -273,16 +272,16 @@ class Dolores(Ghost):
     """
 
     def __init__(
-        self,
-        *,
-        meta: "DoloresMeta",
-        home: Path | None = None,
-        session: Session | None = None,
-        matrix: Matrix | None = None,
-        shell: MOSShell | None = None,
-        moss_prompter: "MossSystemPrompter | None" = None,
-        base_instruction: str | None = None,
-        container: IoCContainer | None = None,
+            self,
+            *,
+            meta: "DoloresMeta",
+            home: Path | None = None,
+            session: Session | None = None,
+            matrix: Matrix | None = None,
+            shell: MOSShell | None = None,
+            moss_prompter: "MossSystemPrompter | None" = None,
+            base_instruction: str | None = None,
+            container: IoCContainer | None = None,
     ):
         self._moss_prompter: MossSystemPrompter = moss_prompter
         self._meta = meta
@@ -291,8 +290,9 @@ class Dolores(Ghost):
         self._matrix = matrix
         self._shell = shell
         self._base_instruction = base_instruction
-        # the IoC container that registered this ghost's providers (None for embedded tests).
-        self._container = container
+        # The container the ghost's providers registered into is the matrix's own; never a
+        # separate one, or the contracts it publishes land where nothing looks for them.
+        self._container = self._matrix.container if self._matrix is not None else container
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
@@ -646,6 +646,13 @@ class Dolores(Ghost):
             observer.with_epoch_recap("memory", lambda: memory)
         observer.new_epoch([])
 
+    def runtime_contracts(self) -> Contracts:
+        """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""
+        from .configs import DoloresConfigStore
+        from .mindset.emanation_task import EmanationTasks
+        from .mindset.prompter import PromptManager
+        return Contracts.new(DoloresConfigStore, PromptManager, EmanationTasks)
+
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
         # file IO is offloaded to a thread; session.output stays on the main loop (avoid cross-thread).
@@ -785,6 +792,7 @@ class Dolores(Ghost):
                         )
                     )
                     self._container.set(BesideRuntime, self._beside_runtime)
+            self.runtime_contracts().validate(self._container)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -951,9 +959,10 @@ class Dolores(Ghost):
         self._dsh_launcher = launcher
         # The connection is a lifecycle object: the runtime owns when it exists, so the runtime
         # publishes it. A provider must never construct one it could not close.
-        from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection
+        from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection, DshLauncher
 
         self._container.set(DshConnection, launcher)
+        self._container.set(DshLauncher, launcher)
         launcher.on_exit(self._on_dsh_exit)
         if self._session is not None:
             self._session.output("system", log="starting dsh")
@@ -1004,7 +1013,7 @@ class Dolores(Ghost):
         if current == target:
             return None
         action = "override" if current else "init"
-        self._write_version(target)   # seeds .dolores.yml on init, then read-rewrite version only
+        self._write_version(target)  # seeds .dolores.yml on init, then read-rewrite version only
         self._seed_ground()
         self._materialize_dirs()
         return action

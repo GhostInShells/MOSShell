@@ -151,14 +151,6 @@ class DoloresMeta(GhostMeta):
             EmanationTasksProvider(),
         ]
 
-    def contracts(self) -> Contracts:
-        """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""
-        from .configs import DoloresConfigStore
-        from .mindset.emanation_task import EmanationTasks
-        from .mindset.prompter import PromptManager
-
-        return Contracts.new(DoloresConfigStore, PromptManager, EmanationTasks)
-
     # ── factory ─────────────────────────────────────
 
     def factory(self, container: IoCContainer) -> Ghost:
