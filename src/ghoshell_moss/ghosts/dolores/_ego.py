@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     from ._run import DoloresRun
     from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
-__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoContext"]
+__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoContext", "EgoState"]
 
 # Route constants — cross-language contract with the dsh plugin.
 _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
@@ -288,6 +288,27 @@ class DoloresEgoContext:
     ghost_home: Path | None = None
 
 
+class EgoState:
+    """Live ego state shared through IoC — the mutable counterpart of ``DoloresEgoContext``.
+
+    ``DoloresEgoContext`` is captured once before the ego enters and never written again
+    (its docstring promises no back-ref). This object is the opposite: the ego updates it
+    at session creation and at every turn boundary, and whoever needs "where is the ego
+    right now" reads it instead of reaching into the ego.
+
+    It is also where the next live fact goes: a component that needs one adds a field here
+    rather than growing another closure.
+
+    - ``session_id``: the current ego session, None before ``create_session``.
+    - ``turn``: the last completed turn of that session — the same value ``_commit``
+      anchors on, so an anchor taken here and a commit cover the same position.
+    """
+
+    def __init__(self) -> None:
+        self.session_id: str | None = None
+        self.turn: int = 0
+
+
 class DoloresEgo:
     """The ego / continuity layer. See the module docstring."""
 
@@ -302,6 +323,7 @@ class DoloresEgo:
             memory_refresh: Callable[[str | None], Awaitable[None]] | None = None,
             memento_manager: EgoMementoManager | None = None,
             lifecycle: EgoLifecycleBus | None = None,
+            state: EgoState | None = None,
             default_thinking_effort: str = "",
     ) -> None:
         """Construct before the ghost enters its lifecycle; side-effect free (no httpx / session / matrix.processes).
@@ -321,6 +343,7 @@ class DoloresEgo:
             every commit made since boot would vanish from the model's view.
         :param memento_manager: ghost-held memento 旁路服务; 锚点写入与阈值判定都过它. None = 无 memento.
         :param lifecycle: the ego lifecycle bus; None = no lifecycle listeners (embedded tests).
+        :param state: live ego state shared through IoC; None = a private one (embedded tests).
         :param default_thinking_effort: boot-time thinking depth declaration (from startup doc). Empty =
             declare nothing — the depth stays whatever dsh/UI holds.
         """
@@ -332,6 +355,7 @@ class DoloresEgo:
         self._memory_refresh = memory_refresh
         self._memento_manager = memento_manager
         self._lifecycle = lifecycle
+        self._state = state or EgoState()
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
@@ -497,6 +521,7 @@ class DoloresEgo:
             payload["home_title"] = f"{self._ctx.name} @ home"
         result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
         self._ego_session_id = result["sessionId"]
+        self._state.session_id = self._ego_session_id
         self._thinking_token = result.get("thinkingToken")
         if self._thinking_token is None:
             # 每个 enter/exit 都带这个 token, 插件用它拒绝非 ego 调用. 拿不到它时这里一切正常,
@@ -811,6 +836,7 @@ class DoloresEgo:
         if turn_end is None:
             return
         self._last_turn = max(self._last_turn, turn_end.turn)
+        self._state.turn = self._last_turn
         if self._pending_checkout is not None:
             request, self._pending_checkout = self._pending_checkout, None
             await self._run_checkout(request)

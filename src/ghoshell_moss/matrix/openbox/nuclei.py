@@ -17,6 +17,7 @@ from ghoshell_moss.core.mindflow import (
     ListenerNucleusMeta,
     MindDeliveryNucleusMeta,
 )
+from ghoshell_moss.core.mindflow.scheduler import SchedulerNucleusMeta
 
 __all__ = [
     'input_nucleus',
@@ -28,6 +29,7 @@ __all__ = [
     'cell_event_nucleus',
     'listener_nucleus',
     'mind_delivery_nucleus',
+    'scheduler_nucleus',
 ]
 
 # input — user message (aggregate buffer, turn toward the user)
@@ -55,3 +57,6 @@ listener_nucleus = ListenerNucleusMeta()
 
 # mind_delivery — beside-path results buffered until the next turn
 mind_delivery_nucleus = MindDeliveryNucleusMeta()
+
+# scheduler — the ghost's own time plan; a due instant becomes an aside/knock/notify/interrupt signal
+scheduler_nucleus = SchedulerNucleusMeta()

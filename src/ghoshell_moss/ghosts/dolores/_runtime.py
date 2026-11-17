@@ -713,8 +713,21 @@ class Dolores(Ghost):
                 # ground 或进程 hook —— 那套文件即契约的机制已整体移除。
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
-            from ._ego import DoloresEgo, DoloresEgoContext
+            from ._ego import DoloresEgo, DoloresEgoContext, EgoState
+            from .scheduler_recall import DshSchedulerRecaller
             from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
+            from ghoshell_moss.core.mindflow.scheduler import SchedulerRecaller
+
+            # live ego state: the ego writes it at session-create / turn-end, and anything
+            # that needs "where is the ego now" reads it from IoC instead of reaching in.
+            # The scheduler's recaller is the first consumer: it stamps every plan it arms.
+            self._ego_state = EgoState()
+            if self._container is not None:
+                self._container.set(EgoState, self._ego_state)
+                self._container.set(
+                    SchedulerRecaller,
+                    DshSchedulerRecaller(self.dsh_launcher, self._ego_state, logger=self.logger),
+                )
 
             self._facade = MShellContextFacade(self._shell)
             ctx = DoloresEgoContext(
@@ -759,6 +772,7 @@ class Dolores(Ghost):
                     memory_refresh=self.refresh_memory,
                     memento_manager=self._memento_manager,
                     lifecycle=self._lifecycle,
+                    state=self._ego_state,
                     # logger 逐层传下去: ghost → ego → run → 每个 tool 调用. 不传 = ego 掉回兜底的
                     # get_moss_logger(), 整个 ghost 的日志就从当前 node 的语境里漂走了.
                     logger=self.logger,
