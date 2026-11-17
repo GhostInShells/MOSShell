@@ -15,6 +15,14 @@ Storage binds to one local path (the owner root):
       commits/{YYYY}/{MM}/cmt_{coord}/       # the commit's node space (a convention, lazy)
         MEMENTO.md                          # the node's index file, self-explaining entry
 
+Identity (this implementation's convention — the contract only promises an opaque,
+owner-unique string):
+- a branch id is ``b{index}``: the position in the append-only branch log, so it never repeats;
+- a commit id is its coordinate ``{index}-{seq}``: the seq is frozen when the commit is written.
+Both are derived from positions the logs already guarantee, so a separate allocator would only
+add a second name for the same object. Branches and commits written before this convention carry
+ULIDs; an id is opaque to every reader, so the two forms coexist without migration.
+
 Discipline:
 - An owner is opened **writable or read-only, once for the life of the process**. Writable =
   this process holds ``<root>/.lock`` and keeps it; read-only = every write raises
@@ -41,7 +49,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import aiofiles
-import ulid
 
 from ghoshell_moss.contracts.workspace import FileLocker
 from ghoshell_moss.memento.abcd import (
@@ -338,8 +345,10 @@ class FsBranch(Branch):
         self._memento._require_writable()
         confluences, rejected_confluences = self._absorb_confluences()
         children, rejected_children = self._absorb_children()
+        seq = len(self.commits()) + 1
         ref = CommitRef(
-            seq=len(self.commits()) + 1,
+            id=f"{self.index}-{seq}",
+            seq=seq,
             metatype=metatype,
             metadata=metadata or {},
             confluences=confluences,
@@ -1006,8 +1015,9 @@ class FsMemento(Memento):
         # and append a second branch log row, silently re-pointing a branch that is still in use.
         if self._ref_path(name).exists():
             raise NameError(f"branch '{name}' already exists")
-        branch_id = str(ulid.ULID())
         index = len(_read_jsonl(self._branches_jsonl())) + 1
+        # The id is the log position: the log is append-only, so a position never repeats.
+        branch_id = f"b{index}"
         created = _now_utc()
         meta = BranchMeta(
             branch_id=branch_id,

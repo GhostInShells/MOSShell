@@ -1,3 +1,9 @@
+"""Memento — the cognitive trajectory: branches, commits, and the notes that interpret them.
+
+The contract fixes behavior, not storage: any implementation satisfying it is valid.
+See ``SPECIFICATION.md`` for the full specification.
+"""
+
 from .abcd import (
     COMMIT_MEMENTO_FILE,
     BranchAddr,

@@ -16,8 +16,9 @@ than v3 (abc.py) by design:
   index is the creation ordinal in the owner's ``branches.jsonl``, the commit seq is
   the row ordinal in the branch's ``commits.jsonl``. Both are frozen at production
   time and both files are append-only, so a coordinate is permanently stable. Seeing
-  and citing both use the coordinate; ``id`` (ULID) is global identity only and never
-  enters a view.
+  and citing both use the coordinate. A commit also carries an ``id`` — an identity the
+  implementation assigns at creation: opaque to this contract, unique within its branch,
+  used as a map key (the Note lookup) and never as an address.
 - **Single source of truth for the message**: a commit carries no message; the message
   lives only in a Note (one home), last-wins. ``commit(message=...)`` is convenience
   sugar = anchor + a seeded Note, but on disk the message still lands only in the Note
@@ -57,7 +58,6 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
-import ulid
 
 __all__ = [
     "COMMIT_MEMENTO_FILE",
@@ -87,10 +87,6 @@ purpose: ``README.md`` exists in every repository on earth, so a model grepping
 downward would drown in noise, while every hit on this name is a real node. See
 ``CommitView.memento_path`` for where it lives.
 """
-
-
-def _unique_id() -> str:
-    return str(ulid.ULID())
 
 
 def _now_utc() -> datetime:
@@ -126,9 +122,17 @@ class BranchAddr(BaseModel):
       be rendered as ``{index}-{seq}`` without touching the disk.
     - ``branch_name`` is for the eye. Names rot (a deleted name can be given to a new branch),
       so a name must never be used to resolve a relationship — only to show one.
+
+    A branch id is assigned by the implementation when the branch is created: opaque to this
+    contract, unique within the owner, and unchanged for the life of the branch — a rename moves
+    the name, never the identity. How an id is formed is the implementation's business, so never
+    parse one to recover ``branch_index``.
     """
 
-    branch_id: str = Field(description="Stable identity (ULID). The only field a relationship resolves on.")
+    branch_id: str = Field(
+        description="Stable identity — opaque to this contract, unique within the owner. "
+                    "The only field a relationship resolves on.",
+    )
     branch_name: str = Field(description="Human-readable name. Display only — never a resolution key.")
     branch_index: int = Field(
         default=0,
@@ -216,7 +220,14 @@ class CommitRef(BaseModel):
     second half of the coordinate.
     """
 
-    id: str = Field(default_factory=_unique_id)
+    id: str = Field(
+        default="",
+        description=(
+            "The commit's identity — opaque to this contract, unique within its branch, assigned "
+            "at creation. A map key (the Note lookup), never a parsed address. Empty only on a "
+            "corrupt placeholder."
+        ),
+    )
     seq: int = Field(
         default=0,
         description="In-branch commit ordinal (1-based), frozen at commit time — second half of the coordinate.",
@@ -438,7 +449,10 @@ class ForkRef(BaseModel):
 class BranchMeta(BaseModel):
     """Branch metadata written at creation — ``branches/{branch_id}/meta.json``."""
 
-    branch_id: str = Field(...)
+    branch_id: str = Field(
+        ...,
+        description="Stable identity — opaque to this contract, unique within the owner.",
+    )
     index: int = Field(
         default=0,
         description="Branch ordinal within the owner (1-based), frozen at creation — first half of the coordinate.",
@@ -460,8 +474,8 @@ class CommitView(BaseModel):
     ``BranchView`` holds it and ``Branch`` exposes it. ``ref`` carries every anchor fact
     (created / metatype / metadata); ``note`` is the home of the message and is None when
     no Note exists. ``coord`` = ``{branch_index}-{ref.seq}`` — the address models and
-    humans use to see and cite a commit (``id`` is a ULID, expensive in tokens, and never
-    enters a view). title = first line of the message (truncated), body = the rest;
+    humans use to see and cite a commit; ``ref.id`` stays an opaque key that never enters
+    a view. title = first line of the message (truncated), body = the rest;
     truncation for rendering is the consumer's job — this model only does deterministic
     derivation.
 
@@ -625,7 +639,10 @@ class BranchView(BaseModel):
     branch_id: str
     index: int = Field(description="Branch ordinal within the owner (1-based) — first half of the coordinate.")
     created: AwareDatetime
-    commit_id: str = Field(description="Id of the most recent commit, for talking to this commit.")
+    commit_id: str = Field(
+        description="The most recent commit's id — opaque to this contract, resolved within this "
+                    "branch. Empty when the branch has no commits.",
+    )
     previous: "BranchView | None" = Field(default=None, description="Forked parent branch (identity + size only).")
     fork_coord: str = Field(
         default="",
@@ -939,7 +956,12 @@ class Memento(ABC):
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
     ) -> Branch:
-        """Create a new branch. The name must not exist, otherwise NameError."""
+        """Create a new branch. The name must not exist, otherwise NameError.
+
+        The branch id is assigned by the implementation: opaque, unique within the owner, and
+        not derived from the name — a rename keeps it. How it is formed is not part of this
+        contract.
+        """
 
     @abstractmethod
     def get_branch(self, name: str) -> Branch | None:

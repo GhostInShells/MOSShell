@@ -9,6 +9,7 @@ Semantics are git's, deliberately: someone who knows ``git log``/``git show``/
     show <coord>           one anchor in detail — the note and its directory
     commit -m "..."        freeze the span since the last anchor
     branch list|show|create
+    spec                   the specification — the contract this index answers to
 
 Two things are deliberately absent. ``read`` — the raw span lives in the agent session
 store, not in this index, so reading it belongs to the ghost channel that holds the
@@ -268,3 +269,18 @@ def branch_create(
     m = _open_writable(resolved)
     branch = m.create_branch(name, description)
     print_success(f"created branch `{branch.ref.name}` at {branch.path}")
+
+
+# -- spec -----------------------------------------------------------------
+
+
+@memento_app.command("spec", short_help="Print the memento specification.")
+def spec_cmd() -> None:
+    """Print SPECIFICATION.md — the contract this implementation answers to."""
+    import ghoshell_moss.memento
+
+    spec_path = Path(ghoshell_moss.memento.__file__).parent / "SPECIFICATION.md"
+    if spec_path.is_file():
+        echo(spec_path.read_text(encoding="utf-8"))
+    else:
+        print_error("SPECIFICATION.md not found")
