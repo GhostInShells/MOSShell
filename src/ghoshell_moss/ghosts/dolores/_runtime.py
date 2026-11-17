@@ -792,7 +792,13 @@ class Dolores(Ghost):
                         )
                     )
                     self._container.set(BesideRuntime, self._beside_runtime)
-            self.runtime_contracts().validate(self._container)
+            # Declaring a contract is not the promise; constructing it is. Everything its
+            # providers need has been published by now (dsh connection, memento, config store),
+            # so a broken dependency fails the boot here instead of at first use.
+            contracts = self.runtime_contracts()
+            contracts.validate(self._container)
+            for contract in contracts.contracts:
+                self._container.force_fetch(contract)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

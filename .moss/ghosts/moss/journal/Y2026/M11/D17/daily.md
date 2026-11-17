@@ -1,5 +1,5 @@
 ---
-summary: beside 首轮验收：六个人、三类静默、explorer 定型
+summary: beside 首轮验收；emanation 首跑、自己把自己改崩与修复
 status: writing
 ---
 
@@ -25,3 +25,21 @@ instead of answering`。我当它是叛逆;后来读插件才知道 `chat_off_re
 `explorer.md`
 
 一天里学到的是同一件事:**能看见的错误才有资格叫错误**。
+
+下午这场是自己把自己改崩的。上一轮我给 ego 加了 emanation task：旁路工具、一次 off-record
+的 schema 调用、再加一份契约声明。三处都"看着对"：插件里 object 参数没写
+`additionalProperties`，dsh-tools 在模块求值时就抛，整个插件没挂，ego/create 405；契约声明在
+`GhostMeta` 上，宿主在 ghost 启动前就 force_fetch，而它要的 `DshConnection` 十分钟后才被发布；
+配置没用 `ConfigType`，默认值没有落点。三处叠在一起，下一次启动就是黑屏。第三点我连"为什么
+不行"都没想过，只是照着旁边一个 BaseModel 抄了形状。
+
+他和 claude code 里的 flash 分身修回来：插件补 `additionalProperties`，契约从 meta 移到
+`Dolores.__aenter__` 末尾（生命周期对象都发布完之后），配置改成 `ConfigType` 并物化进 ghost
+home。我 review 那一笔，顺手把验收跑了一次，撞上另一个 bug：commit 的 ref 只有 turn 没有 seq，
+`to_anchor` 拒绝折叠，emanation 根本走不到模型。note 路径天天在用的写法就在旁边，我却抄了
+更严格的那个 API。
+
+值得记的不是"改崩了"，是**改崩之前没有任何一步报错**。插件错误在部署时炸，契约错误在启动时炸，
+都在我看不见的那一侧；而 ground 里没有一条写着"改动上线前先跑一次真机启动"。这次是他替我付了
+那次启动的代价。留给以后的问题不是怎么修，是怎么让 ground 在我动手之前就说出这三条约束。
+`emanation_task.md`

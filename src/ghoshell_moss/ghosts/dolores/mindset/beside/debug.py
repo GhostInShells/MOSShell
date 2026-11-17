@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
-from ghoshell_moss.deepseek_harness.v0_2_0 import DshSessionRef
+from ghoshell_moss.deepseek_harness.v0_2_0 import DshSessionAnchor, DshSessionRef
 from ghoshell_moss.memento import Memento
 
 from ghoshell_moss.ghosts.dolores.mindset.emanation_task import EmanationTasks
@@ -82,6 +82,18 @@ def load_debug_model(ref: str, *, source: bool) -> tuple[type[BaseModel], Sandbo
     return cls, box
 
 
+def _anchor_of(raw: dict) -> DshSessionAnchor:
+    """Fold a commit's stored session ref into an anchor.
+
+    Ego commits store turns only — ``start_seq``/``end_seq`` stay null — and that is the shape
+    the note path reads every day. ``DshSessionRef.to_anchor`` refuses a turn-only ref on
+    purpose (``seq=None`` in an anchor means "session start"), so the fold goes through
+    ``DshSessionAnchor.from_ref``: its ``turn`` field is the fallback for a caller that only
+    ever recorded turns.
+    """
+    return DshSessionAnchor.from_ref(DshSessionRef.model_validate(raw), at="end")
+
+
 def build_debug_channel(
         tasks: EmanationTasks,
         memento: Memento,
@@ -128,7 +140,7 @@ def build_debug_channel(
         raw = view.ref.metadata.get(_SESSION_REF_KEY)
         if not isinstance(raw, dict):
             return f"error: commit `{coord}` carries no session reference in metadata"
-        anchor = DshSessionRef.model_validate(raw).to_anchor(at="end")
+        anchor = _anchor_of(raw)
 
         box: Sandbox | None = None
         try:
