@@ -63,9 +63,9 @@ async def test_think_returns_a_receipt_and_waits_for_the_step_edge():
 
     async with lifecycle:
         async with _runtime(session, signals, lifecycle=lifecycle) as runtime:
-            receipt = runtime.think("one || two")
+            receipt = runtime.think("one\n\ntwo")
             # The receipt is immediate; nothing is asked before the edge. It is plain text and
-            # it carries the parsed count — the only feedback a wrong separator ever gets.
+            # it carries the parsed count — the only place a mis-split becomes visible.
             assert receipt == "beside-think #1: 2 direction(s)"
             assert session.calls == []
 
@@ -91,7 +91,7 @@ async def test_a_failed_direction_rides_the_same_delivery_as_an_error():
 
     async with lifecycle:
         async with _runtime(session, signals, lifecycle=lifecycle) as runtime:
-            runtime.think("only || two")
+            runtime.think("only\n\ntwo")
             lifecycle.fire_step_end(StepEndEvent(turn=1, step=1, seq=7))
             await _drain(lifecycle, runtime)
 
@@ -110,7 +110,7 @@ async def test_directions_are_capped_by_config():
         async with _runtime(
                 session, signals, config=EgoBesideMindConfig(directions_max=2), lifecycle=lifecycle,
         ) as runtime:
-            receipt = runtime.think("a || b || c || d")
+            receipt = runtime.think("a\n\nb\n\nc\n\nd")
             lifecycle.fire_step_end(StepEndEvent(turn=1, step=1, seq=1))
             await _drain(lifecycle, runtime)
 
@@ -123,7 +123,7 @@ def test_think_refuses_an_empty_group():
     runtime = _runtime(_Session(), [], lifecycle=lifecycle)
 
     with pytest.raises(ValueError):
-        runtime.think("  ||  || ")
+        runtime.think(" \n\n\t\n\n ")
 
 
 @pytest.mark.asyncio
@@ -253,21 +253,35 @@ class TestBesideFactoryGate:
         assert channel.name() == "beside"
 
 
-def test_a_custom_separator_is_honoured():
-    """`sep` exists because a direction's own text may contain the default one."""
+def test_a_blank_line_separates_directions():
+    """The separator is a blank line — visible in the text itself, nothing to remember.
+
+    The old `||` needed the caller to recall a token and to check that no direction contained
+    it. A paragraph break is what the text already looks like, and a direction that wants two
+    paragraphs is a brief, not a question.
+    """
     lifecycle = EgoLifecycleBus()
     runtime = _runtime(_Session(), [], lifecycle=lifecycle)
 
-    receipt = runtime.think("第一条 ## 第二条 ## 第三条", sep="##")
+    receipt = runtime.think("first question\n\nsecond question\n\nthird question")
 
     assert receipt == "beside-think #1: 3 direction(s)"
 
 
-def test_a_wrong_separator_is_visible_in_the_receipt():
-    """The failure this mechanism actually had: five paragraphs, four newlines, one direction.
+def test_the_old_separator_is_now_ordinary_text():
+    """A stale `||` habit must not split a direction: the token is just text now."""
+    lifecycle = EgoLifecycleBus()
+    runtime = _runtime(_Session(), [], lifecycle=lifecycle)
 
-    Nothing is wrong with the input — it is a valid one-direction call. The receipt is the
-    only place the mistake can show, so the count it carries is the point of its existence.
+    receipt = runtime.think("either this || that")
+
+    assert receipt == "beside-think #1: 1 direction(s)"
+
+
+def test_soft_line_breaks_stay_inside_one_direction():
+    """A paragraph may wrap over several lines; only a blank line starts the next direction.
+
+    This is a legal one-direction call, and the receipt is the only place its shape is visible.
     """
     lifecycle = EgoLifecycleBus()
     runtime = _runtime(_Session(), [], lifecycle=lifecycle)
@@ -275,3 +289,19 @@ def test_a_wrong_separator_is_visible_in_the_receipt():
     receipt = runtime.think("第一段\n第二段\n第三段")
 
     assert receipt == "beside-think #1: 1 direction(s)"
+
+
+def test_the_doc_renders_the_configured_cap():
+    """The cap is config, and the doc is where it is read before a call — so the number must
+    come from the config, never from a literal in the docstring."""
+    from ghoshell_moss.ghosts.dolores.mindset.beside.channel import build_beside_channel
+
+    lifecycle = EgoLifecycleBus()
+    runtime = _runtime(
+        _Session(), [], config=EgoBesideMindConfig(directions_max=7), lifecycle=lifecycle,
+    )
+
+    command = build_beside_channel(runtime).build.get_own_command("think")
+
+    assert command is not None
+    assert "7 at max" in command.meta().interface

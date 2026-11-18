@@ -17,6 +17,21 @@ from .runtime import BesideRuntime
 __all__ = ["EgoBesideChannel", "build_beside_channel"]
 
 
+def _think_doc(max_directions: int) -> str:
+    """`think`'s doc — read at the moment of calling, so it is one motion, not a rule list.
+
+    The cap is rendered in rather than written down: it is a config value, and a docstring that
+    hardcodes a number drifts from the config the first time either one changes.
+    """
+    return (
+        "Ask yourself in directions — questions, not briefs — so no direction has to wait its\n"
+        "turn: a parallel you reads this same context, this command included, and answers from\n"
+        "here in later moments.\n"
+        "\n"
+        f":param text__: one direction per paragraph ({max_directions} at max).\n"
+    )
+
+
 def build_beside_channel(
         runtime: BesideRuntime,
         *,
@@ -31,31 +46,17 @@ def build_beside_channel(
 
     @chan.build.instruction
     async def _instruction() -> str:
-        # Only what the interface cannot say: the timing, and the one number that is config,
-        # not signature. Command usage belongs in the command's own docstring.
+        # Only what the interface cannot say: the timing. The cap is config, not signature, and
+        # it rides the command's own docstring — one home, so the number cannot drift.
         return (
             "## Beside (parallel thought)\n"
             "A group dispatched now is read one step behind: it does not move you and does not\n"
-            f"touch the world. At most {runtime.directions_max()} directions per call."
+            "touch the world."
         )
 
-    @chan.build.command(name="think")
-    async def think(text__: str, sep: str = "||") -> str:
-        """Think several directions through in parallel, without holding the conversation.
-
-        Each direction is one independent round on this session's own context: no tools, nothing
-        runs, nothing enters the record. The conclusions arrive later as one delivery —
-        `<beside-think seq="k">` carrying one `<direction i="n">` per direction, and an
-        `<error i="n">` where a direction failed.
-
-        Use it when a decision needs several independent angles and you must keep interacting
-        meanwhile. Do not use it to think for yourself now — if you can focus, think directly.
-        Do not re-think directions you already issued: they come back as one group.
-
-        :param text__: the directions, each a self-contained instruction.
-        :param sep: what separates them; `||` unless the text needs something else.
-        """
-        return runtime.think(text__, sep=sep)
+    @chan.build.command(name="think", doc=lambda: _think_doc(runtime.directions_max()))
+    async def think(text__: str) -> str:
+        return runtime.think(text__)
 
     if debug is not None:
         chan.build.add_virtual_channel(debug)

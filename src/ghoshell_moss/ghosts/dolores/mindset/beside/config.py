@@ -31,11 +31,12 @@ class EgoBesideMindConfig(ConfigType):
         ),
     )
     directions_max: int = Field(
-        default=4,
+        default=5,
         ge=1,
         description=(
             "the cap on directions in one `think` call. Each direction is one off-record model "
-            "round, so the cap is a cost bound, not a UI limit; extra directions are dropped."
+            "round, so the cap is a cost bound, not a UI limit; extra directions are dropped. "
+            "The command's docstring renders this number in, so raising it here is the only edit."
         ),
     )
     effort: str = Field(

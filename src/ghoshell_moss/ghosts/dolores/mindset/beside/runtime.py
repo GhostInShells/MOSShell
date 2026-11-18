@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 from collections.abc import Callable
 from datetime import datetime
 from xml.sax.saxutils import escape
@@ -34,6 +35,17 @@ from ghoshell_moss.ghosts.dolores.mindset.seeds import BESIDE_SESSION_LINE, BESI
 from .config import EgoBesideMindConfig
 
 __all__ = ["BesideRuntime", "BesideTicket", "BesideNoAnswer"]
+
+# One direction per paragraph. A blank line is the separator because the text already looks
+# that way while it is being written — nothing to remember, nothing to escape, and a direction
+# that needs two paragraphs is already a brief rather than a question.
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n+")
+
+
+def split_directions(text: str) -> tuple[str, ...]:
+    """The directions in one `think` body: paragraphs, in order, blanks dropped."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return tuple(part.strip() for part in _PARAGRAPH_BREAK.split(normalized) if part.strip())
 
 
 class BesideNoAnswer(RuntimeError):
@@ -119,26 +131,24 @@ class BesideRuntime:
     # ── the command side ───────────────────────────────────────────
 
     def directions_max(self) -> int:
-        """The cap the next group is truncated at — read live, so a config edit reaches the
-        instruction on its next refresh without a restart."""
+        """The cap the next group is truncated at — read live, so a config edit reaches
+        `think`'s docstring on its next render without a restart."""
         return self._config_source().directions_max
 
-    def think(self, text: str, sep: str = "||") -> str:
+    def think(self, text: str) -> str:
         """Queue one group and return its receipt; the group starts at the next step end.
 
         The receipt is plain text, not a container: it is read once, to check what the call
-        actually parsed — how many directions went in, how many the cap dropped. That check is
-        the only feedback a wrong separator ever gets, so it must say the count.
+        actually parsed — how many directions went in, how many the cap dropped.
 
-        Empty segments are dropped; more than the configured cap is truncated (a cap is a cost
+        Directions are paragraphs, so the separator is visible in the text itself. Empty
+        paragraphs are dropped; more than the configured cap is truncated (a cap is a cost
         bound, not a parse error). No direction at all is a caller error — a group with nothing
         to think about would produce an empty delivery.
         """
-        if not sep:
-            raise ValueError("beside.think needs a non-empty separator")
-        parts = tuple(part.strip() for part in text.split(sep) if part.strip())
+        parts = split_directions(text)
         if not parts:
-            raise ValueError(f"beside.think needs at least one non-empty direction, separated by `{sep}`")
+            raise ValueError("beside.think needs at least one non-empty direction, separated by a blank line")
         directions = parts[: self._config_source().directions_max]
         self._seq += 1
         ticket = BesideTicket(seq=self._seq, directions=directions, issued_at=datetime.now().astimezone())
