@@ -30,6 +30,7 @@ from ghoshell_moss.ghosts.dolores.configs import DoloresConfigStore
 from ghoshell_moss.ghosts.dolores.constants import DOLORES_PROMPTS_DIRECTORY
 from ghoshell_moss.ghosts.dolores.mindset.seeds import (
     BESIDE_THINK_SEED,
+    JOURNAL_SPEC_SEED,
     MEMENTO_CHAT_SEED,
     MEMENTO_NOTE_SEED,
     SCHEDULER_CHAT_SEED,
@@ -83,6 +84,7 @@ class DefaultPrompterKeys:
     MEMENTO_CHAT = "memento.chat"
     SCHEDULER_CHAT = "scheduler.chat"
     BESIDE_THINK = "beside.think"
+    JOURNAL_SPEC = "journal.spec"
 
 
 def _validate_key(key: str) -> str:
@@ -240,6 +242,13 @@ class PromptManager:
             seed = seeds.get(spec.key)
             if seed is not None and spec.seed != seed:
                 spec.seed = seed
+                changed = True
+        # A key the code added after this home was materialized must still appear: the
+        # manifest's origin is the code, and a missing key would make its prompt unusable.
+        known = {spec.key for spec in self._config.specs}
+        for spec in self._defaults:
+            if spec.key not in known:
+                self._config.specs.append(spec.model_copy(deep=True))
                 changed = True
         if changed:
             self._save()
@@ -420,6 +429,12 @@ def default_specs() -> list[PromptSpec]:
             description="Think one direction through, off-record, beside the main path.",
             slots={},
             seed=BESIDE_THINK_SEED,
+        ),
+        PromptSpec(
+            key=DefaultPrompterKeys.JOURNAL_SPEC,
+            description="Write the journal: the day's page, and the month and year it belongs to.",
+            slots={},
+            seed=JOURNAL_SPEC_SEED,
         ),
     ]
 

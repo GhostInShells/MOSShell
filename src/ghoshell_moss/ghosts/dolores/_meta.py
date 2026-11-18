@@ -142,6 +142,7 @@ class DoloresMeta(GhostMeta):
         """dolores prototype private providers."""
 
         from .configs import DoloresConfigStoreProvider
+        from .journal.provider import JournalProvider
         from .mindset.emanation_task import EmanationTasksProvider
         from .mindset.prompter import PromptManagerProvider
         from .scheduler_recall import SchedulerRecallerProvider
@@ -151,6 +152,7 @@ class DoloresMeta(GhostMeta):
             PromptManagerProvider(),
             EmanationTasksProvider(),
             SchedulerRecallerProvider(),
+            JournalProvider(),
         ]
 
     # ── factory ─────────────────────────────────────

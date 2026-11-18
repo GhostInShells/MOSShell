@@ -20,9 +20,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ghoshell_moss.channels.ground_channel import new_ground_channel
-from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.channel_builder import MutableChannel
+from ghoshell_moss.core.blueprint.states_channel import new_prime_channel
 
 from ._ego_memento import EgoMementoManager
+from .journal.channel import build_journal_channel
+from .journal.contract import DoloresJournal
 from .memento_channel import build_memento_channel
 from .mindset.prompter import PromptManager
 from .model_channel import ModelOrgan, identity_text, new_model_channel
@@ -38,6 +41,7 @@ def build_dolores_channel(
     commit_anchor: Callable[..., str] | None = None,
     checkout_hook: Callable[[str, str, str], str] | None = None,
     model: ModelOrgan | None = None,
+    journal: DoloresJournal | None = None,
     name: str = "ghost",
     description: str | None = None,
 ) -> MutableChannel:
@@ -53,13 +57,17 @@ def build_dolores_channel(
         一条给模型的回执). None = 不挂 ``commit`` 命令.
     :param checkout_hook: 换线的后端 (收 name / title / note, 返回回执). None = 不挂
         ``checkout`` 命令 —— 转场归 ego, channel 只做校验与排队.
+    :param journal: 日志器官的契约. None = 不挂 ``ghost.journal``; 给了则作为 gated 虚拟子通道,
+        需要时由 ``ghost:mount_child`` 打开 (读面最终进 memory, 这个 channel 只做调试).
     :param name: channel 名 (runtime 以 ``ghost`` 为键注册, 同名保持一致).
     :param description: 覆盖默认描述.
     """
     if description is None:
         description = "Dolores' reflexive control surface — its sub-channels are its own organs."
 
-    chan = new_channel(name=name, description=description)
+    # The ghost gates its virtual children: the journal's read face belongs in memory, so its
+    # debug channel is mounted on request rather than carried on the ordinary surface.
+    chan = new_prime_channel(name=name, description=description, gate=True)
 
     @chan.build.instruction
     async def _instruction() -> str:
@@ -91,6 +99,9 @@ def build_dolores_channel(
                 checkout_hook=checkout_hook,
             )
         )
+    if journal is not None:
+        journal_channel = build_journal_channel(journal)
+        chan.build.virtual_children(lambda: {"journal": journal_channel})
     # beside — mounted by its factory, not here: the factory reads the ghost's config store and
     # returns None when the organ is disabled or no runtime was built for this boot.
     from .mindset.beside import EgoBesideChannel

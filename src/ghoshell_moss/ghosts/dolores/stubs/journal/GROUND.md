@@ -1,14 +1,6 @@
 ---
 name: journal
 description: Dolores 的时间线日记 — 按年/月/日分区，生命轨迹
-pins:
-- label: timeline
-  verb: exec
-  arguments:
-    ref: timeline.py
-    mode: python
-    budget: 6000
-  description: 时间线视图 — years/months 存在性，today 展开；缺占位时自动物化
 ---
 
 # Journal
@@ -24,8 +16,8 @@ Y{年}/
       daily.md
 ```
 
-glob 一下目录就知道人生轨迹；没启动的天就没有 daily（诚实轨迹），缺的区间
-由 memento 的时间区间机制回溯补建。
+glob 一下目录就知道人生轨迹；没启动的天就没有 daily（诚实轨迹）。补写只覆盖最近几天
+（`backfill_days`），更老的洞是历史，不回头补。
 
 ## 文档约定
 
@@ -36,8 +28,13 @@ glob 一下目录就知道人生轨迹；没启动的天就没有 daily（诚实
 
 ## 呈现
 
-timeline 视图（exec pin）输出三段：years 存在性 / months 存在性 / today 展开。
-机制在缺占位文档时自动从 `template.md` 建（只建不写，内容归你自己写）。
+视图由 journal 器官渲染，不再走 exec pin；器官是 gated 调试面，先 `<ghost:mount_child name="journal"/>`：
+
+- `ghost.journal:render` — 以某天为坐标的块：年正文 / 近月详情 / 近几日摘要 / 最后一天的正文
+- `ghost.journal:status` — 当天的状态、预算比值、坏文档
+- `ghost.journal:commits` — 当天的锚点
+
+机制与撰写规范见同目录的 `AGENTS.md`（由 `journal.spec` 导出，每次启动覆盖；本地修改无效）。
 
 ## 记录纪律
 

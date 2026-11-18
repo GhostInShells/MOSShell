@@ -488,10 +488,15 @@ class Dolores(Ghost):
             return None
         if self._channel is None:
             from .channel import build_dolores_channel
+            from .journal.contract import DoloresJournal
             from .mindset.prompter import PromptManager
 
             prompt_manager = (
                 self._container.force_fetch(PromptManager)
+                if self._container is not None else None
+            )
+            journal = (
+                self._container.force_fetch(DoloresJournal)
                 if self._container is not None else None
             )
             project_ground = None
@@ -506,6 +511,7 @@ class Dolores(Ghost):
                 commit_anchor=self._commit_anchor,
                 checkout_hook=self._checkout_hook,
                 model=self._model_organ(),
+                journal=journal,
             )
             # Bind what the beside factory resolves from IoC. The factory sees the channel's
             # container, not this one; binding here keeps the dependency explicit instead of
@@ -649,9 +655,10 @@ class Dolores(Ghost):
     def runtime_contracts(self) -> Contracts:
         """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""
         from .configs import DoloresConfigStore
+        from .journal.contract import DoloresJournal
         from .mindset.emanation_task import EmanationTasks
         from .mindset.prompter import PromptManager
-        return Contracts.new(DoloresConfigStore, PromptManager, EmanationTasks)
+        return Contracts.new(DoloresConfigStore, PromptManager, EmanationTasks, DoloresJournal)
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
@@ -814,6 +821,17 @@ class Dolores(Ghost):
             contracts.validate(self._container)
             for contract in contracts.contracts:
                 self._container.force_fetch(contract)
+            # The journal's root AGENTS.md is a projection of the spec: exported at boot and
+            # overwritten each time. A failed export must not take the boot down — the journal
+            # still reads; the node just lacks its law page.
+            from .journal.contract import DoloresJournal
+
+            journal = self._container.get(DoloresJournal)
+            if journal is not None:
+                try:
+                    await journal.export()
+                except Exception:
+                    self.logger.exception("journal: cannot export the root AGENTS.md")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
