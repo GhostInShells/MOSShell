@@ -47,6 +47,7 @@ from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     PromptError,
     PromptManager,
 )
+from ghoshell_moss.memento.abcd import CommitMessage
 
 __all__ = ["build_memento_channel"]
 
@@ -175,12 +176,17 @@ def _commit_doc(prompt_manager: PromptManager | None, manager: EgoMementoManager
         "A commit is a request, not a write: the span ends at the last completed turn. Write the\n"
         "note yourself and you are its author; leave it empty and the background summarizer writes\n"
         "it. The coordinate arrives in the branch notice after the anchor lands.",
+        "`replan` — when the work is done, or you are stuck in a corner, release your attention\n"
+        "into one note: what holds, what is open, where you go next. The context folds away and\n"
+        "nothing of this span stays in view; a new epoch opens, and you wake into the mind you\n"
+        "wrote.",
     ]
     if guide:
         parts.append(guide)
     parts.append(
         f":param text__: the note — a one-line title, then the body "
-        f"(≤ {manager.config.note_body_tokens} tokens)."
+        f"(≤ {manager.config.note_body_tokens} tokens).\n"
+        ":param op: empty for an ordinary anchor; `replan` folds the context behind this note."
     )
     return "\n\n".join(parts)
 
@@ -189,7 +195,7 @@ def build_memento_channel(
     manager: EgoMementoManager,
     *,
     prompt_manager: PromptManager | None = None,
-    commit_anchor: Callable[[str], str] | None = None,
+    commit_anchor: Callable[..., str] | None = None,
     checkout_hook: Callable[[str, str, str], str] | None = None,
     name: str = "memento",
     description: str | None = None,
@@ -441,8 +447,23 @@ def build_memento_channel(
             always_observe=True,
             doc=lambda: _commit_doc(prompt_manager, manager),
         )
-        async def commit(text__: str = "") -> str:
-            return commit_anchor(text__)
+        async def commit(text__: str = "", op: str = "") -> str:
+            if not op:
+                return commit_anchor(text__)
+            note = text__.strip()
+            if not note:
+                # An op is a claim about the note; letting the summarizer fill it in would forge
+                # that claim on a summary. Refuse instead of anchoring something that is not ours.
+                return (
+                    f"[memento] op `{op}` needs a note — the summarizer cannot write one for you; "
+                    f"write the restart point yourself."
+                )
+            first, _, rest = note.partition("\n")
+            try:
+                message = CommitMessage(op=op, content=first.strip(), body=rest).to_str()
+            except ValueError as exc:
+                return f"[memento] refused: {exc}"
+            return commit_anchor(message, replan=(op == "replan"))
 
     @chan.build.command(name="memento_dir", always_observe=True)
     async def memento_dir(coord: str) -> str:

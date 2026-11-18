@@ -164,7 +164,6 @@ class DoloresMeta(GhostMeta):
         from ._runtime import Dolores
 
         home: Path | None = None
-        base_instruction: str | None = None
         if container is None:
             raise RuntimeError(f"IoCContainer {container} is invalid")
         matrix = container.get(Matrix)

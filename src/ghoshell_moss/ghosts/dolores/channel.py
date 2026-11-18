@@ -35,7 +35,7 @@ def build_dolores_channel(
     project_ground: str | Path | None = None,
     memento_manager: EgoMementoManager | None = None,
     prompt_manager: PromptManager | None = None,
-    commit_anchor: Callable[[str], str] | None = None,
+    commit_anchor: Callable[..., str] | None = None,
     checkout_hook: Callable[[str, str, str], str] | None = None,
     model: ModelOrgan | None = None,
     name: str = "ghost",

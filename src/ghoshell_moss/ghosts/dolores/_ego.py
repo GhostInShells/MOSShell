@@ -399,6 +399,9 @@ class DoloresEgo:
         # 待落锚: commit 是请求, 不是写 —— 轮中登记, turn/end 才落地 (边界不切在脚下).
         self._pending_commit: bool = False
         self._pending_note: str = ""
+        # 落锚后是否请求一次 replan 压缩 (整段不留 tail). 与 note 同一个边界, 只影响下一 run
+        # 启动时的切点; 普通 commit 不会碰它.
+        self._replan_pending: bool = False
         # 待执行的换线: 与 commit 同一个边界, 但只允许一次 —— 一轮里两个目标等于没有目标.
         self._pending_checkout: CheckoutRequest | None = None
         # 优雅退出用: 最近一条非空 assistant 文本 (运行时缓存; 退出时作 exit note 的 body;
@@ -406,6 +409,9 @@ class DoloresEgo:
         self._last_final_answer: str = ""
         # 待执行的 compact (上一有效 run 决定, 下一 run 启动执行) — 只在 run 边界写入/清空.
         self._pending_compact: bool = False
+        # 这次 compact 是否整段不留 tail (replan). 只在 compact 判定那一瞬间有效, 用完即清 ——
+        # 否则一次 replan 会给后面的阈值压缩留下一个错误的切点.
+        self._compact_no_tail: bool = False
         # compact 已发往 plugin、epoch 尚未开启时的 memory 暂存. 取消可能落在 RPC 中间:
         # 插件可能已经换了 surface, 而调用方还没拿到返回值 —— 由下一帧取走并补开 epoch.
         self._compact_memory: list[Message] | None = None
@@ -856,9 +862,15 @@ class DoloresEgo:
             return
         if self._pending_commit:
             note = self._pending_note
+            replan = self._replan_pending
             self._pending_commit = False
             self._pending_note = ""
+            self._replan_pending = False
             self._commit(message=note)
+            if replan:
+                # 新 tip 落地之后切点才存在, 而 surface 只在 run 边界安全 —— 登记给下一 run.
+                self._pending_compact = True
+                self._compact_no_tail = True
             return
         self._maybe_commit()
 
@@ -971,17 +983,22 @@ class DoloresEgo:
             body = body[:_EXIT_NOTE_MAX_CHARS].rstrip() + "…"
         return CommitMessage(op="exit", content="graceful shutdown", body=body).to_str()
 
-    def commit_anchor(self, note: str = "") -> str:
+    def commit_anchor(self, note: str = "", *, replan: bool = False) -> str:
         """Queue an anchor for the end of this turn (memento channel 的写面后端).
 
         commit 是请求, 不是一次写: 区间 = (上个锚点, 最后一个已完成 turn], 而脚下这一轮
         还没完成 —— 现在落锚只会封到上一轮. 所以先登记, 等 turn/end 再落地; 手动 commit
         和阈值 commit 因此走同一个边界.
+
+        ``replan=True`` 在落锚之后再登记一次"整段不留 tail"的压缩: anchor 落地时它才拿到
+        自己的 ``end_turn``, 下一 run 启动时按它切 —— 于是重启后的上下文只有这条 note 与
+        新 epoch 的 recap.
         """
         if self._memento_manager is None:
             return "[memento] no memento manager is wired — nothing can be anchored"
         if self._ego_session_id is None:
             return "[memento] the ego session is not started — nothing can be anchored"
+        self._replan_pending = self._replan_pending or replan
         if self._pending_commit:
             self._pending_note = note
             return "[memento] note updated — the commit still takes effect at the end of this turn."
@@ -1036,9 +1053,14 @@ class DoloresEgo:
         """
         if not valid:
             self._pending_compact = False
+            self._compact_no_tail = False
             return
         manager = self._memento_manager
         if manager is None:
+            return
+        if self._compact_no_tail:
+            # replan 不看窗口阈值, 也不需要两个锚点的 SCS —— 它切在自己的 end_turn 上.
+            self._pending_compact = True
             return
         if self._window_size >= manager.config.compact_tokens and manager.compact_cut_turn() is not None:
             self._pending_compact = True
@@ -1057,10 +1079,12 @@ class DoloresEgo:
         if not self._pending_compact:
             return None
         self._pending_compact = False
+        keep_tail = not self._compact_no_tail
+        self._compact_no_tail = False
         manager = self._memento_manager
         if manager is None:
             return None
-        cut = manager.compact_cut()
+        cut = manager.compact_cut(keep_tail=keep_tail)
         if cut is None:
             return None
         cut_turn, tip_coord = cut
@@ -1075,7 +1099,9 @@ class DoloresEgo:
                 self._logger.exception("dolores compact skipped — memory refresh failed")
                 return None
         try:
-            memory, notice = self._compact_memory_payload()
+            memory, notice = self._compact_memory_payload(
+                reason="threshold" if keep_tail else "replan", coord=tip_coord,
+            )
         except Exception:
             # 取 memory 就失败 = 还没动 surface, 直接放弃本次压缩 (旧语义下 memory 还在头部).
             self._logger.exception("dolores compact skipped — memory unavailable")
@@ -1121,23 +1147,37 @@ class DoloresEgo:
         memory, self._compact_memory = self._compact_memory, None
         return memory
 
-    def _compact_memory_payload(self) -> tuple[list[Message], str]:
-        """compact 的两块内容：memory 消息 + 一条 compact 说明.
+    def _compact_memory_payload(
+            self, *, reason: str = "threshold", coord: str = "",
+    ) -> tuple[list[Message], str]:
+        """compact 的两块内容：memory 消息 + 一条带名字的折叠说明.
 
         memory 不随 surface 替换交付（替换内容只有说明）—— 它由新 epoch 的 recap 槽重新注入，
         避免同一份 memory 在 surface 与 epoch 里出现两次。memory 仍然上行给 plugin，只作溢出
         兜底的缓存（plugin 在 request-error 时用它重建头部）。
+
+        ``reason`` 把"我按下的"和"系统替我按的"分开：replan 切在自己的 note 上，整段不留；
+        threshold 切在 tip 之前，tip 的 span 仍是 live tail。说明是折叠之后唯一能解释"刚才
+        发生了什么"的东西，所以它必须带地址与原因，而不是一句无人称的通用话。
         """
         if self._memories is None:
             return [], ""
         memory = [msg for msg in self._memories() if not msg.is_empty()]
         if not memory:
             return [], ""
-        notice = (
-            "Your context was compacted to stay within the model window. The memory view arrives "
-            "later in this window as the recap of this cognition epoch; the turns after this notice "
-            "are the live tail."
-        )
+        attrs = f'kind="folded" reason="{reason}"'
+        if coord:
+            attrs += f' at="{coord}"'
+        if reason == "replan":
+            lead = f"You released your attention into {coord}; the conversation up to it is gone."
+        else:
+            lead = (
+                f"Your context was compacted to stay within the model window; the conversation "
+                f"before {coord} is folded away, and {coord} stays as the live tail."
+                if coord else
+                "Your context was compacted to stay within the model window."
+            )
+        notice = f"<memento_notice {attrs}>{lead}</memento_notice>"
         return memory, notice
 
     def _session_start_turn(self) -> int:

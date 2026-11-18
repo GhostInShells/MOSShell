@@ -270,14 +270,16 @@ class _FakeCompactManager:
     def __init__(self, cut_turn=7, compact_tokens=0):
         self.config = SimpleNamespace(compact_tokens=compact_tokens)
         self._cut_turn = cut_turn
+        self.keep_tail_seen: list[bool] = []
 
     def compact_cut_turn(self):
         return self._cut_turn
 
-    def compact_cut(self):
+    def compact_cut(self, *, keep_tail: bool = True):
         """(cut_turn, tip coord) —— 压缩点连同"哪条留在 surface 里"一起给."""
         if self._cut_turn is None:
             return None
+        self.keep_tail_seen.append(keep_tail)
         return self._cut_turn, "1-9"
 
 
@@ -359,6 +361,41 @@ class TestDoloresEgoCompact:
         assert ego._pending_compact is False
         # 成功返回即交付, 不留下跨帧暂存.
         assert ego.take_compact_memory() is None
+
+    @pytest.mark.asyncio
+    async def test_the_fold_notice_names_its_cause(self):
+        """折叠之后唯一能解释"刚才发生了什么"的东西：带 reason 与地址的标签, 而不是一句通用话."""
+        ego = _compact_ego(memories=lambda: [self._memory_message()])
+
+        _, threshold = ego._compact_memory_payload(reason="threshold", coord="1-9")
+        _, replan = ego._compact_memory_payload(reason="replan", coord="1-9")
+
+        assert '<memento_notice kind="folded" reason="threshold" at="1-9">' in threshold
+        assert "live tail" in threshold
+        assert '<memento_notice kind="folded" reason="replan" at="1-9">' in replan
+        assert "conversation up to it is gone" in replan
+        # 不预告下一帧必然发生的事 —— 通知只说变了什么.
+        assert "memory view arrives" not in threshold
+        assert "memory view arrives" not in replan
+
+    @pytest.mark.asyncio
+    async def test_replan_compact_cuts_without_a_tail(self):
+        """replan 不看窗口阈值, 也不需要 SCS: 切点取 tip 的 end_turn, 整段对话都不留在 surface 里."""
+        manager = _FakeCompactManager(cut_turn=9)
+        launcher = _FakeCompactLauncher()
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=manager,
+            launcher=launcher,
+        )
+        ego._pending_compact = True
+        ego._compact_no_tail = True
+
+        await ego.compact_if_pending()
+
+        assert manager.keep_tail_seen == [False]
+        assert ego._compact_no_tail is False
+        assert launcher.calls[0][1]["cut_turn"] == 9
 
     @pytest.mark.asyncio
     async def test_compact_re_renders_memory_before_it_replaces_the_surface(self):
@@ -846,6 +883,17 @@ class TestDoloresEgoCommit:
         await ego._on_turn_end(self._turn_end(1))
         branch = memento.get_branch("main")
         assert branch.notes()[branch.commits()[0].id].message == "second"
+
+    @pytest.mark.asyncio
+    async def test_replan_commit_requests_a_no_tail_compact(self, tmp_path: Path):
+        """replan 的 note 落地之后, 下一 run 的压缩切在它自己的 end_turn 上 —— 整段不留."""
+        ego, _ = self._set_up(tmp_path, force_tokens=10 ** 9)
+        ego.commit_anchor("replan: the next frame\n\nopen: x", replan=True)
+
+        await ego._on_turn_end(self._turn_end(1))
+
+        assert ego._pending_compact is True
+        assert ego._compact_no_tail is True
 
     @pytest.mark.asyncio
     async def test_exit_note_is_a_system_record(self, tmp_path: Path):

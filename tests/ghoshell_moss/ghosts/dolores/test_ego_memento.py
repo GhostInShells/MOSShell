@@ -743,6 +743,68 @@ class TestEgoMementoCompactCut:
         manager.commit(session_id="s1", start_turn=7, end_turn=9)
         assert manager.compact_cut_turn() == 7
 
+    def test_no_tail_cuts_at_the_tip_end_turn(self, tmp_path: Path):
+        """replan 整段不留: 切在 tip 的 end_turn, 连最新的 span 也不保留."""
+        manager, _ = self._manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=3)
+        manager.commit(session_id="s1", start_turn=3, end_turn=7)
+
+        cut = manager.compact_cut(keep_tail=False)
+
+        assert cut is not None and cut[0] == 7
+
+    def test_no_tail_needs_no_second_commit(self, tmp_path: Path):
+        """没有 SCS 也能 replan —— 只需要一个可切的 end_turn."""
+        manager, _ = self._manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=3)
+
+        cut = manager.compact_cut(keep_tail=False)
+
+        assert cut is not None and cut[0] == 3
+
+
+class TestCommittedNotice:
+    """落锚后的状态增量 — 地址、时间、op 都在, 于是这条 notice 能和命令对上号."""
+
+    @staticmethod
+    def _manager(tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
+        from ghoshell_moss.memento import new_local_memento
+
+        memento = new_local_memento(tmp_path / "owner", writable=True)
+        memento.create_branch("main")
+        return EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig())
+
+    def test_it_carries_the_address_time_and_op(self, tmp_path: Path):
+        manager = self._manager(tmp_path)
+        ref = manager.commit(
+            session_id="s1", start_turn=0, end_turn=1,
+            message="replan: the next frame\n\nopen: what still has no answer",
+        )
+        assert ref is not None
+
+        text = manager.committed_notice(ref).to_content_string()
+
+        assert 'kind="committed"' in text
+        assert 'at="1-1"' in text
+        assert 'op="replan"' in text
+        assert 'time="' in text
+        assert "the next frame" in text
+        # 标题之后的部分不进 notice —— 它是状态增量, 不是正文.
+        assert "still has no answer" not in text
+
+    def test_a_prose_note_has_no_op_attribute(self, tmp_path: Path):
+        manager = self._manager(tmp_path)
+        ref = manager.commit(
+            session_id="s1", start_turn=0, end_turn=1, message="D26 the fix holds",
+        )
+        assert ref is not None
+
+        text = manager.committed_notice(ref).to_content_string()
+
+        assert 'op="' not in text
+        assert "D26 the fix holds" in text
+
 
 # ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
 

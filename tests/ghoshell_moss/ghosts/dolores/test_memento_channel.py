@@ -75,8 +75,10 @@ class TestMementoChannel:
         调用方的小心翼翼上.
         """
         pending = list(spans)
+        calls: list[tuple[str, bool]] = []
 
-        def commit_anchor(note: str) -> str:
+        def commit_anchor(note: str, replan: bool = False) -> str:
+            calls.append((note, replan))
             if not pending:
                 return "[memento] nothing new since the last anchor — not committed"
             start, end = pending.pop(0)
@@ -88,6 +90,7 @@ class TestMementoChannel:
             manager.schedule_note(anchor.id)
             return "[memento] commit queued — it takes effect at the end of this turn."
 
+        commit_anchor.calls = calls
         return commit_anchor
 
     def _channel(self, tmp_path: Path, connection=None, *, with_commit: bool = False):
@@ -356,6 +359,57 @@ class TestMementoChannel:
             second = await runtime.execute_command("commit", args=("two",))
         assert first == "[memento] commit queued — it takes effect at the end of this turn."
         assert second == "[memento] nothing new since the last anchor — not committed"
+
+    @pytest.mark.asyncio
+    async def test_an_op_commit_composes_the_op_line(self, tmp_path: Path):
+        """op 是参数, 不是从散文里解析出来的: 首行进 headline, 其余进 body."""
+        from ghoshell_moss.ghosts.dolores.memento_channel import build_memento_channel
+
+        manager, memento = self._manager(tmp_path)
+        committer = self._committer(manager)
+        chan = build_memento_channel(manager, commit_anchor=committer)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command(
+                "commit", args=("the next frame\n\nopen: what still has no answer", "replan")
+            )
+
+        assert result == "[memento] commit queued — it takes effect at the end of this turn."
+        branch = memento.get_branch("main")
+        assert branch.notes()[branch.commits()[0].id].message == (
+            "replan: the next frame\n\nopen: what still has no answer"
+        )
+        assert committer.calls == [(
+            "replan: the next frame\n\nopen: what still has no answer", True,
+        )]
+
+    @pytest.mark.asyncio
+    async def test_an_op_commit_without_a_note_is_refused(self, tmp_path: Path):
+        """op 是对 note 的一个声明; 让 summarizer 填内容等于伪造这个声明."""
+        from ghoshell_moss.ghosts.dolores.memento_channel import build_memento_channel
+
+        manager, memento = self._manager(tmp_path)
+        committer = self._committer(manager)
+        chan = build_memento_channel(manager, commit_anchor=committer)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command("commit", args=("  ", "replan"))
+
+        assert "needs a note" in result
+        assert committer.calls == []
+        assert memento.get_branch("main").commits() == []
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_op_is_refused_before_the_anchor(self, tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores.memento_channel import build_memento_channel
+
+        manager, memento = self._manager(tmp_path)
+        committer = self._committer(manager)
+        chan = build_memento_channel(manager, commit_anchor=committer)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command("commit", args=("a note", "not an op"))
+
+        assert "refused" in result
+        assert committer.calls == []
+        assert memento.get_branch("main").commits() == []
 
     @pytest.mark.asyncio
     async def test_fork_opens_a_line_from_the_current_position(self, tmp_path: Path):

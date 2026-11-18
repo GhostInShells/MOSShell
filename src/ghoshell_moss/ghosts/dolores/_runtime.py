@@ -427,7 +427,7 @@ class Dolores(Ghost):
         # disagrees with what `moss ground render` reports for the same field.
         return await self._ground_set.render()
 
-    def _commit_anchor(self, note: str) -> str:
+    def _commit_anchor(self, note: str, replan: bool = False) -> str:
         """memento channel 的落锚后端 —— 排队归 ego (turn span 记账在它手里), 这里只透传.
 
         ``channel()`` 在 ``__aenter__`` 之后才被调用, ego 一定已经在了; 真不在就是装配顺序被
@@ -435,7 +435,7 @@ class Dolores(Ghost):
         """
         if self._ego is None:
             raise RuntimeError("commit_anchor called before the ego session was created")
-        return self._ego.commit_anchor(note)
+        return self._ego.commit_anchor(note, replan=replan)
 
     def _checkout_hook(self, name: str, title: str, note: str) -> str:
         """memento channel 的换线后端 —— 校验与排队归 ego, 真正的转场在 turn/end.

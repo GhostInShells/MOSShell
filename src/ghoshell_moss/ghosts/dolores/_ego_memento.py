@@ -785,10 +785,23 @@ class EgoMementoManager:
         return f"{self._branch().index}-{commit.seq}"
 
     def committed_notice(self, commit: CommitRef) -> Message:
-        """某 commit 已生成 — 回执锚点坐标 (模型可观测的游标); turn 区间不可观测, 不透露."""
+        """某 commit 已生成 — 带地址、时间与 op 的状态增量, 让这条 notice 能和命令对上号.
+
+        地址是模型可观测的游标; turn 区间不可观测, 不透露. ``op`` 只在 note 首行确实是 op 线时
+        出现 (与读侧同一条解析规则), 于是 ``replan`` 落地和普通锚点在 notice 上就可分辨.
+        """
         coord = self.coord(commit)
-        return Message.new(tag="memento_notice", attributes={"kind": "committed"}).with_content(
-            f"a commit was made at {coord}."
+        attributes = {"kind": "committed", "at": coord}
+        title = ""
+        view = self._branch().get_commit(commit.seq)
+        if view is not None:
+            parsed = view.message_view()
+            if parsed.op:
+                attributes["op"] = parsed.op
+            title = parsed.content or parsed.headline
+            attributes["time"] = view.created.astimezone().strftime("%H:%M")
+        return Message.new(tag="memento_notice", attributes=attributes).with_content(
+            title or "(no note)"
         )
 
     def latest_ref(self) -> DshSessionRef | None:
@@ -972,19 +985,30 @@ class EgoMementoManager:
         cut = self.compact_cut()
         return None if cut is None else cut[0]
 
-    def compact_cut(self) -> tuple[int, str] | None:
+    def compact_cut(self, *, keep_tail: bool = True) -> tuple[int, str] | None:
         """``(cut_turn, tip_coord)`` —— 压缩点, 外加"哪一条 commit 留在 surface 里".
 
         两者必须一起给: commit 的 turn 决定 surface 从哪儿切, 坐标决定 memory 重渲染到哪儿停。
         只给 turn 的话, 重渲染的人还得自己反查是哪一条 —— 而那正好是最容易错的地方。
+
+        ``keep_tail=True`` 是阈值压缩: 切在 tip 的 ``start_turn``, 把最新一个 commit 的 span
+        原样留作原文 tail。``keep_tail=False`` 是 replan: 切在 tip 的 ``end_turn``, 整段对话
+        都不留 —— 重启后的上下文只有说明与新 epoch 的 recap, 所以 replan 的 note 必须是起点
+        本身, 而不能是一份摘要。
         """
         ref = self.latest_ref()
-        if ref is None or ref.start_turn <= 0:
+        if ref is None:
             return None
         commits = self._branch().commits()
         if not commits:
             return None
-        return ref.start_turn, self.coord(commits[-1])
+        if keep_tail:
+            if ref.start_turn <= 0:
+                return None
+            return ref.start_turn, self.coord(commits[-1])
+        if ref.end_turn <= 0:
+            return None
+        return ref.end_turn, self.coord(commits[-1])
 
     # ── branch ground (ego's convention, not memento's) ─────────────
 
