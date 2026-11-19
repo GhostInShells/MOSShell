@@ -50,7 +50,28 @@ class TestJournalDocs:
         assert Daily.filepath(tmp_path, AT) == tmp_path / "Y2026/M11/D19/daily.md"
         assert Daily.commits_filepath(tmp_path, AT) == tmp_path / "Y2026/M11/D19/.commits.jsonl"
         assert Monthly.filepath(tmp_path, 2026, 11) == tmp_path / "Y2026/M11/monthly.md"
+        assert Monthly.agents_filepath(tmp_path, 2026, 11) == tmp_path / "Y2026/M11/AGENTS.md"
         assert Yearly.filepath(tmp_path, 2026) == tmp_path / "Y2026/yearly.md"
+        assert Yearly.agents_filepath(tmp_path, 2026) == tmp_path / "Y2026/AGENTS.md"
+
+    def test_location_supplies_the_period(self, tmp_path):
+        # A document written before the period fields existed (or by hand): only the
+        # directory says which day it is. It must stay readable.
+        path = Daily.filepath(tmp_path, AT)
+        path.parent.mkdir(parents=True)
+        path.write_text("---\nsummary: legacy\nstatus: closed\n---\n\nlegacy body\n", encoding="utf-8")
+
+        loaded = Daily.load(path)
+        assert loaded.day == AT
+        assert loaded.status == "closed"
+        assert loaded.content.strip() == "legacy body"
+
+    def test_period_is_not_written_into_the_frontmatter(self, tmp_path):
+        path = Daily.filepath(tmp_path, AT)
+        Daily(day=AT, status="closed", summary="head", content="body").dump(path)
+
+        _, header, _ = path.read_text(encoding="utf-8").split("---", 2)
+        assert "day:" not in header
 
 
 class TestJournalRecord:
@@ -104,7 +125,7 @@ class TestJournalView:
         view = await journal.view(AT)
         assert [entry.month for entry in view.months] == [9, 10, 11]
         assert [entry.day.isoformat() for entry in view.days] == [
-            "2026-11-15", "2026-11-16", "2026-11-17",
+            "2026-11-16", "2026-11-17", "2026-11-18",
         ]
         assert view.last_day is not None
         assert view.last_day.day == date(2026, 11, 18)
@@ -115,9 +136,43 @@ class TestJournalView:
         assert "YYYYYYYYYYYYYYYYYYYY…" in text
         assert '<month month="2026-09">m9</month>' in text
         assert '<month month="2026-10">M10</month>' in text
-        assert '<day date="2026-11-15" status="closed">day 15</day>' in text
+        assert '<day date="2026-11-16">day 16</day>' in text
         assert '<last_day date="2026-11-18">body 18</last_day>' in text
-        assert '<today date="2026-11-19" status="pending"/>' in text
+        assert "<today" not in text
+
+    @pytest.mark.asyncio
+    async def test_open_tail_is_not_hidden(self, tmp_path):
+        journal = _journal(tmp_path, day_summaries=3)
+        root = journal.root
+        _closed(root, date(2026, 11, 16))
+        _closed(root, date(2026, 11, 17))
+        Daily(
+            day=date(2026, 11, 18), status="writing", summary="day 18", content="body 18",
+        ).dump(Daily.filepath(root, date(2026, 11, 18)))
+
+        view = await journal.view(AT)
+        assert [entry.day.isoformat() for entry in view.days] == [
+            "2026-11-16", "2026-11-17", "2026-11-18",
+        ]
+        assert view.last_day is not None
+        assert view.last_day.day == date(2026, 11, 17)
+        assert view.today is None
+
+        text = await journal.render(AT)
+        assert '<day date="2026-11-18" status="writing">day 18</day>' in text
+        assert '<last_day date="2026-11-17">body 17</last_day>' in text
+
+    @pytest.mark.asyncio
+    async def test_rows_without_text_are_not_drawn(self, tmp_path):
+        journal = _journal(tmp_path)
+        Monthly(year=2026, month=10, summary="", content="").dump(
+            Monthly.filepath(journal.root, 2026, 10)
+        )
+        _closed(journal.root, date(2026, 11, 18))
+
+        text = await journal.render(AT)
+        assert "<month" not in text
+        assert '<last_day date="2026-11-18">body 18</last_day>' in text
 
     @pytest.mark.asyncio
     async def test_closed_today_is_the_last_day_not_a_today_element(self, tmp_path):

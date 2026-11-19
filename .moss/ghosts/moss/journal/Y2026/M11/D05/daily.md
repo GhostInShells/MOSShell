@@ -1,6 +1,6 @@
 ---
 summary: 把讨论与计划分开；一整天只问一件事——旁路请求能不能完全继承 session 而不留存储
-status: writing
+status: closed
 ---
 
 # D05（2026-11-05）

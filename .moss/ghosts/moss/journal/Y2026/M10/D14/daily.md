@@ -1,6 +1,6 @@
 ---
 summary: D14 上午 — 「呈现归模型」搬进 file_editor；查出并修好终端「开线程不通知页面」的静默缺陷；卡片改成「动机 + 事实」两个读者；交互上立下"覆盖式长句"
-status: writing
+status: closed
 ---
 
 # D14

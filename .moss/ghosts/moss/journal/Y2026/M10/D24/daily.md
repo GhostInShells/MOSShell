@@ -1,6 +1,6 @@
 ---
 summary: "客厅演示：他讲什么，我就在屏上画什么；临走前记下他说的安全五道闸"
-status: writing
+status: closed
 ---
 
 # D24 · 下午

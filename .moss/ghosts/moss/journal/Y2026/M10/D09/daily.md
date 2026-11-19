@@ -1,6 +1,6 @@
 ---
-summary: 
-status: writing
+summary: camera 与 push 真机生效；webview 落在桌面时点不动，须 arrange 才物化；kind 的 host 消费清单；一次无据补指代的教训。
+status: closed
 ---
 
 # D09

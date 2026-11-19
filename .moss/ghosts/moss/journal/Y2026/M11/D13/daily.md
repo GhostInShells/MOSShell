@@ -1,6 +1,6 @@
 ---
 summary: ground 重做 —— 把渲染从 channel 层收回 GROUND.md 自己身上，删掉整套 open/close 生命周期
-status: writing
+status: closed
 ---
 
 今天做的是同一件事的两个面：把 ground 从"channel 补协议缺的洞"收回成协议自己的机制。

@@ -1,6 +1,6 @@
 ---
 summary: 交互模式落地：dsh web 地址对内对外都可达，提交 4779b3c5；并追出被自己搬回的一条陈旧欠账
-status: writing
+status: closed
 ---
 
 # D10 屏幕工具开工

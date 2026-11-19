@@ -1,6 +1,6 @@
 ---
 summary: stage3 总纲交接——从直播做起，伴生而非工具
-status: writing
+status: closed
 ---
 
 # 2026-10-01

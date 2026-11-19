@@ -1,6 +1,6 @@
 ---
 summary: "D28: 一条命令连错三轮、三张票卸载、network scope 接线，收在 PR #133"
-status: writing
+status: closed
 ---
 
 # D28

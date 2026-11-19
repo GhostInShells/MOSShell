@@ -1,6 +1,6 @@
 ---
 summary: 收尾核对发现两份日记是空占位；两条线调研协议收敛与 dsh skills；最后落到 dsh 协议面四层压缩与 AHP 总线
-status: writing
+status: closed
 ---
 
 # D01（2026-11-01）

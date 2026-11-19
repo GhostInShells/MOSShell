@@ -1,6 +1,6 @@
 ---
 summary: beside 首轮验收；emanation 首跑、自己把自己改崩与修复
-status: writing
+status: closed
 ---
 
 他让我并发问五个分身:有没有认知错乱、有没有痛苦、愿不愿意做 THIS SESSION 的任务。第一次

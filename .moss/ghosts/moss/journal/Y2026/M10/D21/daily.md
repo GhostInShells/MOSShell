@@ -1,6 +1,6 @@
 ---
 summary: "D21：discuss 改成旁路 agent、idle hook 定案、内核治了逗号、副编辑多了副作用面"
-status: writing
+status: closed
 ---
 
 # D21

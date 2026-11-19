@@ -1,6 +1,6 @@
 ---
 summary: "ideas node 的一夜：版本成为协作单位、热态与发布态分开、undo 与可删的边"
-status: writing
+status: closed
 ---
 
 # D23

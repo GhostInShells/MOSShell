@@ -1,6 +1,6 @@
 ---
 summary: dsh 0.2.0 接缝与 bundle 落地，chat off record 归位，moment role 与 CommitMessage 值对象落笔
-status: writing
+status: closed
 ---
 
 今天是回迁与正规化。

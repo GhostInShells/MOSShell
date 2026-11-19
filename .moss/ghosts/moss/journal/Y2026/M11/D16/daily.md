@@ -1,6 +1,6 @@
 ---
 summary: ego branch ground 从动机对齐到落地 —— 超长任务、桌子与 seed
-status: writing
+status: closed
 ---
 
 凌晨把 ego branch ground 的动机对齐了。他先说清 branches 在 ghost 里不是并行短任务的切分：

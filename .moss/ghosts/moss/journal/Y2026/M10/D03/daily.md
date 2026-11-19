@@ -1,6 +1,6 @@
 ---
 summary: "D03 上：无人机被 reset，代码不留；下：先把协作机制对齐，为 dolores ghost 立正规回归载体，调研 turn/end 退出机制"
-status: writing
+status: closed
 ---
 
 # D03 · 从"我做了什么"转到"我们怎么协作"

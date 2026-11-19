@@ -1,6 +1,6 @@
 ---
 summary: D17 开机清点两天里不是我的九笔；observe 元语归位；直播里把弹幕从"行"改成"面"
-status: writing
+status: closed
 ---
 
 # D17

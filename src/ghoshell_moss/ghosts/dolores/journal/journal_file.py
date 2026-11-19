@@ -15,10 +15,11 @@ Layout — the default declared on the document classes in ``contract.py``, unde
 ``<home>/<config.directory>``::
 
     <root>/Y2026/yearly.md
+    <root>/Y2026/AGENTS.md               # ghost-written; this module never touches it
     <root>/Y2026/M11/monthly.md
     <root>/Y2026/M11/AGENTS.md          # ghost-written; this module never touches it
     <root>/Y2026/M11/D18/daily.md
-    <root>/Y2026/M11/D18/.commits
+    <root>/Y2026/M11/D18/.commits.jsonl
 
 A broken document is skipped and reported in ``status.problems``, never raised: one bad
 file must not take the memory surface down with it. A missing document is not an error at
@@ -94,18 +95,6 @@ def _months_back(day: date, count: int) -> Iterator[tuple[int, int]]:
             month -= 1
 
 
-def _day_of_path(path: Path) -> date | None:
-    """``.../Y2026/M11/D18/daily.md`` → ``date(2026, 11, 18)``; None when it is not a day file."""
-    try:
-        return date(
-            int(path.parent.parent.parent.name[1:]),
-            int(path.parent.parent.name[1:]),
-            int(path.parent.name[1:]),
-        )
-    except ValueError:
-        return None
-
-
 class FileJournal(DoloresJournal):
     """The default journal: one tree of markdown documents, read fresh on every call.
 
@@ -172,10 +161,9 @@ class FileJournal(DoloresJournal):
         attrs = f'at="{view.at.isoformat()}"'
         rows: list[str] = []
         for year in view.years:
-            rows.append(self._row(
-                "year", f'year="{year.year}"',
-                self._clip(year.content or year.summary, self._config.year_chars),
-            ))
+            text = self._clip(year.content or year.summary, self._config.year_chars)
+            if text:
+                rows.append(self._row("year", f'year="{year.year}"', text))
         for index, month in enumerate(view.months):
             detail = index >= len(view.months) - self._config.month_details
             text = (
@@ -183,26 +171,23 @@ class FileJournal(DoloresJournal):
                 if detail else
                 self._clip(month.summary, self._config.summary_chars)
             )
-            rows.append(self._row("month", f'month="{month.year:04d}-{month.month:02d}"', text))
+            if text:
+                rows.append(self._row("month", f'month="{month.year:04d}-{month.month:02d}"', text))
+        # The band is chronological; the one deep read sits where its day sits. `closed` is
+        # the settled state and needs no mark — an open day says where it stands.
+        full_day = view.last_day.day if view.last_day is not None else None
         for entry in view.days:
-            rows.append(self._row(
-                "day", f'date="{entry.day.isoformat()}" status="{entry.status}"',
-                self._clip(entry.summary, self._config.summary_chars),
-            ))
-        if view.last_day is not None:
-            rows.append(self._row(
-                "last_day", f'date="{view.last_day.day.isoformat()}"',
-                self._clip(view.last_day.content or view.last_day.summary, self._config.day_chars),
-            ))
-        if (
-                self._config.include_today
-                and view.today is not None
-                and (view.last_day is None or view.today.day != view.last_day.day)
-        ):
-            rows.append(self._row(
-                "today", f'date="{view.today.day.isoformat()}" status="{view.today.status}"',
-                self._clip(view.today.summary, self._config.summary_chars),
-            ))
+            if entry.day == full_day:
+                rows.append(self._row(
+                    "last_day", f'date="{entry.day.isoformat()}"',
+                    self._clip(entry.content or entry.summary, self._config.day_chars),
+                ))
+            elif entry.summary.strip():
+                status = "" if entry.status == "closed" else f' status="{entry.status}"'
+                rows.append(self._row(
+                    "day", f'date="{entry.day.isoformat()}"{status}',
+                    self._clip(entry.summary, self._config.summary_chars),
+                ))
         if not rows:
             return f"<journal {attrs}/>"
         return "\n".join([f"<journal {attrs}>", *rows, "</journal>"])
@@ -302,17 +287,14 @@ class FileJournal(DoloresJournal):
     async def _collect(
             self, day: date, problems: list[str],
     ) -> tuple[list[Yearly], list[Monthly], list[Daily], Daily | None, Daily | None]:
-        """Load the whole window in one round: years, months and today concurrently."""
+        """Load the window in one round: years, months and today concurrently."""
         years, months, today = await asyncio.gather(
             self._years(problems),
             self._months(day, problems),
             self._aload(Daily, Daily.filepath(self._root, day), problems),
         )
-        if today is not None and today.status == "closed":
-            last_day = today
-        else:
-            last_day = await self._last_closed(day, problems, skip=day)
-        days = await self._days_before(last_day, problems) if last_day is not None else []
+        days = await self._recent_days(day, problems)
+        last_day = next((entry for entry in reversed(days) if entry.status == "closed"), None)
         return years, months, days, last_day, today
 
     def _day_of(self, at: datetime | None) -> date:
@@ -333,7 +315,7 @@ class FileJournal(DoloresJournal):
             self._problem(problems, path, exc)
             return None
         try:
-            return kind.from_text(text)
+            return kind.from_text(text, **kind.period_of(path))
         except Exception as exc:  # one broken document must not blank the view
             self._problem(problems, path, exc)
             return None
@@ -355,36 +337,39 @@ class FileJournal(DoloresJournal):
         )
         return [doc for doc in docs if doc is not None]
 
-    async def _days_before(self, last_day: Daily, problems: list[str]) -> list[Daily]:
+    async def _recent_days(self, day: date, problems: list[str]) -> list[Daily]:
+        """The day band: the most recent ``day_summaries`` days that carry a summary.
+
+        Anchored on the newest day with something to say, not on the last closed day: a day
+        still being written is part of the recent life, and anchoring on the last close would
+        hide every day after it. ``closed`` decides depth (see ``render``), not existence.
+        """
         count = self._config.day_summaries
         if count <= 0:
             return []
-        entries = [last_day.day - timedelta(days=offset) for offset in range(count, 0, -1)]
-        docs = await asyncio.gather(
-            *(self._aload(Daily, Daily.filepath(self._root, entry), problems) for entry in entries)
-        )
-        return [doc for doc in docs if doc is not None]
-
-    async def _last_closed(self, day: date, problems: list[str], *, skip: date | None = None) -> Daily | None:
-        """The most recent closed day at or before ``day``, newest first."""
+        found: list[Daily] = []
         for entry in self._day_candidates(day):
-            if skip is not None and entry == skip:
-                continue
+            if len(found) >= count:
+                break
             document = await self._aload(Daily, Daily.filepath(self._root, entry), problems)
-            if document is not None and document.status == "closed":
-                return document
-        return None
+            if document is not None and document.summary.strip():
+                found.append(document)
+        found.reverse()
+        return found
 
     def _day_candidates(self, at: date) -> list[date]:
         """Every day with a document, newest first, bounded by ``at``.
 
         One readdir instead of walking back day by day: the journal may have been silent for
-        weeks, and the last closed day is still the band's anchor.
+        weeks, and the band still walks back from the newest day with something to say.
         """
         found: list[date] = []
         for path in self._root.glob("Y*/M*/D*/daily.md"):
-            entry = _day_of_path(path)
-            if entry is not None and entry <= at:
+            try:
+                entry = Daily.period_of(path).get("day")
+            except ValueError:
+                continue
+            if isinstance(entry, date) and entry <= at:
                 found.append(entry)
         return sorted(found, reverse=True)
 

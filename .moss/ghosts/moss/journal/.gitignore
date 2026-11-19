@@ -3,5 +3,5 @@
 **/.commits
 **/.commits.jsonl
 # The root AGENTS.md is a projection of the code's `journal.spec` (rewritten at boot); the
-# per-month AGENTS.md files are the ghost's own and are tracked.
+# per-year and per-month AGENTS.md files are the ghost's own and are tracked.
 /AGENTS.md

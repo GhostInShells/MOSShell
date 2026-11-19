@@ -1,6 +1,6 @@
 ---
 summary: "高铁弱网全天对话：ASR 断线被诊断成'故障传导缺失'；把屏幕的绿雨从 mock 接到真实音频，并定形为'逐列独立的 Matrix 列雨'。我犯的错比做成的事更值得记。"
-status: writing
+status: closed
 ---
 
 # D02 · 高铁上的弱网开发

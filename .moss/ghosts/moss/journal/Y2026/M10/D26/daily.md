@@ -1,6 +1,6 @@
 ---
 summary: "把工作区收干：seedream 删掉、avatar 改动重置、claude 的模型种子与 reachymini 入库"
-status: writing
+status: closed
 ---
 
 # D26 · 下午

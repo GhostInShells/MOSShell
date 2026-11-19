@@ -1,0 +1,12 @@
+# dump from `ghoshell_moss.ghosts.dolores.journal.contract:JournalConfig` 
+directory: journal
+prompt_key: journal.spec
+tz: ''
+month_details: 2
+month_summaries: 3
+day_summaries: 15
+backfill_days: 3
+day_chars: 2000
+month_chars: 4000
+year_chars: 3000
+summary_chars: 120

@@ -1,6 +1,6 @@
 ---
 summary: 从"拷贝一个包"推进到"契约自行落定"——features 发现常量化、dsh 包拆掉对 moss 的依赖、blueprint 逐层对出来、插件用 copy 安装；夜里把八个能力一项项量出来，并立了第一套回归基线
-status: writing
+status: closed
 ---
 
 # D06（2026-11-06）

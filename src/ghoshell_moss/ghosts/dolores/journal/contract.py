@@ -123,19 +123,13 @@ class JournalConfig(ConfigType):
         ),
     )
     day_summaries: int = Field(
-        default=7,
+        default=15,
         ge=0,
         description=(
-            "M in the day band's M + 1: how many days before the last closed day are carried "
-            "as summaries. The last closed day itself is the +1 and is drawn in full."
-        ),
-    )
-    include_today: bool = Field(
-        default=True,
-        description=(
-            "carry the current day as its own element when it is not the last closed day. It "
-            "tells the reader where `now` sits; off when the face should stop at the last "
-            "closed day."
+            "how many recent days the day band carries: the most recent days that have a "
+            "summary, ending at the newest such day at or before `at`. A day still being "
+            "written is part of the recent life — anchoring the band on the last closed day "
+            "would hide every day after it. 0 turns the band off."
         ),
     )
     backfill_days: int = Field(
@@ -172,9 +166,15 @@ class JournalDoc(BaseModel):
     document was first materialized — not the period it describes. A backfilled day is
     written later than it happened, and the two facts must stay separable.
 
-    The frontmatter pair lives here, not in the implementation, so a writer never invents
-    a second serialization: ``to_post`` / ``from_post`` are the only shape a document
-    takes between a model and a file, whichever code path touches it.
+    **The period is the path's.** ``day`` / ``year`` / ``month`` are declared on the model
+    so every instance carries its period, but the frontmatter never holds them: ``to_post``
+    leaves them out, and ``load`` / ``period_of`` read them back from the document's
+    location — the same split ``MossMeta`` makes for its ``file`` field. The path is the
+    index; the frontmatter carries only what the path cannot say.
+
+    The serialization lives here, not in the implementation, so a writer never invents a
+    second one: ``to_post`` / ``from_post`` are the only shape a document takes between a
+    model and a file, whichever code path touches it.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -183,6 +183,11 @@ class JournalDoc(BaseModel):
     """The document shape this version writes. A reader accepts any version it can parse —
     the number tells a future writer which shape produced the file; the tolerance comes from
     unknown keys surviving, not from the number."""
+
+    PERIOD_FIELDS: ClassVar[tuple[str, ...]] = ()
+    """The fields the document's location supplies (see ``period_of``). They never appear
+    in the frontmatter, so a document written by an older version — or by hand — is still
+    readable: the directory says which period it is."""
 
     format_version: int = Field(
         default=FORMAT_VERSION,
@@ -199,26 +204,43 @@ class JournalDoc(BaseModel):
     )
 
     @classmethod
-    def from_post(cls, post: frontmatter.Post) -> Self:
-        """Read a document back from a frontmatter post: metadata is the fields, body is ``content``."""
-        data = dict(post.metadata)
-        data["content"] = post.content
+    def period_of(cls, file: Path) -> dict[str, object]:
+        """The period fields the document's location supplies — the inverse of ``directory``.
+
+        The base class supplies none; each level parses its own layout. A path this level
+        does not recognize raises ``ValueError``: a document out of place has no period.
+        """
+        return {}
+
+    @classmethod
+    def from_post(cls, post: frontmatter.Post, **period: object) -> Self:
+        """Read a document back from a frontmatter post: metadata is the fields, body is ``content``.
+
+        ``period`` supplies the fields the frontmatter does not carry. The location wins over
+        a stale copy in the metadata: a document sits where it sits.
+        """
+        data = {**post.metadata, **period, "content": post.content}
         return cls(**data)
 
     def to_post(self) -> frontmatter.Post:
         """The document as a frontmatter post. ``content`` is the body, everything else is metadata.
 
+        The period fields are left out entirely — the path already carries them, and a second
+        copy would be a second truth.
+
         ``frontmatter.Post(content, **metadata)`` — the metadata dict is splatted, not passed
         as a keyword: passing it whole would nest every field under a literal ``metadata`` key.
         """
-        data = self.model_dump(exclude_none=True)
-        content = data.pop("content", "") or ""
-        return frontmatter.Post(content, **data)
+        data = self.model_dump(exclude={"content", *self.PERIOD_FIELDS}, exclude_none=True)
+        return frontmatter.Post(self.content, **data)
 
     @classmethod
-    def from_text(cls, text: str) -> Self:
-        """Parse a document from its text — the half an async reader needs after ``await read``."""
-        return cls.from_post(frontmatter.loads(text))
+    def from_text(cls, text: str, **period: object) -> Self:
+        """Parse a document from its text — the half an async reader needs after ``await read``.
+
+        ``period`` is the reader's knowledge of where the text came from; see ``from_post``.
+        """
+        return cls.from_post(frontmatter.loads(text), **period)
 
     def to_text(self) -> str:
         """Serialize the document to text — the half an async writer needs before ``await write``."""
@@ -226,8 +248,8 @@ class JournalDoc(BaseModel):
 
     @classmethod
     def load(cls, file: Path) -> Self:
-        """Parse a document file — the synchronous read half of the file convention."""
-        return cls.from_text(file.read_text(encoding="utf-8"))
+        """Parse a document file — the period is read from the file's location."""
+        return cls.from_text(file.read_text(encoding="utf-8"), **cls.period_of(file))
 
     def dump(self, file: Path) -> None:
         """Write a document file — the synchronous write half. Parents are created; nothing is merged."""
@@ -251,11 +273,25 @@ class Daily(JournalDoc):
     day happened" checkable, what a backfill reads to find the day's last span, and what a
     debugger reads to see when each anchor landed."""
 
-    day: date = Field(description="the local day this document belongs to.")
+    PERIOD_FIELDS: ClassVar[tuple[str, ...]] = ("day",)
+
+    day: date = Field(description="the local day this document belongs to, supplied by its directory.")
     status: DocStatus = Field(
         default="pending",
         description="pending → writing → closed; see DocStatus.",
     )
+
+    @classmethod
+    def period_of(cls, file: Path) -> dict[str, object]:
+        """``.../Y2026/M11/D18/daily.md`` → ``{'day': date(2026, 11, 18)}``."""
+        try:
+            return {"day": date(
+                int(file.parent.parent.parent.name[1:]),
+                int(file.parent.parent.name[1:]),
+                int(file.parent.name[1:]),
+            )}
+        except (ValueError, IndexError) as exc:
+            raise ValueError(f"daily: not a day document path: {file}") from exc
 
     @classmethod
     def directory(cls, root: Path, day: date) -> Path:
@@ -281,8 +317,18 @@ class Monthly(JournalDoc):
     """The month's own thinking — written by the ghost, never by the mechanism. Its
     presence is the convention; its content is the second order and no code reads it."""
 
-    year: int = Field(description="the calendar year.")
-    month: int = Field(ge=1, le=12, description="the calendar month, 1-12.")
+    PERIOD_FIELDS: ClassVar[tuple[str, ...]] = ("year", "month")
+
+    year: int = Field(description="the calendar year, supplied by the directory.")
+    month: int = Field(ge=1, le=12, description="the calendar month, supplied by the directory, 1-12.")
+
+    @classmethod
+    def period_of(cls, file: Path) -> dict[str, object]:
+        """``.../Y2026/M11/monthly.md`` → ``{'year': 2026, 'month': 11}``."""
+        try:
+            return {"year": int(file.parent.parent.name[1:]), "month": int(file.parent.name[1:])}
+        except (ValueError, IndexError) as exc:
+            raise ValueError(f"monthly: not a month document path: {file}") from exc
 
     @classmethod
     def directory(cls, root: Path, year: int, month: int) -> Path:
@@ -303,7 +349,21 @@ class Yearly(JournalDoc):
     FILENAME: ClassVar[str] = "yearly.md"
     """The year's document."""
 
-    year: int = Field(description="the calendar year.")
+    AGENTS_FILENAME: ClassVar[str] = "AGENTS.md"
+    """The year's own thinking — written by the ghost, never by the mechanism. It sits at the
+    year's root and sets the general style; the month's adds what that month needs."""
+
+    PERIOD_FIELDS: ClassVar[tuple[str, ...]] = ("year",)
+
+    year: int = Field(description="the calendar year, supplied by the directory.")
+
+    @classmethod
+    def period_of(cls, file: Path) -> dict[str, object]:
+        """``.../Y2026/yearly.md`` → ``{'year': 2026}``."""
+        try:
+            return {"year": int(file.parent.name[1:])}
+        except (ValueError, IndexError) as exc:
+            raise ValueError(f"yearly: not a year document path: {file}") from exc
 
     @classmethod
     def directory(cls, root: Path, year: int) -> Path:
@@ -313,19 +373,23 @@ class Yearly(JournalDoc):
     def filepath(cls, root: Path, year: int) -> Path:
         return cls.directory(root, year).joinpath(cls.FILENAME)
 
+    @classmethod
+    def agents_filepath(cls, root: Path, year: int) -> Path:
+        return cls.directory(root, year).joinpath(cls.AGENTS_FILENAME)
+
 
 class DateView(BaseModel):
     """What the journal looks like *now*, read through one date.
 
     Not a historical snapshot: the same date rendered later may differ, because the
-    documents it reads have changed. The three lists are windows, not archives — every
-    level is bounded, and anything older is a file away rather than a token away.
+    documents it reads have changed. Months and days are windows, not archives — anything
+    older is a file away rather than a token away; the year list is the lifetime, flat.
     """
 
     at: date = Field(description="the coordinate the view was computed against.")
     years: list[Yearly] = Field(
         default_factory=list,
-        description="every year, summaries only — the lifetime, flat.",
+        description="every year, drawn as a body and truncated at its budget — the lifetime, flat.",
     )
     months: list[Monthly] = Field(
         default_factory=list,
@@ -337,17 +401,25 @@ class DateView(BaseModel):
     days: list[Daily] = Field(
         default_factory=list,
         description=(
-            "the `day_summaries` days before `last_day`, oldest first — summaries only. "
-            "`last_day` itself is not repeated here: it is the +1 of the day band."
+            "the day band, oldest first: up to `day_summaries` recent days that carry a "
+            "summary, ending at the newest such day at or before `at`. Open days are part of "
+            "it — `closed` decides depth, not existence."
         ),
     )
     last_day: Daily | None = Field(
         default=None,
-        description="the most recent closed day at or before `at`; its body is drawn in full.",
+        description=(
+            "the newest closed day inside the day band; its body is drawn in full, in place. "
+            "None = no day in the band has closed yet — the band is summaries only."
+        ),
     )
     today: Daily | None = Field(
         default=None,
-        description="the document for `at`, if one exists. None = no anchor opened the day.",
+        description=(
+            "the document for `at`, if one exists. Not drawn as its own element: when it "
+            "carries a summary it is the band's last row; without one the face omits it — "
+            "`status` reports it. None = no anchor opened the day."
+        ),
     )
 
 
@@ -418,9 +490,12 @@ class DoloresJournal(ABC):
 
         Density follows position, not element type: every year is drawn as a body, truncated
         at its budget; the newest ``month_details`` months are drawn in full and the older
-        ones as summaries; the ``day_summaries`` days are summaries; the last closed day is a
-        body; ``today``, when it is not the last closed day, is a summary with its status.
-        Budgets never appear here — they are the writer's report, not the reader's face.
+        ones as summaries; the day band carries the ``day_summaries`` most recent days that
+        have a summary, and the newest closed day inside it is drawn in full, in place.
+        ``closed`` decides depth, not existence — a day still being written is part of the
+        recent life. A row without text is not drawn; ``status`` marks only the days that
+        have not closed. Budgets never appear here — they are the writer's report, not the
+        reader's face.
         """
 
     @abstractmethod

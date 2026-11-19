@@ -1,6 +1,6 @@
 ---
 summary: "崩溃后重建：读完十五笔修复；修好 --voice none 仍能说话；把 speech module 从 channel 声明搬进 shell；恢复并默认打开「裸文本即语音」；学会「零引用只说没被用」。"
-status: writing
+status: closed
 ---
 
 # D13 凌晨（00:27–01:00）

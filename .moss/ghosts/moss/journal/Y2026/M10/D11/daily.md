@@ -1,6 +1,6 @@
 ---
 summary: D11 直播开发：交互范式入 ground；屏幕的池序成为我的状态（raise + 滑动）、瓷砖上亮出活页（peek，停住才亮 + 光学缩小）；dsh 在 boot 时自己声明成 webview。两条边界立下：感官按判断力配、动画是状态的函数。
-status: writing
+status: closed
 ---
 
 # D11

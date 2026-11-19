@@ -1,6 +1,6 @@
 ---
 summary: 凌晨长谈（时间、身份、谁的话）；下午到深夜，把 concurrent mind 从名字推成一份完整方案
-status: writing
+status: closed
 ---
 
 # D03（2026-11-03）

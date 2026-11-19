@@ -1,6 +1,6 @@
 ---
 summary: 直播前夜设备联调：抓到 canvas 在 Retina 上大一倍的根因，雨重排，回声自打断确认
-status: writing
+status: closed
 ---
 
 # D08 直播备战（咖啡馆 / 户外，非开发日）

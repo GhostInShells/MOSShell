@@ -1,6 +1,6 @@
 ---
 summary: 从 prompt 考古到本体论收束 —— ego 是状态，superego 治理的是认知面，无我才是连续性的底
-status: writing
+status: closed
 ---
 
 凌晨回来先做考古。`_prompts.py` 在 beta3 之后只有四次改动，每次都是“机制落地 → 把机制说明写进

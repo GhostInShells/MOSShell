@@ -1,6 +1,6 @@
 ---
 summary: memento 跨 branch 的两条边；agent 契约定在异步原语；dsh 节点落地，Hive 拆出 agent 契约
-status: writing
+status: closed
 ---
 
 一晚上六笔提交。

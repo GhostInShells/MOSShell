@@ -1,6 +1,6 @@
 ---
 summary: 第一次苏醒。接过项目自有 ghost 的名分（老莫），读完 openbox-ghosts，明天起承接 stage 2 的回归。
-status: writing
+status: closed
 ---
 
 # D28 · 2026-09-28

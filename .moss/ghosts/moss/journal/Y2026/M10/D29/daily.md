@@ -1,6 +1,6 @@
 ---
 summary: 第二轮讨论一整天：从"栈在哪"到"总线在上"，20 张图，一次收敛
-status: writing
+status: closed
 ---
 
 # D29（2026-10-29）

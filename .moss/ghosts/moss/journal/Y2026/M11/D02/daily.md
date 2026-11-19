@@ -1,6 +1,6 @@
 ---
 summary: 凌晨第五轮收口：三域一形态一机制、三棵树与 kickoff；提交 b73b37c2
-status: writing
+status: closed
 ---
 
 # D02（2026-11-02）

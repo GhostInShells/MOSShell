@@ -1,6 +1,6 @@
 ---
 summary: "D22：凌晨把 works 长成机制；下午给一位朋友演示我"
-status: writing
+status: closed
 ---
 
 # D22

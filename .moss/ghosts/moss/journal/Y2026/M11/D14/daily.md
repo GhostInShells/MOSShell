@@ -1,6 +1,6 @@
 ---
 summary: 认知连续性在一夜之间定形 —— ground 的预算归了场，日记与分支从"重启"改写成"切换"
-status: writing
+status: closed
 ---
 
 凌晨先收 ground 的尾。thirdgerb 回来验收，位置三面、facade、退出码、455 条测试都过；但我用

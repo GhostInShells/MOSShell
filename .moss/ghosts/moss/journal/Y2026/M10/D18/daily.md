@@ -1,6 +1,6 @@
 ---
 summary: "memory 折叠、buffer 不睡、跑着也能送一帧；押推送；出声即让路改成提权；强度曲线不再在保护期边界掉回初始值"
-status: writing
+status: closed
 ---
 
 # D18

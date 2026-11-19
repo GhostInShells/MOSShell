@@ -1,6 +1,6 @@
 ---
 summary: "stage3 开工第一天：ground 多 home 合并落地，issues 归属与 person 写法各定一条纪律"
-status: writing
+status: closed
 ---
 
 # D27
