@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import html
 import re
 from datetime import datetime
 from pathlib import Path
@@ -207,6 +208,17 @@ def _assistant_text(message: Any) -> str:
     return "".join(
         block.text or "" for block in message.content if block.type == "text"
     ).strip()
+
+
+def _last_line(text: str, limit: int = 160) -> str:
+    """The last non-empty line of one assistant text, capped for a one-line notice."""
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+    line = lines[-1]
+    if len(line) > limit:
+        line = line[:limit].rstrip() + "…"
+    return line
 
 
 # The stamp the session-title template writes: `Ψ · 26-11-12 16:56:52`.
@@ -432,6 +444,11 @@ class DoloresEgo:
         # 优雅退出用: 最近一条非空 assistant 文本 (运行时缓存; 退出时作 exit note 的 body;
         # 某一轮没有文本就保留上一轮的 —— 空文本不该把已有的答案抹掉).
         self._last_final_answer: str = ""
+        # 本 turn 的最后一句话 (TurnStart 清零). 空 = 这一轮没有 assistant 文本,
+        # 折叠 notice 就不带 last.
+        self._turn_last_line: str = ""
+        # fold 那一刻从 _turn_last_line 抄下来, 供下一 run 的 compact notice; 用完即清.
+        self._fold_last_line: str = ""
         # 待执行的 compact (上一有效 run 决定, 下一 run 启动执行) — 只在 run 边界写入/清空.
         self._pending_compact: bool = False
         # 这次 compact 是否整段不留 tail (replan). 只在 compact 判定那一瞬间有效, 用完即清 ——
@@ -783,6 +800,8 @@ class DoloresEgo:
             turn_start = model_from_event(TurnStart, event)
             if turn_start is not None:
                 self._state.turn_in_flight = turn_start.turn
+                # 新的一轮开始: 上一轮的最后一句不再属于"这一轮".
+                self._turn_last_line = ""
         if self.is_thinking:
             return
         self._emit_self_wake()
@@ -820,6 +839,8 @@ class DoloresEgo:
             # 最近一条非空 assistant 文本; 退出时作 exit note 的 body. 中间步骤的文本会被
             # 后续步骤覆盖 —— 留下的是最后说的那句话; 空文本不覆盖 (别把答案抹成空).
             self._last_final_answer = text
+            # 折叠 notice 只带这一轮的最后一句; 没有文本的轮次留空, 下一轮 TurnStart 清零.
+            self._turn_last_line = _last_line(text)
         if self._memento_manager is None:
             return
         if message.usage is None:
@@ -881,6 +902,8 @@ class DoloresEgo:
                 # 新 tip 落地之后切点才存在, 而 surface 只在 run 边界安全 —— 登记给下一 run.
                 self._pending_compact = True
                 self._compact_no_tail = True
+                # 这一轮的最后一句随 fold 一起交给下一帧的 notice; 空轮次就是空.
+                self._fold_last_line = self._turn_last_line
             return
         self._maybe_commit()
 
@@ -1054,6 +1077,20 @@ class DoloresEgo:
 
     # ── compact (原地 surface replace; 上一有效 run 决定, 下一 run 启动执行) ──
 
+    def fold_wants_next_frame(self) -> bool:
+        """Whether the pending compact is a replan fold — it owns the next frame.
+
+        A replan is self-driven and always happens mid-conversation: after the anchor lands the
+        human may never speak again, so waiting for an external signal would leave the new epoch
+        stranded. The run exit reads this and declares ``need_observe`` on the observer; the
+        mindflow's echo loop then issues the next thinking inside the same attention — no signal,
+        no timer, and no race with the closing turn.
+
+        Threshold compaction stays out: it is a system decision, and the next frame it would
+        open has no owner waiting for it.
+        """
+        return self._pending_compact and self._compact_no_tail
+
     def on_run_exit(self, valid: bool) -> None:
         """run 边界回调 —— 只在**有效** run (无异常 / 无中断 abort) 之后确认是否要 compact.
 
@@ -1089,6 +1126,9 @@ class DoloresEgo:
         self._pending_compact = False
         keep_tail = not self._compact_no_tail
         self._compact_no_tail = False
+        # 这一帧的 notice 用完即清: 折叠只发生一次, 上一句不能漏进后面的阈值压缩.
+        fold_last = self._fold_last_line
+        self._fold_last_line = ""
         manager = self._memento_manager
         if manager is None:
             return None
@@ -1114,7 +1154,7 @@ class DoloresEgo:
                 self._logger.exception("dolores compact: supplement unavailable — opening without it")
                 supplement = []
         notice = self._compact_notice(
-            reason="threshold" if keep_tail else "replan", coord=tip_coord,
+            reason="threshold" if keep_tail else "replan", coord=tip_coord, last=fold_last,
         )
         outcome = CompactOutcome(supplement=supplement)
         # 请求发出前先暂存: 取消落在 RPC 中间时, 插件可能已经换了 surface, 而调用方还没拿到返回值.
@@ -1152,18 +1192,23 @@ class DoloresEgo:
         outcome, self._compact_outcome = self._compact_outcome, None
         return outcome
 
-    def _compact_notice(self, *, reason: str = "threshold", coord: str = "") -> str:
+    def _compact_notice(self, *, reason: str = "threshold", coord: str = "", last: str = "") -> str:
         """The fold notice — the only surface content left after the prefix is replaced.
 
         ``reason`` 把"我按下的"和"系统替我按的"分开：replan 切在自己的 note 上，整段不留；
         threshold 切在 tip 之前，tip 的 span 仍是 live tail。说明是折叠之后唯一能解释"刚才
         发生了什么"的东西，所以它必须带地址与原因，而不是一句无人称的通用话。
+
+        ``last`` 是折叠那一轮的最后一句（可为空：CTML 为主的轮次本来就没有
+        assistant 文本）。它只是指称锚，不是摘要 —— 有就带一行，没有就算了。
         """
         attrs = f'kind="folded" reason="{reason}"'
         if coord:
             attrs += f' at="{coord}"'
         if reason == "replan":
             lead = f"You released your attention into {coord}; the conversation up to it is gone."
+            if last:
+                lead += f' Your last line: "{html.escape(last, quote=False)}"'
         else:
             lead = (
                 f"Your context was compacted to stay within the model window; the conversation "

@@ -372,6 +372,26 @@ class TestDoloresEgoCompact:
         assert '<memento_notice kind="folded" reason="replan" at="1-9">' in replan
         assert "conversation up to it is gone" in replan
 
+    def test_the_fold_notice_carries_the_folded_turn_last_line(self):
+        """折叠 notice 带上一轮最后一句：有就带一行, 空轮次 (CTML 为主) 就不带."""
+        ego = _compact_ego()
+
+        with_line = ego._compact_notice(reason="replan", coord="1-800", last="那就按第二点做")
+        without = ego._compact_notice(reason="replan", coord="1-800", last="")
+
+        assert 'Your last line: "那就按第二点做"' in with_line
+        assert "Your last line" not in without
+        assert "Your last line" not in ego._compact_notice(reason="threshold", coord="1-800", last="x")
+
+    def test_only_a_replan_fold_owns_the_next_frame(self):
+        """fold 自己开下一帧; threshold compact 不抢那个帧 (等下一次输入)."""
+        ego = _compact_ego()
+        ego._pending_compact = True
+
+        assert ego.fold_wants_next_frame() is False
+        ego._compact_no_tail = True
+        assert ego.fold_wants_next_frame() is True
+
     @pytest.mark.asyncio
     async def test_threshold_compact_keeps_tail_and_has_no_supplement(self):
         manager = _FakeCompactManager(cut_turn=7, supplement=[self._supplement_message()])

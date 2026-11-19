@@ -125,6 +125,8 @@ class FakeRunEgo:
         self.exit_calls = 0
         self.enter_error: Exception | None = None
         self.run_exits: list[bool] = []
+        # 自驱 fold 的下一帧判据 (生产 ego 的同名方法); 用例按需置 True.
+        self.fold_pending: bool = False
         # 竞速赢了之后那一帧必须真的落地 —— 记 id 就够断言.
         self.pushed_moments: list[str] = []
 
@@ -150,6 +152,9 @@ class FakeRunEgo:
 
     def on_run_exit(self, valid: bool):
         self.run_exits.append(valid)
+
+    def fold_wants_next_frame(self) -> bool:
+        return self.fold_pending
 
     def declare_effort(self, effort):
         self.default_thinking_effort = effort

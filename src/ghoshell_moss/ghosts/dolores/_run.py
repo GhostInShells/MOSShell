@@ -441,6 +441,14 @@ class DoloresRun:
                 len(list(moment.inputs_messages())),
                 len(list(moment.percepts_messages())),
             )
+        elif self._ego.fold_wants_next_frame():
+            # 自驱 fold 自己开下一帧: 落锚之后人可能不再说话, 而新 epoch 已经就绪.
+            # 必须写在 thinking 退出之前 (echo-loop 契约); 不走 signal ——
+            # 信号会在收尾瞬间被拦住.
+            self._logger.info(
+                "run exit: pending fold — declaring need_observe so the next frame opens the new epoch"
+            )
+            self._thinking.observer.add_echoes([], need_observe=True)
         # 无论走哪条路都清掉: 错误 / 取消路径不下发档位, 也不留一个悬着的声明.
         self._need_switch_thinking_effort = None
         return None

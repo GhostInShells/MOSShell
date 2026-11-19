@@ -1070,6 +1070,23 @@ class TestDoloresRun:
         )
         assert run._need_switch_thinking_effort is None, "pending 收尾后必须清掉, 不留悬声明"
 
+    @pytest.mark.asyncio
+    async def test_pending_fold_declares_need_observe_on_exit(self):
+        """自驱 fold 的下一帧由 run 收尾自己签发 —— 不等 signal, 也不等人再说话."""
+        from ghoshell_moss.ghosts.dolores._run import DoloresRun
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        ego.fold_pending = True
+        log: list = []
+        thinking = FakeRunThinking(log)
+        run = DoloresRun(ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=None)
+
+        await run.__aexit__(None, None, None)
+
+        assert "observer.add_echoes:True" in log
+        assert thinking.abort_reasons == []
+
     def test_tool_surface_matches_production_thinking(self):
         """handlers 在 thinking 上用的每个 API, 生产类必须真的有.
 
