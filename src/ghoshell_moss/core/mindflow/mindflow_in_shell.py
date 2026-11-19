@@ -197,8 +197,8 @@ class MindflowInShell(ABC):
         # 反向绑定: moments.new_epoch → trajectory.new_epoch (刷新 baseline 快照).
         # 先 on_epoch_creating (刷新) 再 with_epoch_baseline (从已刷新 baseline 产字符串).
         mindflow.moments.on_epoch_creating(lambda _epoch: self.shell_trajectory.new_epoch())
-        # epoch 起点全量 facade 走 baseline 槽位 (非 recap): facade 是 shell 表面,
-        # 不是前情提要. 首帧 diff 与之同源, 天然去重.
+        # epoch 起点全量 facade 走 baseline 槽位 (非 supplement): facade 是 shell 表面,
+        # 不是开场增补. 首帧 diff 与之同源, 天然去重.
         mindflow.moments.with_epoch_baseline(
             "facade",
             lambda: self.shell_trajectory.epoch_start_point(refresh=False),

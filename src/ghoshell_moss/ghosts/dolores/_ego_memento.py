@@ -703,6 +703,64 @@ class EgoMementoManager:
         # return f"{text}\n\n{ground}" if ground else text
         return text
 
+    async def asupplement(self) -> list[Message]:
+        """The raw last span the memento's last summarized commit cannot cover.
+
+        The supplement is a message record, not a produced summary: when the tip commit's
+        note has not landed yet, the epoch must still open immediately. The memento renders
+        the trajectory (the tip included), and this method expands the source log's span
+        ``(last summarized end_turn, tip end_turn]`` into a transcript so the model keeps the
+        actual words. No LLM is involved — the source session is the only producer.
+
+        Returns ``[]`` when the tip is already summarized, when no summarized commit exists,
+        when the span crosses sessions, or when the source log cannot be read — an epoch
+        without a supplement is the normal case, not an error.
+        """
+        branch = self._branch()
+        commits = branch.commits()
+        if not commits:
+            return []
+        notes = branch.notes()
+        tip = commits[-1]
+        tip_ref = self._ref_of(tip)
+        if tip_ref is None:
+            return []
+        summary = None
+        for commit in commits:
+            note = notes.get(commit.id)
+            if note is not None and note.message:
+                summary = commit
+        if summary is None or summary.id == tip.id:
+            return []
+        summary_ref = self._ref_of(summary)
+        if summary_ref is None or summary_ref.session_id != tip_ref.session_id:
+            return []
+        if summary_ref.end_turn >= tip_ref.end_turn:
+            return []
+        ref = DshSessionRef(
+            session_id=tip_ref.session_id,
+            start_turn=summary_ref.end_turn,
+            end_turn=tip_ref.end_turn,
+        )
+        try:
+            raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
+        except Exception:
+            self._logger.exception(
+                "dolores supplement: cannot read %s..%s — the epoch opens without it",
+                self.coord(summary), self.coord(tip),
+            )
+            return []
+        events = [event_from_dict(event) for event in (raw or {}).get("events", [])]
+        text = render_transcript(events)
+        if not text.strip():
+            return []
+        return [
+            Message.new(
+                tag="transcript",
+                attributes={"from": self.coord(summary), "to": self.coord(tip)},
+            ).with_content(text)
+        ]
+
     async def chat(self, coord: str, prompt: str) -> str:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
@@ -993,7 +1051,8 @@ class EgoMementoManager:
 
         ``keep_tail=True`` 是阈值压缩: 切在 tip 的 ``start_turn``, 把最新一个 commit 的 span
         原样留作原文 tail。``keep_tail=False`` 是 replan: 切在 tip 的 ``end_turn``, 整段对话
-        都不留 —— 重启后的上下文只有说明与新 epoch 的 recap, 所以 replan 的 note 必须是起点
+        都不留 —— 重启后的上下文是说明、memento 与（tip note 未就绪时的）raw last span
+        supplement, 所以 replan 的 note 必须是起点
         本身, 而不能是一份摘要。
         """
         ref = self.latest_ref()

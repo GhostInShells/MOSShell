@@ -488,7 +488,7 @@ class TestMementoReadSurface:
     async def test_view_message_stops_before_a_coordinate(self, tmp_path: Path):
         """A snapshot rendered for compaction must end where the surface takes over.
 
-        The cut commit's span stays verbatim above the recap; rendering it into the snapshot
+        The cut commit's span stays verbatim above the epoch; rendering it into the snapshot
         as well would put two versions of the same span in one context.
         """
         manager, memento = self._manager(tmp_path)
@@ -593,6 +593,54 @@ class TestMementoReadSurface:
 
         assert text == "  > 为什么\n  ~ 因为"  # render_transcript 默认两级缩进
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_supplement_expands_the_unsummarized_last_span(self, tmp_path: Path):
+        """The supplement is the raw last session span — no summary is produced anywhere."""
+        events = [
+            {"type": "turn/start", "seq": 0, "time": 1, "data": {"turn": 2}},
+            {
+                "type": "user/message", "seq": 1, "time": 1,
+                "data": {"role": "user", "source": {"kind": "user"},
+                         "content": [{"type": "text", "text": "last words"}]},
+            },
+            {
+                "type": "assistant/message", "seq": 2, "time": 1,
+                "data": {"message": {"role": "assistant", "source": {"kind": "model"},
+                                     "content": [{"type": "text", "text": "last reply"}]}},
+            },
+            {"type": "turn/end", "seq": 3, "time": 1, "data": {"turn": 2}},
+        ]
+        conn = self._Connection({"events": events})
+        manager, memento = self._manager(tmp_path, conn)
+        branch = memento.get_branch("main")
+        first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(first.id, "first note")
+        manager.commit(session_id="s1", start_turn=1, end_turn=2)
+
+        supplement = await manager.asupplement()
+
+        assert len(supplement) == 1
+        message = supplement[0]
+        assert message.meta.tag == "transcript"
+        text = message.to_content_string()
+        assert "last words" in text
+        assert "last reply" in text
+        ref = conn.calls[0][1]["ref"]
+        assert ref["session_id"] == "s1"
+        assert ref["start_turn"] == 1
+        assert ref["end_turn"] == 2
+
+    @pytest.mark.asyncio
+    async def test_supplement_is_empty_when_the_tip_is_summarized(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(first.id, "first note")
+        tip = manager.commit(session_id="s1", start_turn=1, end_turn=2)
+        branch.note(tip.id, "tip note")
+
+        assert await manager.asupplement() == []
 
     @pytest.mark.asyncio
     async def test_read_raises_on_unreadable_source(self, tmp_path: Path):

@@ -28,8 +28,8 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * resolve 它), 不需要 cancel/接管/双向阻塞的舞蹈, 也不需要 python 式伪 async.
  *
  * ── 表面 (8 点) ────────────────────────────────────────────────────────
- * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
- * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort, 阻塞执行完.
+ * 1. ego/create       — instruction only; memory rides the first epoch frame.
+ * 2. thinking/enter   — context + inputs 两个 message 槽位 + memory/epoch 槽位 + effort, 阻塞执行完.
  * 3. thinking/exit    — 反转 thinking 状态; agent 非 idle 则显式 cancel (interrupt).
  * 4. perStep 锁       — ego session 非 thinking → 阻塞等 thinking/enter 反转;
  *                       非主 ego (旁路) → 每步重申只读沙箱 + approval never, 剥掉 shell 组
@@ -37,8 +37,9 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *                       历史 (人类 fork 出来的那个会话本来就在跟人对话).
  * 5. moment/epoch 映射 — python 侧组装, plugin 只收现成 content blocks (dumb transport,
  *                       不 parse xml-like). context (echoes/dynamic/executing → <moment>,
- *                       inject) + inputs (percepts + hint → <inputs>, steer) + epoch
- *                       (<epoch index=N> 容器: <recap> + <baseline>, inject, 变更时).
+ *                       inject) + inputs (percepts + hint → <inputs>, steer) + memory
+ *                       (<memory> 容器、journal) 在前, epoch (<epoch index=N> 容器:
+ *                       <memento> + <supplement> + <baseline>, inject, 变更时) 在后.
  * 6. moment 投放      — perStep 挂载点: enter 把 context/epoch 缓冲到 pendingMoments, pre-step
  *                       在 next() 后插到本步历史最前 (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
  *                       enter 不 inbox inject — claim 已在 pre-step 顶部穿越, 晚到的 inject 落下一轮.
@@ -170,7 +171,7 @@ const DOLORES_MOMENT_PUSH = `${DOLORES_API_ROOT}/moment/push`
 const DOLORES_TURN_END_PROBE = `${DOLORES_API_ROOT}/turn-end-probe`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
 // compact: 原地把 (surface 头, cut_turn) 之间的节点替换成一条说明, 保留 surface 头与原文 tail;
-// memory 由新 epoch 的 recap 交付 (头是 protected head, 不可折叠).
+// memory 与 opening 由下一帧的 epoch 槽交付 (头是 protected head, 不可折叠).
 const DOLORES_COMPACT = `${DOLORES_API_ROOT}/compact`
 // 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
 // doloresEgoSessionId → pre-step 降级: 只读 + 剥 shell tools + 一次性说明), 不走 subagent,
@@ -199,24 +200,10 @@ let doloresThinkingToken: string | null = null
 // ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
 let doloresInstruction = ''
 
-// 最近一次注入的 memory 文本块 (ego/create 或 compact 写入). request-error 的溢出兜底用它重建
-// memory 头, 让模型在丢历史时仍保有 ground + memento 视图 (可能略陈旧, 是兜底不是常态).
+// 最近一次 epoch 帧里的 memory + epoch 文本块. request-error 的溢出兜底用它重建头部,
+// 让模型在丢历史时仍保有 journal + memento/supplement 视图 (可能略陈旧, 是兜底不是常态).
+// 唯一的写入点是 resolveEpochFrame —— create 与 compact 都不再各自缓存一份.
 let cachedMemory: string[] = []
-
-// 尚未投递的 memory 文本块 (ego/create 写入, 第一次落到 pre-step 的那一帧投递).
-//
-// 为什么不在 create 时就 append: dsh 0.2.0 的 v4 不变式要求 **surface 的第一个节点必须是
-// system/message 且受保护** (protected first surface head)。system/message 由 agent-loop 在
-// 第一个 step 用 renderPrompt(assemble()) 现算现 append, 所以 create 时刻 surface 里若已经有
-// 我们塞的 user/message, system 就只能落在第二位 —— 那个存档从出生起就不合 v4 校验, 冷读
-// (memento read / 旁路 note / UI 打开历史) 全部被拒: "system/message requires a protected
-// first surface head"。代价是整个历史不可读, 所以 memory 必须等在 system 之后。
-//
-// 投递点选在第一次落地的 moment 帧 (pre-step 以 `enter` 投递的消息) — 那时 turn/start 与
-// step/start 已就位, system/message 已落在 surface 首位, memory 紧随其后, 与旧形状同序
-// (memory 在前, epoch 容器在后)。语义不变: memory 仍在可压缩层, compact 后由新 epoch 的
-// recap 槽重发。
-let pendingMemory: string[] = []
 
 // cancel_turn 标记: 某个 tool 的结果协议带了 cancel → 该 turn 的下一 step 直接 cut.
 // activeTurn 由 pre-step 更新 (当前正在跑的 turn); awaitToolResult 在 execute 时把 turn 存进
@@ -493,15 +480,32 @@ function acceptEpochIndex(index: number): boolean {
   return true
 }
 
-/** 解析本帧的 epoch 内容: 迟到/重复的 epochIndex 直接丢弃, 只对真正携带内容的帧调用. */
-async function resolveEpoch(ctx: Context, body: ThinkingEnterPayload): Promise<ContentBlock[] | undefined> {
-  if (!Array.isArray(body.epoch) || body.epoch.length === 0) return undefined
+/** 一帧 epoch 内容 — memory 在 epoch 之前, 两者共用同一个幂等键. */
+interface EpochFrame {
+  memory: ContentBlock[]
+  epoch: ContentBlock[]
+}
+
+/** 解析本帧的 memory + epoch: 迟到/重复的 epochIndex 整帧丢弃, 只对真正携带内容的帧调用. */
+async function resolveEpochFrame(ctx: Context, body: ThinkingEnterPayload): Promise<EpochFrame | undefined> {
+  const hasMemory = Array.isArray(body.memory) && body.memory.length > 0
+  const hasEpoch = Array.isArray(body.epoch) && body.epoch.length > 0
+  if (!hasMemory && !hasEpoch) return undefined
   // 先干活再认领: durable 若失败 (以后 epoch 混入非文本附件), 不能先把 index 推进再丢内容 ——
   // 那样 python 侧会以为是送达了, 同 index 重发却被丢弃, 静默丢失.
-  const content = await durableMomentContent(ctx, body.epoch)
+  const memory = hasMemory ? await durableMomentContent(ctx, body.memory!) : []
+  const epoch = hasEpoch ? await durableMomentContent(ctx, body.epoch!) : []
   const index = typeof body.epochIndex === 'number' ? body.epochIndex : undefined
   if (index !== undefined && !acceptEpochIndex(index)) return undefined
-  return content
+  // 溢出兜底只看这一处: memory + epoch 的文本块合起来是模型失去历史时仍该看到的头部.
+  const texts: string[] = []
+  for (const block of [...memory, ...epoch]) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text !== '') {
+      texts.push(block.text)
+    }
+  }
+  if (texts.length > 0) cachedMemory = texts
+  return { memory, epoch }
 }
 
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
@@ -516,6 +520,8 @@ interface ThinkingEnterPayload {
     percepts?: MomentContentPart[]
     moment_id?: string
   }
+  /** <memory> 容器 content blocks — 与 epoch 同帧、在 epoch 之前 (journal 等共享面). */
+  memory?: MomentContentPart[]
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
   epoch?: MomentContentPart[]
   /** epoch 幂等键 — 与 epoch 内容一起下发, 用于丢弃迟到/重复的 epoch 帧 (送达后打戳必然允许重发). */
@@ -904,8 +910,8 @@ export function apply(ctx: Context) {
   })
 
   // ── 1. ego agent 创建 (点 1) ──────────────────────────────────────────
-  // 入参: instruction (system prompt: baseline + identity + persona) +
-  //       messages (ghost.memory: 压缩/快照/ground, ghost 侧组装后塞入).
+  // 入参: instruction (system prompt: baseline + identity + persona).
+  //       memory 不在这里 seed —— 它随第一个 epoch 帧到 pre-step, 与 epoch 同序.
   //       ping/pong 预热 (可选): 创建后验证 session 可服务.
   ctx.webServer.register({
     kind: 'exact',
@@ -923,7 +929,6 @@ export function apply(ctx: Context) {
           project_name: projectName,
           title: sessionTitle,
           instruction,
-          messages,
           permission,
           ghost_home: ghostHome,
           home_title: homeTitle,
@@ -939,9 +944,6 @@ export function apply(ctx: Context) {
         }
         if (typeof instruction !== 'string') {
           throw new Error('instruction must be a string')
-        }
-        if (!Array.isArray(messages)) {
-          throw new Error('messages must be an array of {text} context messages')
         }
         if (typeof permission !== 'string' || permission === '') {
           throw new Error('permission must be a non-empty string')
@@ -972,13 +974,9 @@ export function apply(ctx: Context) {
         }
         // persona 文本落到模块级, 供 apply_ego_agent 在 session/start 时注入 persona 段.
         doloresInstruction = instruction
-        // 缓存 memory 文本块, 供 request-error 溢出兜底重建 memory 头.
-        cachedMemory = messages
-          .map(message => (message as { text?: unknown }).text)
-          .filter((text): text is string => typeof text === 'string' && text !== '')
         // 2. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
-        //    启动**不回放源 session 原文 tail** —— seed 恒为空, memory 逐条 append。dsh 历史协议
-        //    再变也不碰 (防"升级后 ghost 起不来")。
+        //    启动**不回放源 session 原文 tail**, 也不 seed memory —— 第一个 epoch 帧按序交付。
+        //    dsh 历史协议再变也不碰 (防"升级后 ghost 起不来")。
         const sessionId = randomUUID()
         // agentOptions 必须有: ego agent 由 ctx.agents.create 直接建, 不走 session-controller 的
         // ensureSession (只有那条路会带 agentOptions + 安装官方 selection). 少这两个字段,
@@ -995,20 +993,16 @@ export function apply(ctx: Context) {
         doloresEgoSessionId = handle.agent.id
         doloresThinkingToken = randomUUID()
         // 新 session 重开一个 epoch 序列: python 侧 epoch.index 从 1 重数, 而 lastEpochIndex 是模块级
-        // 跨 session 遗留 —— 不重置会让新 session 的 epoch 全被当成「迟到」丢掉, 首次压缩后 memory
-        // recap 静默消失. pendingMoments 同理 (旧 session 的残帧不能进新 session 的 surface).
+        // 跨 session 遗留 —— 不重置会让新 session 的 epoch 全被当成「迟到」丢掉, 首次压缩后的
+        // memory/opening 静默消失. pendingMoments 同理 (旧 session 的残帧不能进新 surface).
         lastEpochIndex = -1
         pendingMoments.length = 0
         // 3. title + sandbox mode + workspace membership (log-only events + account).
         handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
         handle.agent.session.append('sandbox/mode', { mode: permission })
         await workspace.attachSession(handle.agent.id)
-        // 4. ghost.memory 暂存, **不写 surface** —— 见 pendingMemory 的注释: create 时刻写
-        //    user/message 会让 system/message 掉到 surface 第二位, 那份存档从此不合 v4 校验
-        //    (protected first surface head), 冷读全线被拒. 由第一轮 steer 投递.
-        pendingMemory = messages
-          .map(message => (message as { text?: unknown }).text)
-          .filter((text): text is string => typeof text === 'string' && text !== '')
+        // 4. memory 不在这里投递: 它随第一个 epoch 帧到达 pre-step, 天然落在 system/message
+        //    之后 (protected first surface head), 且会话创建时不再需要一次性的 seed 槽.
         // todo: ping/pong 预热 (可选) — 创建后验证 session 可服务, 失败返回错误.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ sessionId: handle.agent.id, thinkingToken: doloresThinkingToken }))
@@ -1141,10 +1135,9 @@ export function apply(ctx: Context) {
         // none: 只吸收背景不驱动 turn — epoch/context 缓冲到 perStep 挂载点, 不 openThinking 不
         // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
-          const epoch = await resolveEpoch(ctx, body)
+          const opening = await resolveEpochFrame(ctx, body)
           const frame = [
-            ...takePendingMemoryFrame(),
-            ...buildMomentFrame(epoch, context, notices),
+            ...buildMomentFrame(opening?.memory ?? [], opening?.epoch ?? [], context, notices),
             ...perceptFrame(percepts),
           ]
           if (frame.length > 0) {
@@ -1158,10 +1151,9 @@ export function apply(ctx: Context) {
         // 到 pendingMoments, 由 pre-step 在 next() 后插到本步历史最前 — 本 turn 生效.
         // 必须先 push 再 openThinking — gate 的 resolve 会同步调度 pre-step 续体为 microtask,
         // 若在 openThinking 后又 await, 续体可能在 push 落地前就 fold pendingMoments (丢帧).
-        const epoch = await resolveEpoch(ctx, body)
+        const opening = await resolveEpochFrame(ctx, body)
         const frame = [
-          ...takePendingMemoryFrame(),
-          ...buildMomentFrame(epoch, context, notices),
+          ...buildMomentFrame(opening?.memory ?? [], opening?.epoch ?? [], context, notices),
           ...perceptFrame(percepts),
         ]
         if (frame.length > 0) {
@@ -1500,10 +1492,9 @@ export function apply(ctx: Context) {
   })
 
   // ── compact: 原地把 (surface 头, cut_turn) 折叠成一条说明, 保留 protected head 与其后原文 tail ─
-  // 入参 {memory: [{text}], notice, cut_turn}. memory 不写进 surface —— MOSS 同时开新 epoch, 由
-  // epoch 的 recap 槽重新注入; 这里只拿它更新溢出兜底的缓存. 由 MOSS 在下一个 run 之前调用
-  // (surface idle), 语义化 cut 由 MOSS 给 (SCS = 倒数第二个 commit 的 end_turn), turn→seq 解析 +
-  // replace 形状都留在这里.
+  // 入参 {notice, cut_turn}. surface 替换内容只有说明; memory 与新的 opening 由下一帧的 epoch
+  // 槽交付 (memory 在前, epoch 在后). 由 MOSS 在下一个 run 之前调用 (surface idle), 语义化 cut
+  // 由 MOSS 给 (SCS = 倒数第二个 commit 的 end_turn), turn→seq 解析 + replace 形状都留在这里.
   ctx.webServer.register({
     kind: 'exact',
     path: DOLORES_COMPACT,
@@ -1523,14 +1514,9 @@ export function apply(ctx: Context) {
           ? body.cut_turn
           : undefined
         if (cutTurn === undefined) throw new Error('cut_turn must be a non-negative integer')
-        const memory = (Array.isArray(body.memory) ? body.memory : [])
-          .map(message => (message as { text?: unknown }).text)
-          .filter((text): text is string => typeof text === 'string' && text !== '')
-        if (memory.length === 0) throw new Error('memory must contain at least one text block')
         const notice = typeof body.notice === 'string' ? body.notice : ''
         if (notice === '') throw new Error('notice must be a non-empty string')
-        // memory 只更新兜底缓存; surface 替换内容只有说明 —— memory 由新 epoch 的 recap 交付.
-        cachedMemory = memory
+        // surface 替换内容只有说明; memory/opening 由下一帧的 epoch 槽交付, 不在这里缓存.
         const events = agent.session.snapshotEvents()
         const cut = resolveCut(events, { session_id: sessionId, start_turn: 0, end_turn: cutTurn })
         // surface 头 (system/message) 是 protected head, **不参与折叠**: dsh v4 规定 replace 只有在
@@ -1538,7 +1524,7 @@ export function apply(ctx: Context) {
         // "surface replacement cannot shadow the protected system head"), 而 compact 的替换体是
         // 一条说明 user/message. 所以折叠范围从头的下一个节点起, 头原地保留.
         // 头的语义也因此定死: 它是会话不变量 (指令 + identity/persona), 可变量 (memory / epoch /
-        // recap) 全部走可压缩层, 由新 epoch 的 recap 槽重发.
+        // supplement) 全部走可压缩层, 由新 epoch 帧重发.
         const nodes = agent.session.surface.nodes
         const head = nodes[0]
         const shadowed = nodes.filter(seq => seq < cut && seq !== head)
@@ -1823,24 +1809,8 @@ async function queueMomentPayload(ctx: Context, moment: unknown): Promise<void> 
 }
 
 /**
- * 取走待投递的 memory 帧 (空则返回空数组) —— 只在第一次真正落到 pre-step 的那一帧产出.
- *
- * 走 moment 帧这条通道而不是 create 时 append, 是因为帧消息由 pre-step 以 `enter` 投递,
- * 落盘顺序恒在 system/message 之后 (见 pendingMemory 注释). 取走即清空, 保证只投一次.
- */
-function takePendingMemoryFrame(): UserMessage[] {
-  if (pendingMemory.length === 0) return []
-  const message = createUserMessage({
-    content: pendingMemory.map(text => ({ type: 'text' as const, text })),
-    source: { kind: `${name}:memory` },
-  })
-  pendingMemory = []
-  return [message]
-}
-
-/**
- * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): epoch <容器> 是底座消息, context <容器> 是
- * 坐落在其上的帧消息. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
+ * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): memory <容器> 在前, epoch <容器> 紧随其后,
+ * context <容器> 坐落其上. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
  *
  * 决策 (dsh 0.2.0 跟踪): moment 保持 user/message, 不用 developer/message. 依据:
  * 1. 图两个都支持 — ContentBlockMap 含 image, user 与 developer 的 content 都是 ContentBlock[],
@@ -1853,12 +1823,20 @@ function takePendingMemoryFrame(): UserMessage[] {
  * 若将来想要"注入上下文 ≠ 用户回合"的语义区隔, 作为独立改动动注入通道, 不在这里混入.
  */
 function buildMomentFrame(
-  epoch: ContentBlock[] | undefined,
+  memory: ContentBlock[],
+  epoch: ContentBlock[],
   context: ContentBlock[],
   notices: string[] = [],
 ): UserMessage[] {
   const messages: UserMessage[] = []
-  if (epoch !== undefined && epoch.length > 0) {
+  // memory 在前, epoch 在后 —— 顺序是 python 侧的交付契约, 不是展示偏好.
+  if (memory.length > 0) {
+    messages.push(createUserMessage({
+      content: memory,
+      source: { kind: `${name}:memory` },
+    }))
+  }
+  if (epoch.length > 0) {
     messages.push(createUserMessage({
       content: epoch,
       source: { kind: `${name}:epoch` },

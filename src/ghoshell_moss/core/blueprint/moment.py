@@ -486,7 +486,11 @@ Disposer = Callable[[], None]
 class Epoch:
     id: str  # uuid
     index: int  # 生成的第几轮.
-    recap: list[Message]  # 前情提要数据.
+    # 轨迹视图 — 这个 epoch 开始时模型的 memento 面, 每次边界重新渲染.
+    memento: list[Message]
+    # memento 之后必须补进上下文的那些消息 — 迟到的 last span 原文、必读文档等.
+    # 空列表 = 这个 epoch 没有增补, 容器不渲染.
+    supplement: list[Message]
     baseline: dict[str, str]  # 新的周期的起点信息, 比如 shell full facade.
 
 
@@ -501,11 +505,19 @@ class Moments(ABC):
     @property
     @abstractmethod
     def epoch(self) -> Epoch:
-        """The recap of the moments after compaction."""
+        """The current epoch — its memento, supplement and baseline."""
         ...
 
     @abstractmethod
-    def with_epoch_recap(self, key: str, recap_func: Callable[[], list[Message]]) -> Disposer:
+    def with_epoch_memento(self, key: str, memento_func: Callable[[], list[Message]]) -> Disposer:
+        """Register a provider of the trajectory view rendered at each epoch opening."""
+        ...
+
+    @abstractmethod
+    def with_epoch_supplement(
+            self, key: str, supplement_func: Callable[[], list[Message]],
+    ) -> Disposer:
+        """Register a provider of messages inserted after the memento at each epoch opening."""
         ...
 
     @abstractmethod
@@ -514,12 +526,12 @@ class Moments(ABC):
 
     @abstractmethod
     def on_epoch_creating(self, callback: Callable[[Epoch], None]) -> Disposer:
-        """新的 epoch 开启时立即通知 — 早于 recap/baseline, 供反向绑定刷新自身状态."""
+        """新的 epoch 开启时立即通知 — 早于 memento/supplement/baseline, 供反向绑定刷新自身状态."""
         ...
 
     @abstractmethod
     def on_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
-        """当新的 epoch 完整创建后 (recap/baseline 已填充) 通知."""
+        """当新的 epoch 完整创建后 (memento/supplement/baseline 已填充) 通知."""
         ...
 
     @abstractmethod
@@ -561,7 +573,7 @@ class Moments(ABC):
         ...
 
     def turns(self, peek: bool = False) -> Iterable[tuple[list[Message], Logos | None]]:
-        """Organize all moment data as (inputs, logos) turns; excludes recap."""
+        """Organize all moment data as (inputs, logos) turns; excludes the epoch opening context."""
         yield from Moment.to_history_turns(self.moments(peek=peek))
 
     @abstractmethod
@@ -639,10 +651,10 @@ class Observer(Moments, ABC):
     @abstractmethod
     def new_epoch(
             self,
-            recap: list[Message],
+            supplement: list[Message] | None = None,
             end_moment_id: str | None = None,
     ) -> Epoch:
-        """生成新的 epoch"""
+        """生成新的 epoch — memento 与 supplement 由 providers 填充."""
         ...
 
 
@@ -651,7 +663,6 @@ class BaseMomentsObserver(Observer):
     def __init__(self, max_size: int, logger: logging.Logger | None = None) -> None:
         self._moments: deque[Moment] = deque()
         self._max_moments_size = max_size
-        self._recap: list[Message] = []
         self._echoes = Echoes()
         self._moment_created_callbacks: set[Callable[[Moment], None]] = set()
         self._echoes_added_callbacks: set[Callable[[list[Message], bool], None]] = set()
@@ -662,7 +673,8 @@ class BaseMomentsObserver(Observer):
         self._dynamic_context_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._inputs_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._drain_new_echoes_funcs: dict[str, Callable[[], tuple[list[Message], bool]]] = dict()
-        self._epoch_recap_funcs: dict[str, Callable[[], list[Message]]] = dict()
+        self._epoch_memento_funcs: dict[str, Callable[[], list[Message]]] = dict()
+        self._epoch_supplement_funcs: dict[str, Callable[[], list[Message]]] = dict()
         self._epoch_baseline_funcs: dict[str, Callable[[], str]] = dict()
 
         self._buffered_drained_percepts = {}
@@ -674,10 +686,14 @@ class BaseMomentsObserver(Observer):
     @property
     def epoch(self) -> Epoch:
         if self._current_epoch is None:
-            return self.new_epoch([])
+            return self.new_epoch()
         return self._current_epoch
 
-    def new_epoch(self, recap: list[Message], end_moment_id: str | None = None) -> Epoch:
+    def new_epoch(
+            self,
+            supplement: list[Message] | None = None,
+            end_moment_id: str | None = None,
+    ) -> Epoch:
         index = 0
         if self._current_epoch is not None:
             index = self._current_epoch.index
@@ -687,24 +703,33 @@ class BaseMomentsObserver(Observer):
         epoch = Epoch(
             id=uid,
             index=index,
-            recap=recap,
+            memento=[],
+            supplement=list(supplement or []),
             baseline={},
         )
         self._current_epoch = epoch
         # 反向绑定先 fire (on_epoch_creating): 依赖方刷新自身 baseline, 使后续
-        # baseline funcs 读到已刷新的状态.
+        # provider funcs 读到已刷新的状态.
         if len(self._epoch_creating_callbacks) > 0:
             for callback in self._epoch_creating_callbacks:
                 try:
                     callback(epoch)
                 except Exception as e:
                     self._logger.exception(e)
-        if len(self._epoch_recap_funcs) > 0:
-            for func in self._epoch_recap_funcs.values():
+        if len(self._epoch_memento_funcs) > 0:
+            for func in self._epoch_memento_funcs.values():
                 try:
                     messages = func()
                     if messages:
-                        epoch.recap.extend(messages)
+                        epoch.memento.extend(messages)
+                except Exception as e:
+                    self._logger.exception(e)
+        if len(self._epoch_supplement_funcs) > 0:
+            for func in self._epoch_supplement_funcs.values():
+                try:
+                    messages = func()
+                    if messages:
+                        epoch.supplement.extend(messages)
                 except Exception as e:
                     self._logger.exception(e)
         if len(self._epoch_baseline_funcs) > 0:
@@ -729,13 +754,25 @@ class BaseMomentsObserver(Observer):
             if moment.id == end_moment_id:
                 break
 
-    def with_epoch_recap(self, key: str, recap_func: Callable[[], list[Message]]) -> Disposer:
-        self._epoch_recap_funcs[key] = recap_func
+    def with_epoch_memento(self, key: str, memento_func: Callable[[], list[Message]]) -> Disposer:
+        self._epoch_memento_funcs[key] = memento_func
 
         def _dispose() -> None:
-            value = self._epoch_recap_funcs.get(key)
-            if value is recap_func:
-                self._epoch_recap_funcs.pop(key)
+            value = self._epoch_memento_funcs.get(key)
+            if value is memento_func:
+                self._epoch_memento_funcs.pop(key)
+
+        return _dispose
+
+    def with_epoch_supplement(
+            self, key: str, supplement_func: Callable[[], list[Message]],
+    ) -> Disposer:
+        self._epoch_supplement_funcs[key] = supplement_func
+
+        def _dispose() -> None:
+            value = self._epoch_supplement_funcs.get(key)
+            if value is supplement_func:
+                self._epoch_supplement_funcs.pop(key)
 
         return _dispose
 
@@ -841,7 +878,6 @@ class BaseMomentsObserver(Observer):
         return moment
 
     def clear(self) -> None:
-        self._recap = []
         self._moments.clear()
         self._echoes = Echoes()
         self._buffered_drained_percepts = {}

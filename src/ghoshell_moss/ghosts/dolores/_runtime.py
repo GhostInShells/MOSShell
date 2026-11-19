@@ -35,9 +35,10 @@ if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.v0_2_0 import DshLauncher
     from ghoshell_moss.memento import FsMemento
 
-    from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
+    from ._ego import CompactOutcome, DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._ego_memento import EgoMementoManager
     from ._meta import DoloresMeta
+    from .journal.contract import DoloresJournal
     from ._startup import StartupDoc
     from .mindset.beside.runtime import BesideRuntime
     from .mindset.ego_lifecycle_bus import EgoLifecycleBus
@@ -306,10 +307,12 @@ class Dolores(Ghost):
         # beside: the first parallel-thought organ. Built only when config enables it; the
         # channel factory reads the same config and mounts nothing when it is absent.
         self._beside_runtime: BesideRuntime | None = None
-        # memento view cache — rendered async in __aenter__ and before every compact; read
-        # synchronously by memories(). It is a snapshot of the trajectory at the moment it is
-        # formed, which is exactly what boot memory is.
+        # opening-context caches — rendered async in __aenter__ and before every compact.
+        # ``_memento_view`` is the epoch's <memento>; ``_journal_view`` is the <journal> that
+        # rides <memory>. Both are snapshots at the moment they are formed.
         self._memento_view: Message | None = None
+        self._journal: "DoloresJournal | None" = None
+        self._journal_view: str | None = None
         # <memory instanced_at> — the snapshot's absolute anchor, stored/rendered in UTC.
         self._memory_instanced_at: datetime | None = None
         self._exit_stack = contextlib.AsyncExitStack()
@@ -530,52 +533,62 @@ class Dolores(Ghost):
     def memories(self) -> list[Message]:
         """The ghost's dynamic memory — one ``<memory>`` container, not loose messages.
 
-        Child: the memento ``<memento>`` view (the trajectory outline). The ground is not here —
-        it is content for the instruction (see ``system_prompt``), and duplicating it in the
-        memory snapshot would make one edit invalidate two surfaces.
+        Child: the journal's ``<journal>`` view — the trajectory every session shares. The
+        container is the contract; the journal is its first child, and future memory organs
+        append here without changing the caller. The memento is not here: it is the epoch's
+        ``<memento>`` opening, rebuilt at every epoch boundary (see ``_open_cognition_epoch``).
+        The ground stays in the instruction.
 
-        ``instanced_at`` is when *this* memory instance was formed — the anchor every time inside
-        it is read against. It is not "now": the block is a snapshot, and the number stops being
-        now the moment it is written.
+        ``instanced_at`` is when *this* memory instance was formed — the anchor every time
+        inside it is read against. It is not "now": the block is a snapshot, and the number
+        stops being now the moment it is written.
 
-        The cognition epoch is deliberately *not* here: it opens on the first thinking, after the
-        runtime wires the shell facade (see think()), so at session-creation time there is no epoch
-        to report yet. It reaches the model through the ego's own epoch slot instead.
-
-        Read by the ego's create_session through this closure (clones share it).
+        Read through the ghost's public ``memories()`` interface: an ego session, a fork or
+        another body gets the same container, not a private copy.
         """
-        children: list[Message] = []
-        if self._memento_view is not None:
-            children.append(self._memento_view)
-        if not children:
+        if self._journal_view is None:
             return []
         attributes = {}
         if self._memory_instanced_at is not None:
             attributes["instanced_at"] = self._memory_instanced_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        return [Message.new(tag="memory", attributes=attributes).with_messages(*children)]
+        return [Message.new(tag="memory", attributes=attributes).with_content(self._journal_view)]
 
     async def refresh_memory(self, until: str | None = None) -> None:
-        """Re-render the memory snapshot — the **only** writer of the cache ``memories()`` reads.
+        """Re-render the opening context — the **only** writer of the caches the epoch reads.
 
-        Called at two points, and both are boundaries where the snapshot would otherwise lie:
+        Two caches, one boundary:
 
-        - boot (``__aenter__``): no ``until`` → the whole trajectory.
-        - compaction: ``until`` = the cut commit's coordinate → everything *before* it. The cut
-          commit's span stays verbatim in the surface, so the snapshot must stop just there;
-          summarising it too would put two versions of the same span in context.
+        - ``_memento_view`` — the ``<memento>`` rendered to ``until`` (a commit coordinate,
+          exclusive). At boot it renders the whole trajectory; at a threshold compact it stops
+          before the tip commit whose span stays in the surface; at a replan it renders to the
+          tip and the raw gap is carried by the epoch supplement.
+        - ``_journal_view`` — the ``<journal>`` block that rides ``<memory>``. Its boundary is
+          the day, not the cut: a journal render failure is logged and the memory block is
+          simply absent; it must not take a compaction down.
 
-        Why a cache at all: ``memories()`` is a sync closure handed to dsh at session creation,
-        while the view needs an async render (disk reads plus the branch projection). So the
-        async side owns the render, the sync side only reads what it left behind.
-
-        Skipping this at compaction is not a small staleness bug: the surface gets replaced by
-        the recap, so a boot-time snapshot would drop every commit made since boot from the
-        model's view — the head would jump straight to the last summary with nothing between.
+        Why caches at all: ``memories()`` is a sync closure handed to dsh, while the views need
+        an async render. The async side owns the render; the sync side only reads what it left.
         """
-        if self._memento_manager is None:
-            return
-        self._memento_view = await self._memento_manager.aview_message(until=until)
+        if self._memento_manager is not None:
+            memento, journal = await asyncio.gather(
+                self._memento_manager.aview_message(until=until),
+                self._render_journal(),
+            )
+        else:
+            memento, journal = None, await self._render_journal()
+        self._memento_view = memento
+        self._journal_view = journal
         self._memory_instanced_at = datetime.now(timezone.utc)
+
+    async def _render_journal(self) -> str | None:
+        """Render the journal's face — absence is normal, a broken read is not fatal."""
+        if self._journal is None:
+            return None
+        try:
+            return await self._journal.render()
+        except Exception:
+            self.logger.exception("journal: cannot render the memory view")
+            return None
 
     def mindflow(self) -> Mindflow:
         """Return the mindflow Dolores owns, materializing it on first call.
@@ -605,30 +618,30 @@ class Dolores(Ghost):
 
         A compact decided by the previous valid run is executed first, and a new epoch is opened
         right after it: compaction rewrites the model-visible head, so the cognition must restart on
-        a new epoch too. The ghost memory rides that epoch's recap slot — it is no longer written
-        into the surface history, which the compact would shadow.
+        a new epoch too. The epoch frame carries ``<memory>`` (the ghost's shared face) and then
+        ``<cognition_epoch>`` (memento → supplement → baseline); the old pair is replaced by the
+        compact, never duplicated.
         """
-        memory: list[Message] | None = None
+        outcome: "CompactOutcome | None" = None
         if self._ego is not None:
             # 遗留优先: 它意味着「上次 compact 可能已经换了 surface、epoch 还没开」, 比本帧再压
-            # 一次更急. 先取走它, 取不到才发起本帧的 compact —— 否则本帧失败的 compact 会把遗留
-            # 清成 None, memory 在模型视野里彻底消失.
-            memory = self._ego.take_compact_memory()
-            if memory is not None:
+            # 一次更急. 先取走它, 取不到才发起本帧的 compact.
+            outcome = self._ego.take_compact_outcome()
+            if outcome is not None:
                 # 上次 compact 在 RPC 中间被取消, 本帧补上: 这是一条可观测的恢复路径, 不能静默.
                 self.logger.warning(
                     "dolores: completing a compact cancelled mid-flight — opening epoch with "
-                    "%d memory messages",
-                    len(memory),
+                    "%d supplement messages",
+                    len(outcome.supplement),
                 )
             else:
-                memory = await self._ego.compact_if_pending()
-        if memory is not None:
+                outcome = await self._ego.compact_if_pending()
+        if outcome is not None:
             self._epoch_opened = True
-            self._open_cognition_epoch(memory=memory)
+            self._open_cognition_epoch(supplement=outcome.supplement)
         elif not self._epoch_opened:
             self._epoch_opened = True
-            self._open_cognition_epoch(memory=None)
+            self._open_cognition_epoch()
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
                 async for delta in run.logos():
@@ -636,21 +649,24 @@ class Dolores(Ghost):
         else:
             yield ""
 
-    def _open_cognition_epoch(self, memory: "list[Message] | None") -> None:
-        """Open a new cognition epoch, optionally carrying the ghost memory in its recap slot.
+    def _open_cognition_epoch(self, supplement: "list[Message] | None" = None) -> None:
+        """Open a new cognition epoch — memento from the cache, supplement per epoch.
 
-        The first epoch passes ``memory=None`` — create_session already seeded the memory as the
-        surface head there. From the first compact on, memory lives only in the epoch recap: every
-        later epoch re-delivers it, so the compact shadow can never drop it.
+        The memento provider is registered fresh each time and reads the cache refreshed at this
+        boundary. The supplement is passed directly to ``new_epoch``: it belongs to this epoch
+        only and must never leak into the next one.
 
-        The memory is captured **before** ``new_epoch`` and replayed through a closure: recap funcs
-        run inside ``BaseMomentsObserver.new_epoch``, which swallows their exceptions — re-reading
-        the memory there could silently lose it after the compact already dropped it from surface.
+        Both are captured **before** ``new_epoch`` because provider funcs run inside
+        ``BaseMomentsObserver.new_epoch``, which swallows their exceptions — re-reading there
+        could silently lose them after the surface was already replaced.
         """
         observer = self.mindflow().observer
-        if memory is not None:
-            observer.with_epoch_recap("memory", lambda: memory)
-        observer.new_epoch([])
+        memento = self._memento_view
+        observer.with_epoch_memento(
+            "trajectory",
+            lambda: [memento] if memento is not None else [],
+        )
+        observer.new_epoch(list(supplement or []))
 
     def runtime_contracts(self) -> Contracts:
         """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""
@@ -737,7 +753,7 @@ class Dolores(Ghost):
                 project_name=f"{self._meta.name()} @ {self._matrix.env.project_name}",
                 name=self._meta.name(),
                 mode=self._matrix.env.mode_name,
-                instruction=self.system_prompt(),
+                instruction=self.instruction,
                 facade=self._facade,
                 ghost_home=self._home,
             )
@@ -768,9 +784,17 @@ class Dolores(Ghost):
                         logger=self.logger,
                     )
                 )
-                # memory 的唯一写入点(开机这一次 + 每次 compact 前一次). memories() 是同步闭包,
-                # 只能读缓存; 渲染在这里和 compact 前发生.
-                await self.refresh_memory()
+            # opening-context 的唯一写入点 (开机这一次 + 每次 compact 前一次): memories() 是
+            # 同步闭包, 只能读缓存. The journal contract is fetched here — before the contracts
+            # loop later — because the memory face needs it at boot; its prompt dependency is
+            # materialized first so the singleton keeps a usable specification.
+            if self._container is not None:
+                from .journal.contract import DoloresJournal
+                from .mindset.prompter import PromptManager
+
+                self._container.force_fetch(PromptManager)
+                self._journal = self._container.force_fetch(DoloresJournal)
+            await self.refresh_memory()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,

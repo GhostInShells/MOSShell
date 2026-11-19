@@ -52,7 +52,7 @@ class TestDoloresEgoReasoningEffort:
                 project_name="pytest",
                 name="dolores",
                 mode="pytest",
-                instruction="i",
+                instruction=lambda: "i",
                 facade=None,
             ),
             default_thinking_effort=default_thinking_effort,
@@ -65,7 +65,7 @@ class TestDoloresEgoReasoningEffort:
         return SimpleNamespace(
             moment=Moment(index=0),
             observer=SimpleNamespace(
-                epoch=SimpleNamespace(id="0", index=0, recap=[], baseline={}),
+                epoch=SimpleNamespace(id="0", index=0, memento=[], supplement=[], baseline={}),
             ),
             effort=lambda: effort,
         )
@@ -229,7 +229,7 @@ class TestDoloresEgoReasoningEffort:
 
     @pytest.mark.asyncio
     async def test_lost_enter_does_not_burn_the_epoch(self):
-        """enter RPC 丢了不能打戳 —— 否则 recap (压缩后 memory 的唯一通路) 永不重发."""
+        """enter RPC 丢了不能打戳 —— 否则 opening (压缩后 memory/opening 的唯一通路) 永不重发."""
         from ghoshell_moss.message import Message
 
         class _FlakyLauncher(self._Launcher):
@@ -245,7 +245,8 @@ class TestDoloresEgoReasoningEffort:
         thinking = self._thinking("")
         thinking.observer.epoch = SimpleNamespace(
             id="e1", index=1,
-            recap=[Message.new(tag="memory").with_content("ground")],
+            memento=[Message.new(tag="memento").with_content("trail")],
+            supplement=[],
             baseline={"facade": "<facade/>"},
         )
 
@@ -265,12 +266,14 @@ class TestDoloresEgoReasoningEffort:
 
 
 class _FakeCompactManager:
-    """Duck-typed EgoMementoManager — compact 只读阈值配置与 SCS."""
+    """Duck-typed EgoMementoManager — compact 只读阈值配置、SCS 与 supplement."""
 
-    def __init__(self, cut_turn=7, compact_tokens=0):
+    def __init__(self, cut_turn=7, compact_tokens=0, supplement=None):
         self.config = SimpleNamespace(compact_tokens=compact_tokens)
         self._cut_turn = cut_turn
         self.keep_tail_seen: list[bool] = []
+        self._supplement = list(supplement or [])
+        self.supplement_calls = 0
 
     def compact_cut_turn(self):
         return self._cut_turn
@@ -281,6 +284,10 @@ class _FakeCompactManager:
             return None
         self.keep_tail_seen.append(keep_tail)
         return self._cut_turn, "1-9"
+
+    async def asupplement(self):
+        self.supplement_calls += 1
+        return list(self._supplement)
 
 
 class _FakeCompactLauncher:
@@ -300,7 +307,7 @@ class _CancellingLauncher:
         raise asyncio.CancelledError()
 
 
-def _compact_ego(*, memories, memento_manager=None, launcher=None, memory_refresh=None):
+def _compact_ego(*, memories=None, memento_manager=None, launcher=None, memory_refresh=None):
     from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
 
     ego = DoloresEgo(
@@ -310,7 +317,7 @@ def _compact_ego(*, memories, memento_manager=None, launcher=None, memory_refres
             project_name="pytest",
             name="dolores",
             mode="pytest",
-            instruction="i",
+            instruction=lambda: "i",
             facade=None,
         ),
         memories=memories,
@@ -322,89 +329,85 @@ def _compact_ego(*, memories, memento_manager=None, launcher=None, memory_refres
 
 
 class TestDoloresEgoCompact:
-    """compact 的 payload 拆分 — memory 走 epoch recap, surface 只留说明."""
+    """compact — surface 只留说明; supplement 是 last span 的原文, 不是 memory."""
 
     @staticmethod
-    def _memory_message():
+    def _supplement_message():
         from ghoshell_moss.message import Message
 
-        return Message.new(tag="memory").with_content("ground")
+        return Message.new(tag="transcript").with_content("last span")
 
     @pytest.mark.asyncio
-    async def test_payload_splits_memory_from_notice(self):
-        ego = _compact_ego(memories=lambda: [self._memory_message()])
-
-        memory, notice = ego._compact_memory_payload()
-
-        assert "<memory>" in memory[0].to_content_string()
-        assert "compacted" in notice
-        assert "<memory>" not in notice
-
-    @pytest.mark.asyncio
-    async def test_compact_if_pending_returns_memory_and_sends_notice(self):
+    async def test_compact_if_pending_returns_outcome_and_sends_notice(self):
         launcher = _FakeCompactLauncher()
         ego = _compact_ego(
-            memories=lambda: [self._memory_message()],
             memento_manager=_FakeCompactManager(cut_turn=7),
             launcher=launcher,
         )
         ego._pending_compact = True
 
-        memory = await ego.compact_if_pending()
+        outcome = await ego.compact_if_pending()
 
-        assert memory is not None and "<memory>" in memory[0].to_content_string()
+        assert outcome is not None
+        assert outcome.supplement == []
         path, payload = launcher.calls[0]
         assert path.endswith("/compact")
         assert payload["cut_turn"] == 7
-        assert "<memory>" in payload["memory"][0]["text"]
+        assert "memory" not in payload
         assert "compacted" in payload["notice"]
         assert ego._pending_compact is False
         # 成功返回即交付, 不留下跨帧暂存.
-        assert ego.take_compact_memory() is None
+        assert ego.take_compact_outcome() is None
 
     @pytest.mark.asyncio
     async def test_the_fold_notice_names_its_cause(self):
         """折叠之后唯一能解释"刚才发生了什么"的东西：带 reason 与地址的标签, 而不是一句通用话."""
-        ego = _compact_ego(memories=lambda: [self._memory_message()])
+        ego = _compact_ego()
 
-        _, threshold = ego._compact_memory_payload(reason="threshold", coord="1-9")
-        _, replan = ego._compact_memory_payload(reason="replan", coord="1-9")
+        threshold = ego._compact_notice(reason="threshold", coord="1-9")
+        replan = ego._compact_notice(reason="replan", coord="1-9")
 
         assert '<memento_notice kind="folded" reason="threshold" at="1-9">' in threshold
         assert "live tail" in threshold
         assert '<memento_notice kind="folded" reason="replan" at="1-9">' in replan
         assert "conversation up to it is gone" in replan
-        # 不预告下一帧必然发生的事 —— 通知只说变了什么.
-        assert "memory view arrives" not in threshold
-        assert "memory view arrives" not in replan
 
     @pytest.mark.asyncio
-    async def test_replan_compact_cuts_without_a_tail(self):
-        """replan 不看窗口阈值, 也不需要 SCS: 切点取 tip 的 end_turn, 整段对话都不留在 surface 里."""
-        manager = _FakeCompactManager(cut_turn=9)
+    async def test_threshold_compact_keeps_tail_and_has_no_supplement(self):
+        manager = _FakeCompactManager(cut_turn=7, supplement=[self._supplement_message()])
+        ego = _compact_ego(memento_manager=manager, launcher=_FakeCompactLauncher())
+        ego._pending_compact = True
+
+        outcome = await ego.compact_if_pending()
+
+        assert manager.keep_tail_seen == [True]
+        assert outcome is not None
+        assert outcome.supplement == []
+        assert manager.supplement_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_replan_compact_collects_the_raw_last_span(self):
+        """replan 整段不留 —— tip note 未就绪时, last span 的原文进 supplement."""
+        manager = _FakeCompactManager(cut_turn=9, supplement=[self._supplement_message()])
         launcher = _FakeCompactLauncher()
-        ego = _compact_ego(
-            memories=lambda: [self._memory_message()],
-            memento_manager=manager,
-            launcher=launcher,
-        )
+        ego = _compact_ego(memento_manager=manager, launcher=launcher)
         ego._pending_compact = True
         ego._compact_no_tail = True
 
-        await ego.compact_if_pending()
+        outcome = await ego.compact_if_pending()
 
         assert manager.keep_tail_seen == [False]
+        assert outcome is not None
+        assert "last span" in outcome.supplement[0].to_content_string()
         assert ego._compact_no_tail is False
         assert launcher.calls[0][1]["cut_turn"] == 9
 
     @pytest.mark.asyncio
-    async def test_compact_re_renders_memory_before_it_replaces_the_surface(self):
-        """The recap must be rendered **now**, not read from the boot snapshot.
+    async def test_compact_re_renders_the_memento_before_it_replaces_the_surface(self):
+        """The memento must be rendered **now**, not read from the boot snapshot.
 
-        Without the refresh, the surface is replaced by a snapshot taken at boot and every
-        commit made since then disappears from the model's view: the head jumps straight to
-        the last summary with nothing in between. The refresh also has to run before the RPC —
-        a cancelled compact keeps this memory for the next frame, and it must be the fresh one.
+        Threshold compact stops before the tip (its span stays); a no-tail compact renders
+        to the tip and the raw gap rides the supplement.
         """
         calls: list[str | None] = []
 
@@ -413,36 +416,39 @@ class TestDoloresEgoCompact:
 
         launcher = _FakeCompactLauncher(replaced=1)
         ego = _compact_ego(
-            memories=lambda: [self._memory_message()],
             memory_refresh=refresh,
             memento_manager=_FakeCompactManager(cut_turn=7),
             launcher=launcher,
         )
         ego._pending_compact = True
 
-        memory = await ego.compact_if_pending()
+        outcome = await ego.compact_if_pending()
 
-        assert memory is not None
+        assert outcome is not None
         assert calls == ["1-9"]          # the cut commit, exclusive upper bound
         assert launcher.calls             # and it happened before the replace RPC
+
+        calls.clear()
+        ego._pending_compact = True
+        ego._compact_no_tail = True
+        await ego.compact_if_pending()
+        assert calls == [None]            # no-tail: render the whole trajectory
 
     @pytest.mark.asyncio
     async def test_nothing_shadowed_is_not_a_compact(self):
         """plugin 返回 replaced=0 → 实际没压, 不开新 epoch."""
         ego = _compact_ego(
-            memories=lambda: [self._memory_message()],
             memento_manager=_FakeCompactManager(cut_turn=7),
             launcher=_FakeCompactLauncher(replaced=0),
         )
         ego._pending_compact = True
 
         assert await ego.compact_if_pending() is None
-        assert ego.take_compact_memory() is None
+        assert ego.take_compact_outcome() is None
 
     @pytest.mark.asyncio
     async def test_compact_if_pending_noop_without_pending(self):
         ego = _compact_ego(
-            memories=lambda: [],
             memento_manager=_FakeCompactManager(),
             launcher=_FakeCompactLauncher(),
         )
@@ -450,21 +456,22 @@ class TestDoloresEgoCompact:
         assert await ego.compact_if_pending() is None
 
     @pytest.mark.asyncio
-    async def test_cancelled_compact_leaves_memory_for_the_next_frame(self):
-        """取消落在 RPC 窗口: 插件可能已换 surface —— memory 必须留给下一帧补开 epoch."""
+    async def test_cancelled_compact_leaves_outcome_for_the_next_frame(self):
+        """取消落在 RPC 窗口: 插件可能已换 surface —— supplement 必须留给下一帧补开 epoch."""
         ego = _compact_ego(
-            memories=lambda: [self._memory_message()],
-            memento_manager=_FakeCompactManager(cut_turn=7),
+            memento_manager=_FakeCompactManager(cut_turn=9, supplement=[self._supplement_message()]),
             launcher=_CancellingLauncher(),
         )
         ego._pending_compact = True
+        ego._compact_no_tail = True
 
         with pytest.raises(asyncio.CancelledError):
             await ego.compact_if_pending()
 
-        memory = ego.take_compact_memory()
-        assert memory is not None and "<memory>" in memory[0].to_content_string()
-        assert ego.take_compact_memory() is None  # 取走即清
+        outcome = ego.take_compact_outcome()
+        assert outcome is not None
+        assert "last span" in outcome.supplement[0].to_content_string()
+        assert ego.take_compact_outcome() is None  # 取走即清
 
 
 class TestDoloresEgoNucleus:
@@ -606,7 +613,7 @@ class TestDoloresEgoSelfWake:
                 project_name="pytest",
                 name="dolores",
                 mode="pytest",
-                instruction="i",
+                instruction=lambda: "i",
                 facade=None,
             ),
         )
@@ -694,7 +701,7 @@ class TestDoloresEgoCommit:
                 project_name="pytest",
                 name="dolores",
                 mode="pytest",
-                instruction="i",
+                instruction=lambda: "i",
                 facade=None,
             ),
             memento_manager=manager,
@@ -1089,7 +1096,7 @@ class TestDoloresEgoClosePreviousSessions:
                 project_name="pytest",
                 name="dolores",
                 mode="pytest",
-                instruction="i",
+                instruction=lambda: "i",
                 facade=None,
             ),
             config=DoloresEgoConfig(session_archive_rename_k=k),

@@ -88,6 +88,18 @@ class TestDoloresInstruction:
             assert text.strip() != ""
 
 
+class TestGhostTopology:
+    """The two interfaces a re-entrant session or another body builds its context from."""
+
+    def test_instruction_is_a_first_class_ghost_interface(self):
+        ghost = _dolores()
+        assert ghost.instruction() == ghost.system_prompt()
+
+    def test_memories_returns_the_public_container_not_a_private_copy(self):
+        ghost = _dolores()
+        assert ghost.memories() == []
+
+
 class TestDoloresMemoriesFromHome:
     """Dolores.memories — ground 渲染为第一条存在主义记忆."""
 
@@ -111,19 +123,11 @@ class TestDoloresMemoriesFromHome:
 
 class TestDoloresMemories:
     @pytest.mark.asyncio
-    async def test_returns_single_memory_container(self, tmp_path: Path):
-        from ghoshell_moss.memento import new_local_memento
-
-        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
-
-        memento = new_local_memento(tmp_path / "owner", writable=True)
-        memento.create_branch("main")
-        manager = EgoMementoManager(connection=_OfflineConnection(), memento=memento, config=EgoMementoConfig())
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
-        memento.get_branch("main").note(anchor.id, "note")
-
+    async def test_returns_single_memory_container_with_journal(self):
         ghost = _dolores()
-        ghost._memento_manager = manager
+        ghost._journal = _FakeJournal(
+            '<journal at="2026-11-19"><day date="2026-11-19">today</day></journal>'
+        )
         # 渲染是异步的: refresh 写缓存, memories() 只读.
         await ghost.refresh_memory()
 
@@ -134,11 +138,20 @@ class TestDoloresMemories:
         assert "<memory" in text
         # 快照要带"它成形于哪一刻" —— 绝对锚, UTC, 秒精度
         assert re.search(r'<memory instanced_at="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"', text)
-        assert '<branch name="main"' in text and "note" in text
+        assert "<journal" in text and "today" in text
+        assert "<memento" not in text
 
     def test_returns_empty_when_nothing_to_remember(self):
         ghost = _dolores()
         assert ghost.memories() == []
+
+
+class _FakeJournal:
+    def __init__(self, text: str):
+        self._text = text
+
+    async def render(self, at=None) -> str:
+        return self._text
 
 
 class TestBuildChannel:
@@ -241,7 +254,7 @@ class TestDoloresMomentPayload:
                 project_name="pytest",
                 name="dolores",
                 mode="pytest",
-                instruction="i",
+                instruction=lambda: "i",
                 facade=None,
             ),
         )
@@ -328,7 +341,7 @@ class TestDoloresMomentPayload:
 
 
 class TestDoloresEpochPayload:
-    """DoloresEgo 的 epoch 槽位 — <cognition_epoch> 容器 (recap + baseline), epoch 变更时才返回."""
+    """DoloresEgo 的 epoch 槽位 — <cognition_epoch> 容器 (memento + supplement + baseline), epoch 变更时才返回."""
 
     def _ego(self):
         from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
@@ -340,7 +353,7 @@ class TestDoloresEpochPayload:
                 project_name="pytest",
                 name="dolores",
                 mode="pytest",
-                instruction="i",
+                instruction=lambda: "i",
                 facade=None,
             ),
         )
@@ -364,33 +377,38 @@ class TestDoloresEpochPayload:
         epoch = Epoch(
             id="e1",
             index=1,
-            recap=[Message.new(tag="summary").with_content("past")],
+            memento=[Message.new(tag="memento").with_content("trail")],
+            supplement=[Message.new(tag="transcript").with_content("past")],
             baseline={"facade": "channel tree"},
         )
-        payload = self._ego()._epoch_payload(self._thinking(epoch))
-        assert payload is not None
-        text = "".join(c["text"] for c in payload if c.get("type") == "text")
+        opening = self._ego()._epoch_payload(self._thinking(epoch))
+        assert opening is not None
+        assert opening.memory == []
+        text = "".join(c["text"] for c in [*opening.memory, *opening.epoch] if c.get("type") == "text")
         assert "<cognition_epoch" in text
         assert 'index="1"' in text
-        assert "<recap>" in text
+        assert "<memento>" in text
+        assert "trail" in text
+        assert "<supplement>" in text
         assert "past" in text
         assert "<baseline>" in text
         assert "<facade>" in text
         assert "channel tree" in text
+        assert text.index("<memento>") < text.index("<supplement>") < text.index("<baseline>")
 
     def test_epoch_payload_none_when_epoch_unchanged(self):
         from ghoshell_moss.core.blueprint.moment import Epoch
 
         ego = self._ego()
-        epoch = Epoch(id="e1", index=1, recap=[], baseline={})
+        epoch = Epoch(id="e1", index=1, memento=[], supplement=[], baseline={})
         assert ego._epoch_payload(self._thinking(epoch)) is None  # 空 epoch → 不注入
         # 已记录的 epoch 再次进入 → None (不变更).
-        epoch2 = Epoch(id="e1", index=1, recap=[], baseline={})
+        epoch2 = Epoch(id="e1", index=1, memento=[], supplement=[], baseline={})
         assert ego._epoch_payload(self._thinking(epoch2)) is None
 
 
 class TestDoloresEpoch:
-    """epoch 周期 — 首次 thinking 开 epoch; compact 后开新 epoch 并交付 memory recap."""
+    """epoch 周期 — 首次 thinking 开 epoch; compact 后开新 epoch 并携带 supplement."""
 
     @staticmethod
     def _ghost():
@@ -400,60 +418,61 @@ class TestDoloresEpoch:
         return ghost, moments
 
     @staticmethod
-    def _memory_message():
+    def _supplement_message():
         from ghoshell_moss.message import Message
 
-        return Message.new(tag="memory").with_content("ground")
+        return Message.new(tag="transcript").with_content("last span")
 
     @pytest.mark.asyncio
-    async def test_first_epoch_has_no_memory_recap(self):
+    async def test_first_epoch_has_no_supplement(self):
         ghost, moments = self._ghost()
         ghost._ego = _FakeThinkEgo()
 
         assert [delta async for delta in ghost.think(None)] == ["x"]
 
         assert moments.epochs == 1
-        assert moments.recap_funcs == {}
+        assert moments.memento_funcs  # memento provider is registered on every epoch
+        assert moments.epoch_supplements == [[]]
 
     @pytest.mark.asyncio
-    async def test_compact_opens_epoch_with_memory_recap(self):
+    async def test_compact_opens_epoch_with_supplement(self):
         ghost, moments = self._ghost()
-        ghost._ego = _FakeThinkEgo(memory=[self._memory_message()])
+        ghost._ego = _FakeThinkEgo(supplement=[self._supplement_message()])
 
         assert [delta async for delta in ghost.think(None)] == ["x"]
 
         assert ghost._ego.compact_calls == 1
         assert moments.epochs == 1
-        assert "memory" in moments.recap_funcs
-        assert "<memory>" in moments.epoch_recaps[0][0].to_content_string()
+        assert "last span" in moments.epoch_supplements[0][0].to_content_string()
 
     @pytest.mark.asyncio
     async def test_cancelled_compact_is_completed_on_the_next_frame(self):
-        """上次 think 在 compact RPC 窗口被取消 → 本帧取走遗留 memory 补开 epoch."""
+        """上次 think 在 compact RPC 窗口被取消 → 本帧取走遗留 outcome 补开 epoch."""
         ghost, moments = self._ghost()
-        ghost._ego = _FakeThinkEgo(leftover=[self._memory_message()])
+        ghost._ego = _FakeThinkEgo(leftover=[self._supplement_message()])
 
         assert [delta async for delta in ghost.think(None)] == ["x"]
 
         assert ghost._ego.take_calls == 1
-        assert "memory" in moments.recap_funcs
-        assert "<memory>" in moments.epoch_recaps[0][0].to_content_string()
+        assert "last span" in moments.epoch_supplements[0][0].to_content_string()
 
 
 class _FakeMoments:
-    """moments 的录制替身 — epoch 次数 / recap 注册 / recap 产物."""
+    """moments 的录制替身 — epoch 次数 / memento provider / supplement 产物."""
 
     def __init__(self):
         self.epochs = 0
-        self.recap_funcs: dict = {}
-        self.epoch_recaps: list[list] = []
+        self.memento_funcs: dict = {}
+        self.epoch_mementos: list[list] = []
+        self.epoch_supplements: list[list] = []
 
-    def with_epoch_recap(self, key, recap_func):
-        self.recap_funcs[key] = recap_func
+    def with_epoch_memento(self, key, memento_func):
+        self.memento_funcs[key] = memento_func
 
-    def new_epoch(self, recap):
+    def new_epoch(self, supplement):
         self.epochs += 1
-        self.epoch_recaps.append([msg for func in self.recap_funcs.values() for msg in func()])
+        self.epoch_mementos.append([msg for func in self.memento_funcs.values() for msg in func()])
+        self.epoch_supplements.append(list(supplement))
 
 
 class _FakeRunContext:
@@ -472,20 +491,22 @@ class _FakeRunContext:
 
 
 class _FakeThinkEgo:
-    def __init__(self, *, memory=None, leftover=None):
-        self._memory = memory
-        self._leftover = leftover
+    def __init__(self, *, supplement=None, leftover=None):
+        from ghoshell_moss.ghosts.dolores._ego import CompactOutcome
+
+        self._outcome = None if supplement is None else CompactOutcome(supplement=list(supplement))
+        self._leftover = None if leftover is None else CompactOutcome(supplement=list(leftover))
         self.compact_calls = 0
         self.take_calls = 0
 
     async def compact_if_pending(self):
         self.compact_calls += 1
-        return self._memory
+        return self._outcome
 
-    def take_compact_memory(self):
+    def take_compact_outcome(self):
         self.take_calls += 1
-        memory, self._leftover = self._leftover, None
-        return memory
+        outcome, self._leftover = self._leftover, None
+        return outcome
 
     def run_thinking(self, thinking):
         return _FakeRunContext(["x"])

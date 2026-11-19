@@ -145,6 +145,9 @@ class Ghost(ABC):
 
     必须实现的 abstractmethod 只有少数几个：
     think(), system_prompt(), __aenter__, __aexit__.
+
+    两个拓扑接口 —— ``instruction()`` 与 ``memories()`` —— 是可化身、可重入的边界：
+    任何新的 session / 躯体只靠它们就能重建这个 ghost 的上下文，不去够实现内部的副本。
     """
 
     @property
@@ -168,9 +171,23 @@ class Ghost(ABC):
         """
         pass
 
+    def instruction(self) -> str:
+        """The ghost's instruction — the canonical topological interface.
+
+        ``system_prompt`` is the historical name; ``instruction`` is what a re-entrant
+        session or another body asks for when it needs "who is this ghost" without
+        reaching into the implementation. Defaults to ``system_prompt``; a ghost that
+        assembles its prompt differently may override it.
+        """
+        return self.system_prompt()
+
     def memories(self) -> list[Message]:
         """
         Ghost 的动态记忆.
+
+        The other half of the topological pair: a re-entrant session or another body
+        builds its context from ``instruction()`` + ``memories()`` alone. Returns the
+        ``<memory>`` container (or loose messages) — never a private closure.
         """
         return []
 

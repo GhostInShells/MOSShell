@@ -12,7 +12,7 @@ pins:
 
 # Existence
 
-我是谁。时间线——我经历过什么——在 `journal/` 场。
+我是谁。时间线——我经历过什么——在 `journal/` 目录。
 
 @purpose.md
 @behaviors.md

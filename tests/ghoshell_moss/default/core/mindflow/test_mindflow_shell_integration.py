@@ -701,17 +701,17 @@ async def test_interpret_error_surfaces_to_model_in_next_moment():
 
 @pytest.mark.asyncio
 async def test_mindflow_channel_facade_delivered_at_epoch_baseline():
-    """mindflow 反身 channel 的命令面 (facade) 在第零帧 (epoch baseline) 交付, 不进 recap.
+    """mindflow 反身 channel 的命令面 (facade) 在第零帧 (epoch baseline) 交付, 不进 supplement.
 
     协议契约:
         - mindflow channel 没有 instruction / notice / context (见
           ``test_no_instruction_notice_or_context``), 它的 facade 就是命令面.
         - 命令面是 shell 的 live 表面, 走 ``epoch.baseline['facade']`` 交付一次,
-          不进 ``recap`` (recap 是前情提要, 命令面不是).
+          不进 ``supplement`` (supplement 是开场增补, 命令面不是).
 
     注意: 命令面含动态可用性 (``set-priority`` 只在 attention 活跃时可见), 帧间
     facade_delta 会随 attention 状态合法变化 — 这里只钉住"命令面在第零帧交付一次、
-    不进 recap"这个稳定契约, 不反向断言帧 echo 里没有 facade (那会绑死动态行为).
+    不进 supplement"这个稳定契约, 不反向断言帧 echo 里没有 facade (那会绑死动态行为).
     """
     suite = MindflowInShellTestSuite()
 
@@ -755,12 +755,12 @@ async def test_mindflow_channel_facade_delivered_at_epoch_baseline():
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
 
-    # 命令面在第零帧 (epoch baseline) 交付, 不进 recap.
+    # 命令面在第零帧 (epoch baseline) 交付, 不进 supplement.
     facade = epoch.baseline.get("facade", "")
     assert "specification" in facade, "mindflow facade 未在第零帧 (epoch baseline) 交付"
     assert "peek" in facade
     assert "claim" in facade
-    assert epoch.recap == []
+    assert epoch.supplement == []
 
 
 @pytest.mark.asyncio

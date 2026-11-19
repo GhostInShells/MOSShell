@@ -369,7 +369,7 @@ class DoloresRun:
         self._thinking_seq = self._ego.next_thinking_seq()
         self._thinking_event.set()
         # 上一有效 run 决定的 compact 由 runtime 在进入本 run 之前执行 (见 Dolores.think): 它同时要开
-        # 新 epoch 让 memory 走 recap 槽, 两个动作必须按序发生在请求之前.
+        # 新 epoch 让 memory 与 opening 同帧交付, 两个动作必须按序发生在请求之前.
         self._dispose_listener = self._ego.session.on_session_event("*", self._on_event)
         self._dispose_percepts = self._thinking.observer.on_percepts_injected(
             self._on_percepts_injected

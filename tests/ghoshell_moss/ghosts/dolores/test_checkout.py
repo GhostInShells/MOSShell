@@ -36,7 +36,7 @@ def _ego(manager):
             project_name="pytest",
             name="dolores",
             mode="pytest",
-            instruction="i",
+            instruction=lambda: "i",
             facade=None,
         ),
         memento_manager=manager,
@@ -148,6 +148,29 @@ class TestCheckoutTransition:
             end_turn=5,
         )
         assert manager.active_branch == "main"
+
+    @pytest.mark.asyncio
+    async def test_checkout_delivers_the_destination_memento_without_opening_an_epoch(self, tmp_path: Path):
+        """A switch refreshes one memento as a signal; it never rebuilds the cognition epoch."""
+        from ghoshell_moss.ghosts.dolores._ego import CheckoutRequest
+
+        manager, memento = _manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        ego = _ego(manager)
+        ego._ego_session_id = "s1"
+        ego._last_turn = 2
+        signals = []
+        ego.bind_signal_broadcast(signals.append)
+        request = CheckoutRequest(name="idea", title="carry the long task")
+
+        await ego._run_checkout(request)
+
+        assert manager.active_branch == "idea"
+        assert ego._moment_epoch is None
+        assert len(signals) == 1
+        text = "".join(msg.to_content_string() for msg in signals[0].messages)
+        assert "<memento" in text
+        assert 'name="idea"' in text
 
     @pytest.mark.asyncio
     async def test_an_empty_span_aborts_before_anything_is_written(self, tmp_path: Path):

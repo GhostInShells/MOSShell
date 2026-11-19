@@ -17,7 +17,7 @@ transport that only receives content blocks):
 - context (echoes/dynamic/executing) → <moment>, injected as background;
 - inputs (default-slot deliveries + optional <hint>) → <inputs>, steered to drive a turn;
 - percepts (role-classified deliveries, one inner tag per role) → <percepts>, its own message;
-- epoch (on epoch change) → <cognition_epoch index=N> recap + baseline, injected as background.
+- epoch (on epoch change) → <memory> + <cognition_epoch> (memento + supplement + baseline), injected as background.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ _DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
 _DOLORES_MOMENT_PUSH = "/moss-api/ghost/dolores/moment/push"
 # settle 2a: 探针 —— 检查 dsh 侧是否还有未消费的 pending moment, 有则空 steer 开下一 turn.
 _DOLORES_TURN_END_PROBE = "/moss-api/ghost/dolores/turn-end-probe"
-# compact: 原地把 surface 前缀替换成一条说明, cut 到 cut_turn 边界; memory 由新 epoch 的 recap 交付.
+# compact: 原地把 surface 前缀替换成一条说明, cut 到 cut_turn 边界; memory 与 epoch 在新帧一起交付.
 _DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
 # thinking/exit confirmation timeout (fail-safe): degrade instead of hanging the exit if the plugin stalls.
@@ -109,6 +109,29 @@ class CheckoutOutcome(BaseModel):
 
     surface: Message | None = None
     reason: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class CompactOutcome:
+    """What one compact produced — the supplement the next epoch must carry.
+
+    The supplement is a message record, not a summary: the last session span whose commit
+    note has not landed yet. Empty is the normal case.
+    """
+
+    supplement: list[Message]
+
+
+@dataclasses.dataclass(frozen=True)
+class EpochOpening:
+    """One epoch frame's two content groups — memory first, then the epoch container.
+
+    They travel as separate user messages so the 1:1 ordering is visible to the model (and
+    to the overflow-cache extractor), while sharing one ``epochIndex`` for dedup.
+    """
+
+    memory: list[dict]
+    epoch: list[dict]
 
 
 async def run_checkout(
@@ -268,14 +291,16 @@ class DoloresConfig(BaseModel):
 class DoloresEgoContext:
     """Static context captured before the ego enters its lifecycle — assembled by the ghost, injected to avoid a back-ref.
 
-    Values are read once at ego construction; nothing needs to reach back into the ghost afterward.
-    All references are injected via typed objects / variables / closures — no back-ref is held.
+    Locations are read once; the two topological interfaces (instruction and memories) are
+    injected as callables and read at their boundaries — a session or epoch gets the ghost's
+    current face, never a copy captured at construction. No back-ref is held.
 
     - project_home: working dir of the ego session.
     - project_name: workspace title (`{name} @ {project}`).
     - name: ghost name, used for title/identity.
     - mode: mode name, used for the session title.
-    - instruction: assembled system prompt.
+    - instruction: callable returning the assembled system prompt — read at session creation,
+      not frozen here, so a re-entrant session sees the ghost's current instruction.
     - facade: shell context surface (used to refresh meta on interleaved_ctml).
     - ghost_home: ghost home dir — 旁路 (note/chat) session 归组的 home workspace; None = 不建 home workspace.
     """
@@ -284,7 +309,7 @@ class DoloresEgoContext:
     project_name: str
     name: str
     mode: str
-    instruction: str
+    instruction: Callable[[], str]
     facade: "MShellContextFacade"
     ghost_home: Path | None = None
 
@@ -340,8 +365,8 @@ class DoloresEgo:
         :param ctx: one-shot session context (home/name/instruction/project_name).
         :param config: ego session config; None uses all defaults.
         :param logger: logger; None falls back to the MOSS logger.
-        :param memories: closure returning the ghost's dynamic memory (existential layer); called on
-            create_session for the freshest value. Clones share the same closure. None = no memory.
+        :param memories: closure returning the ghost's dynamic memory (existential layer); called at
+            each epoch opening for the freshest value. Clones share the same closure. None = no memory.
         :param memory_refresh: async re-render of that memory, called with the compact cut coordinate
             before the surface is replaced. ``memories`` is a **cache read**; this is the only writer
             of that cache after boot. Without it a compact would re-deliver the boot snapshot and
@@ -412,9 +437,9 @@ class DoloresEgo:
         # 这次 compact 是否整段不留 tail (replan). 只在 compact 判定那一瞬间有效, 用完即清 ——
         # 否则一次 replan 会给后面的阈值压缩留下一个错误的切点.
         self._compact_no_tail: bool = False
-        # compact 已发往 plugin、epoch 尚未开启时的 memory 暂存. 取消可能落在 RPC 中间:
+        # compact 已发往 plugin、epoch 尚未开启时的 outcome 暂存. 取消可能落在 RPC 中间:
         # 插件可能已经换了 surface, 而调用方还没拿到返回值 —— 由下一帧取走并补开 epoch.
-        self._compact_memory: list[Message] | None = None
+        self._compact_outcome: CompactOutcome | None = None
         # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
         self._notices: list[Message] = []
         # 连续缺 usage 计数: 首帧 (warm-up) 的 usage 是收尾才补, live 流里常缺一条, 属预期瞬态;
@@ -493,25 +518,15 @@ class DoloresEgo:
             )
 
     async def create_session(self) -> str:
-        """Create the ego session (reusable — clones share the same memories closure).
+        """Create the ego session — instruction only; memory rides the first epoch frame.
 
-        Injects instruction + memory (ghost dynamic memory, 1:1 into user messages) at session
-        creation, establishing an initial surface below the instruction and above the conversation.
+        The session payload carries the ghost's live ``instruction()``. It carries **no memory
+        seed**: ``<memory>`` and ``<cognition_epoch>`` are delivered together on the first
+        pre-step by the epoch slot, so there is exactly one delivery path and no boot-time
+        duplicate. A re-entrant session reads the same two Ghost interfaces at creation and
+        gets the current face rather than a copy captured when this object was built.
+
         Returns the ego session id.
-
-        启动**不再回放源 session 的原文 tail**：seed 只有 memory (ground + memento view)。这样 dsh
-        历史消息协议再变，启动都不碰（防「升级后 ghost 永远起不来」）。跨重启的连续性由 memento
-        视图 + read/chat 承担。
-
-        约定的两种起始形态（**按 ref 起 session 还没接线**，现在只有第一种）：
-
-        1. 无 ref：memory 渲染到 last commit，新 session 从这里往下长。
-        2. 有 ref：memory 渲染到该 commit **之前**（不含它），再把那条 commit 的消息正文展开、
-           塞进新 session 的起始上下文。也就是"从某个锚点接上"——快照只说它之前的事，它自己
-           只被展开一次，任何一段都不会在上下文里出现两遍。
-
-        第二种要接线时必须走 refresh_memory(until=coord)，和 compact 用的是同一条路径 —— 别在
-        这里另写一套截断逻辑。
         """
         # Close the sessions this boot replaces before opening the new one; the roster stays at
         # exactly one live Ψ even after a crash of the previous process.
@@ -523,8 +538,7 @@ class DoloresEgo:
                 mode=self._ctx.mode,
                 timestamp=datetime.now().strftime("%y-%m-%d %H:%M:%S"),
             ),
-            "instruction": self._ctx.instruction,
-            "messages": self._assemble_initial_messages(),
+            "instruction": self._ctx.instruction(),
             "permission": self._config.permission,
         }
         if self._ctx.ghost_home is not None:
@@ -729,19 +743,15 @@ class DoloresEgo:
 
     # ── context assembly ─────────────────────────────────────────────
 
-    def _assemble_initial_messages(self) -> list[dict]:
-        """Initial messages: ghost dynamic memory (memories closure) → plugin payload.
+    def _epoch_memory(self) -> list[Message]:
+        """The ``<memory>`` container read at epoch opening — through the ghost's interface.
 
-        Each item is ``{"text": ...}``, injected by the plugin as a user message. Memory maps 1:1 to
-        dsh user messages (no folding).
+        The closure is the same one a re-entrant session would get from ``Ghost.memories()``;
+        the ego does not hold a private copy. Empty when the ghost has no memory organ.
         """
         if self._memories is None:
             return []
-        return [
-            {"text": msg.to_content_string()}
-            for msg in self._memories()
-            if not msg.is_empty()
-        ]
+        return [msg for msg in self._memories() if not msg.is_empty()]
 
     # ── background watcher (long-lived) ──────────────────────────────
 
@@ -991,8 +1001,8 @@ class DoloresEgo:
         和阈值 commit 因此走同一个边界.
 
         ``replan=True`` 在落锚之后再登记一次"整段不留 tail"的压缩: anchor 落地时它才拿到
-        自己的 ``end_turn``, 下一 run 启动时按它切 —— 于是重启后的上下文只有这条 note 与
-        新 epoch 的 recap.
+        自己的 ``end_turn``, 下一 run 启动时按它切 —— 重启后的上下文是这条 note 的 memento
+        与（必要时）raw last span 的 supplement.
         """
         if self._memento_manager is None:
             return "[memento] no memento manager is wired — nothing can be anchored"
@@ -1065,16 +1075,14 @@ class DoloresEgo:
         if self._window_size >= manager.config.compact_tokens and manager.compact_cut_turn() is not None:
             self._pending_compact = True
 
-    async def compact_if_pending(self) -> list[Message] | None:
+    async def compact_if_pending(self) -> CompactOutcome | None:
         """run 启动前调用：有 pending 就原地 compact，无则 no-op.
 
-        返回**本次压缩实际使用的 memory 消息**（供调用方开新 epoch 时作 recap），没压则 None。
-        memory 不再写进 surface 历史，而是随新 epoch 的 recap 槽交付；调用方不在成功返回后紧接着
-        开 epoch，ego 侧 epoch id 不变，recap 根本不会注入。
-
-        memory 在这里**先行取值并缓存**：一来决定是否值得压（取不到就不压，memory 仍留在 surface，
-        安全退回旧语义），二来若 compact 的 RPC 窗口被取消，下一帧可以取走缓存补开 epoch。
-        失败降级为告警 —— 主动 compact 是防溢出，不该反过来把一个 run 的启动拖死。
+        Returns the supplement the next epoch must carry, or None when nothing was compacted.
+        The supplement is a raw message record — the last session span the memento's last
+        summarized commit cannot cover — captured before the RPC so a cancelled compact can be
+        completed on the next frame. Nothing waits for a note to be produced: the new epoch opens
+        immediately, and the raw span rides along.
         """
         if not self._pending_compact:
             return None
@@ -1088,83 +1096,69 @@ class DoloresEgo:
         if cut is None:
             return None
         cut_turn, tip_coord = cut
-        # 先把 memory 重渲染到切点之前 —— 缓存里那份是**开机时**拍的, 直接拿来当 recap 会让
-        # 开机以来的所有 commit 在 surface 被替换后消失. 重渲染在 RPC 之前做, 所以取消时它已经
-        # 是这份 memory 的一部分, 会被 _compact_memory 一起带走.
+        # 先把 memento 重渲染到切点 —— 缓存里那份是**开机时**拍的. threshold 切在 tip 之前,
+        # tip 的 span 留在 surface; replan 整段不留, memento 渲到 tip, 差的原文由 supplement 补.
         if self._memory_refresh is not None:
             try:
-                await self._memory_refresh(tip_coord)
+                await self._memory_refresh(tip_coord if keep_tail else None)
             except Exception:
                 # 重渲染失败就放弃本次压缩: 拿旧快照去换 surface 才是真的丢数据.
                 self._logger.exception("dolores compact skipped — memory refresh failed")
                 return None
-        try:
-            memory, notice = self._compact_memory_payload(
-                reason="threshold" if keep_tail else "replan", coord=tip_coord,
-            )
-        except Exception:
-            # 取 memory 就失败 = 还没动 surface, 直接放弃本次压缩 (旧语义下 memory 还在头部).
-            self._logger.exception("dolores compact skipped — memory unavailable")
-            return None
-        if not memory:
-            return None
+        supplement: list[Message] = []
+        if not keep_tail:
+            try:
+                supplement = await manager.asupplement()
+            except Exception:
+                # A supplement failure must not block the cut: the epoch opens without it.
+                self._logger.exception("dolores compact: supplement unavailable — opening without it")
+                supplement = []
+        notice = self._compact_notice(
+            reason="threshold" if keep_tail else "replan", coord=tip_coord,
+        )
+        outcome = CompactOutcome(supplement=supplement)
         # 请求发出前先暂存: 取消落在 RPC 中间时, 插件可能已经换了 surface, 而调用方还没拿到返回值.
-        self._compact_memory = memory
+        self._compact_outcome = outcome
         try:
             result = await self._launcher.call(
                 _DOLORES_COMPACT,
-                {
-                    "memory": [{"text": msg.to_content_string()} for msg in memory],
-                    "notice": notice,
-                    "cut_turn": cut_turn,
-                },
+                {"notice": notice, "cut_turn": cut_turn},
             )
             if not (result or {}).get("replaced"):
                 # 没有可遮蔽的节点 = 实际没压 —— 不开新 epoch, 不白复位一次 cognition.
-                self._compact_memory = None
+                self._compact_outcome = None
                 return None
-            self._compact_memory = None
+            self._compact_outcome = None
             self._logger.info("dolores compact at turn %s (window=%s)", cut_turn, self._window_size)
-            return memory
+            return outcome
         except asyncio.CancelledError:
-            # 取消落在 RPC 中间: 插件可能已经 appendReplace 了、结果未知. memory 保留在 _compact_memory,
-            # 下一帧 take_compact_memory() 取走补开 epoch. 这里只记一条, 不清理, 原样上抛.
+            # 取消落在 RPC 中间: 插件可能已经 appendReplace 了、结果未知. outcome 保留在
+            # _compact_outcome, 下一帧 take_compact_outcome() 取走补开 epoch.
             self._logger.warning(
                 "dolores compact cancelled mid-flight at turn %s — surface state unknown; "
-                "keeping memory for the next frame",
+                "keeping the supplement for the next frame",
                 cut_turn,
             )
             raise
         except Exception:
-            # 普通异常(连接失败/参数错)维持清理: 若保留 memory 会让 on_run_exit 每轮重武装 pending,
-            # 形成「压一次失败 → 开 epoch → 再压失败」的每两帧一次全量复位回环, 比丢 memory 更糟.
-            self._compact_memory = None
+            # 普通异常(连接失败/参数错)维持清理: 若保留 outcome 会让 on_run_exit 每轮重武装 pending,
+            # 形成「压一次失败 → 开 epoch → 再压失败」的每两帧一次全量复位回环, 比丢 supplement 更糟.
+            self._compact_outcome = None
             self._logger.exception("dolores compact failed — degraded")
             return None
 
-    def take_compact_memory(self) -> list[Message] | None:
-        """取走 compact 跨取消遗留的 memory —— 调用方据此补开 epoch; 无遗留则 None."""
-        memory, self._compact_memory = self._compact_memory, None
-        return memory
+    def take_compact_outcome(self) -> CompactOutcome | None:
+        """取走 compact 跨取消遗留的 outcome —— 调用方据此补开 epoch; 无遗留则 None."""
+        outcome, self._compact_outcome = self._compact_outcome, None
+        return outcome
 
-    def _compact_memory_payload(
-            self, *, reason: str = "threshold", coord: str = "",
-    ) -> tuple[list[Message], str]:
-        """compact 的两块内容：memory 消息 + 一条带名字的折叠说明.
-
-        memory 不随 surface 替换交付（替换内容只有说明）—— 它由新 epoch 的 recap 槽重新注入，
-        避免同一份 memory 在 surface 与 epoch 里出现两次。memory 仍然上行给 plugin，只作溢出
-        兜底的缓存（plugin 在 request-error 时用它重建头部）。
+    def _compact_notice(self, *, reason: str = "threshold", coord: str = "") -> str:
+        """The fold notice — the only surface content left after the prefix is replaced.
 
         ``reason`` 把"我按下的"和"系统替我按的"分开：replan 切在自己的 note 上，整段不留；
         threshold 切在 tip 之前，tip 的 span 仍是 live tail。说明是折叠之后唯一能解释"刚才
         发生了什么"的东西，所以它必须带地址与原因，而不是一句无人称的通用话。
         """
-        if self._memories is None:
-            return [], ""
-        memory = [msg for msg in self._memories() if not msg.is_empty()]
-        if not memory:
-            return [], ""
         attrs = f'kind="folded" reason="{reason}"'
         if coord:
             attrs += f' at="{coord}"'
@@ -1177,8 +1171,7 @@ class DoloresEgo:
                 if coord else
                 "Your context was compacted to stay within the model window."
             )
-        notice = f"<memento_notice {attrs}>{lead}</memento_notice>"
-        return memory, notice
+        return f"<memento_notice {attrs}>{lead}</memento_notice>"
 
     def _session_start_turn(self) -> int:
         """本 session 的区间下界 (**开**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
@@ -1329,13 +1322,14 @@ class DoloresEgo:
             provider, model = self.default_model
             self.default_model = None
         epoch = thinking.observer.epoch
-        epoch_payload = self._epoch_payload(thinking)
+        opening = self._epoch_payload(thinking)
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
-            "epoch": epoch_payload,
+            "memory": opening.memory if opening is not None else None,
+            "epoch": opening.epoch if opening is not None else None,
             # epoch 幂等键: plugin 据此丢弃迟到/重复的 epoch 帧 (epochIndex <= 已见到的最大 index).
             # 送达后打戳必然允许重发, 重发与乱序到达都由这一键去重.
-            "epochIndex": epoch.index if epoch_payload is not None else None,
+            "epochIndex": epoch.index if opening is not None else None,
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
             "effort": effort,
@@ -1349,9 +1343,9 @@ class DoloresEgo:
             "needsObserve": self.needs_observe(thinking),
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
-        # 送达后才打戳: enter 丢失/被取消时, 下一帧必须能重发 epoch (含唯一的 memory recap).
+        # 送达后才打戳: enter 丢失/被取消时, 下一帧必须能重发 epoch (含 memory 与整个 opening).
         # index 单调, 迟到的旧 enter 不会把戳退回去.
-        if epoch_payload is not None and epoch.index >= self._moment_epoch_index:
+        if opening is not None and epoch.index >= self._moment_epoch_index:
             self._moment_epoch = epoch.id
             self._moment_epoch_index = epoch.index
 
@@ -1469,26 +1463,29 @@ class DoloresEgo:
             }
         return content
 
-    def _epoch_payload(self, thinking: "Thinking") -> list[dict] | None:
-        """epoch slot — <cognition_epoch> container content blocks, only on epoch change.
+    def _epoch_payload(self, thinking: "Thinking") -> EpochOpening | None:
+        """epoch slot — memory + <cognition_epoch> content blocks, only on epoch change.
 
-        Rendered as a single ``<cognition_epoch index=N>`` container: ``<recap>`` background +
-        ``<baseline>`` start info (each baseline key rendered as ``<key>value</key>``). The tag names
-        the thing itself — a span of the ghost's own cognition — rather than leaving the model to
-        guess what an "epoch" is. The plugin is a dumb transport — it only receives content blocks,
-        it does not parse structure. Returns on the first frame and on every epoch change; None when
-        unchanged.
+        The frame carries memory first, then one ``<cognition_epoch index=N>`` container with
+        ``<memento>``, ``<supplement>`` and ``<baseline>`` in that order. Memory is the ghost's
+        shared long-term face (journal today); the epoch is this cognition span's opening. Both
+        are rebuilt on every epoch change, so a compact replaces the previous pair instead of
+        appending a second copy. The plugin is a dumb transport — it only receives content
+        blocks, it does not parse structure. Returns on the first frame and on every epoch
+        change; None when unchanged.
 
-        Pure peek: it does not stamp ``_moment_epoch``. The stamp happens only after the enter RPC
-        succeeds (see ``enter_thinking``) — a lost enter must not burn the epoch, or the recap (now
-        the only delivery path for ghost memory after a compact) would never be re-sent.
+        Pure peek: it does not stamp ``_moment_epoch``. The stamp happens only after the enter
+        RPC succeeds (see ``enter_thinking``) — a lost enter must not burn the epoch, or the
+        pair would never be re-sent.
         """
         epoch = thinking.observer.epoch
         if epoch.id == self._moment_epoch:
             return None
         children: list[Message] = []
-        if epoch.recap:
-            children.append(Message.new(tag="recap").with_messages(*epoch.recap))
+        if epoch.memento:
+            children.extend(epoch.memento)
+        if epoch.supplement:
+            children.append(Message.new(tag="supplement").with_messages(*epoch.supplement))
         if epoch.baseline:
             baseline_msgs = [
                 Message.new(tag=key).with_content(value)
@@ -1496,10 +1493,17 @@ class DoloresEgo:
                 if value
             ]
             children.append(Message.new(tag="baseline").with_messages(*baseline_msgs))
+        memory_blocks = [
+            self._content_payload(content)
+            for message in self._epoch_memory()
+            for content in message.as_contents(with_meta=True)
+        ]
         if not children:
-            return None
+            # An empty epoch container must not suppress the memory half of the frame.
+            return EpochOpening(memory=memory_blocks, epoch=[]) if memory_blocks else None
         container = Message.new(tag="cognition_epoch", attributes={"index": str(epoch.index)}).with_messages(*children)
-        return [
+        epoch_blocks = [
             self._content_payload(content)
             for content in container.as_contents(with_meta=True)
         ]
+        return EpochOpening(memory=memory_blocks, epoch=epoch_blocks)

@@ -1,18 +1,10 @@
 ---
 name: Ghost Ground
 description: file-based 认知场，由 ghost 自治
-pins:
-- label: subfields
-  verb: frontmatter
-  arguments:
-    path: "*/GROUND.md"
-    keys: [name, description]
-    limit: 20
-  description: 子认知场存在性
 imports:
 - existence
 - people
-- journal
+- skills
 ---
 
 # Dolores Ghost Home
@@ -26,16 +18,15 @@ imports:
 | 子件 | 是什么 |
 |---|---|
 | `existence/` | 自我存在感 — identity(事实) / purpose(意义) / behaviors(风格) |
-| `journal/` | 时间线日记 — 按年/月/日分区，生命轨迹 |
+| `journal/` | Ghost 所有 Session 共享的轨迹（目录，不再进认知面） |
 | `people/` | 我认识的人 — 目录化，每人一个单元（`PERSON.md`） |
 | `skills/` | 能力面 — 存在性标记 |
 | `startup/` | 开机启动文档 |
-| `features/` | 开发工作流 — moss features 体系 |
 
 ## 记录纪律
 
-- **逐层提炼**：journal 从 daily → monthly → yearly 逐层压缩（细节见 `journal/`）。
-- **事实性自我**：identity 从 journal 时间线滚动提炼；purpose 从 identity + 锚点定位意义。
+- **逐层提炼**：时间线从 daily → monthly → yearly 逐层压缩。
+- **事实性自我**：identity 从时间线滚动提炼；purpose 从 identity + 锚点定位意义。
 - **行为风格**：behaviors.md 每条关联子文档，模型可自改。
 - **自省周期**：每月末回顾 identity；关键锚点变动时重审 purpose。
 

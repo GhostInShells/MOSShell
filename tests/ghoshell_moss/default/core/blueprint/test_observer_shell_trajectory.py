@@ -296,8 +296,8 @@ async def test_runtime_wiring_epoch_baseline_is_full_facade():
             epoch = obs.new_epoch([])
             assert "facade" in epoch.baseline
             assert '<channel path="chan">' in epoch.baseline["facade"]
-            # recap 槽位是前情提要, 不应再夹带 facade.
-            assert epoch.recap == []
+            # supplement 槽位是开场增补, 不应再夹带 facade.
+            assert epoch.supplement == []
 
 
 @pytest.mark.asyncio

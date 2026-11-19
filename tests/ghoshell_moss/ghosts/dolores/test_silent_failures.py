@@ -301,7 +301,7 @@ class TestEgoSilentFailureSurfaces:
             launcher=None,
             ctx=DoloresEgoContext(
                 project_home=Path("/tmp"), project_name="t", name="t", mode="t",
-                instruction="", facade=None,
+                instruction=lambda: "", facade=None,
             ),
             config=DoloresEgoConfig(),
             memento_manager=None,
@@ -321,7 +321,7 @@ class TestEgoSilentFailureSurfaces:
             launcher=None,
             ctx=DoloresEgoContext(
                 project_home=Path("/tmp"), project_name="t", name="t", mode="t",
-                instruction="", facade=None,
+                instruction=lambda: "", facade=None,
             ),
             config=DoloresEgoConfig(),
             memento_manager=object(),  # 只要非 None: 走到 usage 判定即可
@@ -345,7 +345,7 @@ class TestEgoSilentFailureSurfaces:
             launcher=None,
             ctx=DoloresEgoContext(
                 project_home=Path("/tmp"), project_name="t", name="t", mode="t",
-                instruction="", facade=None,
+                instruction=lambda: "", facade=None,
             ),
             config=DoloresEgoConfig(),
         )

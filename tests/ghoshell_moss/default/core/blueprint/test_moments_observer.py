@@ -10,7 +10,7 @@ with_dynamic_context_func / with_inputs_buffer 从不同入口向下一帧注入
 - observe 状态机: need_observe 生命周期、previous 衔接、进历史
 - 注入通道: buffer_impulse / with_dynamic_context_func / with_inputs_buffer
 - 回调: on_echoes_add / on_moment
-- 容器: moments 上限驱逐、peek 不落历史、compact / recap、clear
+- 容器: moments 上限驱逐、peek 不落历史、compact / epoch 槽位、clear
 - turns(): 将观测到的 moments 组织为回合历史
 """
 import asyncio
@@ -44,7 +44,8 @@ def _texts(msgs) -> list[str]:
 def test_observer_defaults():
     obs = BaseMomentsObserver(max_size=5)
     assert obs.need_observe() is False
-    assert obs.epoch.recap == []
+    assert obs.epoch.supplement == []
+    assert obs.epoch.memento == []
     assert obs.moments() == []
 
 
@@ -177,7 +178,7 @@ def test_on_moment_fires_with_produced_moment():
 
 
 # ============================================================
-# compact / recap / clear
+# compact / epoch slots / clear
 # ============================================================
 
 def test_compact_drops_up_to_id_and_records_epoch():
@@ -189,7 +190,7 @@ def test_compact_drops_up_to_id_and_records_epoch():
     remaining = obs.moments()
     assert all(m.id != target for m in remaining)
     assert len(remaining) == 1
-    assert _texts(obs.epoch.recap) == ["summary"]
+    assert _texts(obs.epoch.supplement) == ["summary"]
 
 
 def test_compact_missing_id_clears_all_moments_and_sets_epoch():
@@ -198,7 +199,7 @@ def test_compact_missing_id_clears_all_moments_and_sets_epoch():
     obs.observe()
     obs.new_epoch([Message.new().with_content("sum")], "does-not-exist")
     assert obs.moments() == []
-    assert _texts(obs.epoch.recap) == ["sum"]
+    assert _texts(obs.epoch.supplement) == ["sum"]
 
 
 def test_clear_resets_state():
@@ -212,16 +213,19 @@ def test_clear_resets_state():
     obs.clear()
     assert obs.need_observe() is False
     assert obs.moments() == []
-    assert obs.epoch.recap == []
+    assert obs.epoch.supplement == []
+    assert obs.epoch.memento == []
 
 
-def test_epoch_recap_and_baseline_are_separate_slots():
-    """recap (前情提要) 与 baseline (起点表面) 分槽, 互不污染."""
+def test_epoch_memento_supplement_and_baseline_are_separate_slots():
+    """memento / supplement / baseline 三槽, 互不污染."""
     obs = BaseMomentsObserver(max_size=5)
-    obs.with_epoch_recap("summary", lambda: [Message.new().with_content("prior")])
+    obs.with_epoch_memento("trajectory", lambda: [Message.new(tag="memento").with_content("trail")])
+    obs.with_epoch_supplement("last-span", lambda: [Message.new().with_content("prior")])
     obs.with_epoch_baseline("facade", lambda: "surface")
     epoch = obs.new_epoch([])
-    assert _texts(epoch.recap) == ["prior"]
+    assert _texts(epoch.memento) == ["trail"]
+    assert _texts(epoch.supplement) == ["prior"]
     assert epoch.baseline == {"facade": "surface"}
 
 
