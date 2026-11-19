@@ -101,6 +101,44 @@ class TestJournalRecord:
         assert (await journal.status(AT)).problems
 
 
+class TestJournalEstablish:
+    @pytest.mark.asyncio
+    async def test_establish_opens_the_calendar_containers(self, tmp_path):
+        journal = _journal(tmp_path)
+
+        assert await journal.establish(AT) == AT
+        assert Yearly.filepath(journal.root, 2026).exists()
+        assert Monthly.filepath(journal.root, 2026, 11).exists()
+        daily = Daily.load(Daily.filepath(journal.root, AT))
+        assert daily.status == "pending"
+        assert daily.summary == ""
+
+    @pytest.mark.asyncio
+    async def test_establish_is_idempotent_and_never_overwrites(self, tmp_path):
+        journal = _journal(tmp_path)
+        await journal.establish(AT)
+        path = Daily.filepath(journal.root, AT)
+        Daily(day=AT, status="closed", summary="head", content="body").dump(path)
+
+        await journal.establish(AT)
+
+        loaded = Daily.load(path)
+        assert loaded.status == "closed"
+        assert loaded.content == "body"
+
+    @pytest.mark.asyncio
+    async def test_record_commit_opens_month_and_year(self, tmp_path):
+        journal = _journal(tmp_path)
+        at = datetime(2026, 12, 1, 0, 5, tzinfo=TZ)
+
+        await journal.record_commit("1-1", at)
+
+        assert Yearly.filepath(journal.root, 2026).exists()
+        assert Monthly.filepath(journal.root, 2026, 12).exists()
+        assert Daily.filepath(journal.root, date(2026, 12, 1)).exists()
+        assert await journal.commits(date(2026, 12, 1)) == ["1-1"]
+
+
 class TestJournalView:
     @pytest.mark.asyncio
     async def test_window_density_and_truncation(self, tmp_path):
@@ -125,20 +163,50 @@ class TestJournalView:
         view = await journal.view(AT)
         assert [entry.month for entry in view.months] == [9, 10, 11]
         assert [entry.day.isoformat() for entry in view.days] == [
-            "2026-11-16", "2026-11-17", "2026-11-18",
+            "2026-11-17", "2026-11-18", "2026-11-19",
         ]
         assert view.last_day is not None
         assert view.last_day.day == date(2026, 11, 18)
         assert view.today is not None
         assert view.today.status == "pending"
+        assert view.today_anchors == ["1-784"]
 
         text = await journal.render(AT)
         assert "YYYYYYYYYYYYYYYYYYYY…" in text
         assert '<month month="2026-09">m9</month>' in text
         assert '<month month="2026-10">M10</month>' in text
-        assert '<day date="2026-11-16">day 16</day>' in text
+        assert '<day date="2026-11-17">day 17</day>' in text
         assert '<last_day date="2026-11-18">body 18</last_day>' in text
+        assert '<day date="2026-11-19" status="pending">1 anchor</day>' in text
         assert "<today" not in text
+
+    @pytest.mark.asyncio
+    async def test_pending_day_without_prose_is_drawn(self, tmp_path):
+        journal = _journal(tmp_path)
+        Daily(day=date(2026, 11, 18), status="pending").dump(
+            Daily.filepath(journal.root, date(2026, 11, 18))
+        )
+        await journal.establish(AT)
+
+        view = await journal.view(AT)
+        assert [entry.day.isoformat() for entry in view.days] == [
+            "2026-11-18", "2026-11-19",
+        ]
+
+        text = await journal.render(AT)
+        assert '<day date="2026-11-18" status="pending"/>' in text
+        assert '<day date="2026-11-19" status="pending"/>' in text
+
+    @pytest.mark.asyncio
+    async def test_today_anchors_are_read_for_the_pending_row(self, tmp_path):
+        journal = _journal(tmp_path)
+        await journal.record_commit("1-784", datetime(2026, 11, 19, 10, tzinfo=TZ))
+
+        view = await journal.view(AT)
+        assert view.today_anchors == ["1-784"]
+
+        text = await journal.render(AT)
+        assert '<day date="2026-11-19" status="pending">1 anchor</day>' in text
 
     @pytest.mark.asyncio
     async def test_open_tail_is_not_hidden(self, tmp_path):

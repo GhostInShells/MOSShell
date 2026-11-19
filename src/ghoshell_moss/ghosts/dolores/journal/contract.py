@@ -62,7 +62,8 @@ DocStatus = Literal["pending", "writing", "closed"]
 """
 Where one day stands.
 
-``pending``: the day exists — its first anchor opened it — and no writer has worked on it.
+``pending``: the day exists — the mechanism opened it at boot, at a day boundary, or by its
+first anchor — and no writer has worked on it.
 ``writing``: a writer is mid-flight; a crashed writer is indistinguishable from a slow one,
 so the repair path treats it as unfinished. ``closed``: written, rolled up to month and
 year, and checked against the budgets.
@@ -127,9 +128,10 @@ class JournalConfig(ConfigType):
         ge=0,
         description=(
             "how many recent days the day band carries: the most recent days that have a "
-            "summary, ending at the newest such day at or before `at`. A day still being "
+            "document, ending at the newest such day at or before `at`. A day still being "
             "written is part of the recent life — anchoring the band on the last closed day "
-            "would hide every day after it. 0 turns the band off."
+            "would hide every day after it. A day with no prose yet is still drawn, with its "
+            "date and status. 0 turns the band off."
         ),
     )
     backfill_days: int = Field(
@@ -260,9 +262,10 @@ class JournalDoc(BaseModel):
 class Daily(JournalDoc):
     """One local calendar day. The only level with a state machine.
 
-    A day does not exist until something anchors it: the first ``record_commit`` of the
-    day creates the document. Absence is the natural state — a body is not always present,
-    and a day it did not live should not be invented.
+    The mechanism opens a day: at boot, at the day boundary, or when its first anchor is
+    recorded. Existence is a calendar fact, not an anchor fact; the day is drawn as
+    ``pending`` until a writer gives it prose. A day the ghost did not live is not
+    invented — ``establish`` only opens the day it is asked for.
     """
 
     FILENAME: ClassVar[str] = "daily.md"
@@ -401,8 +404,8 @@ class DateView(BaseModel):
     days: list[Daily] = Field(
         default_factory=list,
         description=(
-            "the day band, oldest first: up to `day_summaries` recent days that carry a "
-            "summary, ending at the newest such day at or before `at`. Open days are part of "
+            "the day band, oldest first: up to `day_summaries` recent days that have a "
+            "document, ending at the newest such day at or before `at`. Open days are part of "
             "it — `closed` decides depth, not existence."
         ),
     )
@@ -416,9 +419,16 @@ class DateView(BaseModel):
     today: Daily | None = Field(
         default=None,
         description=(
-            "the document for `at`, if one exists. Not drawn as its own element: when it "
-            "carries a summary it is the band's last row; without one the face omits it — "
-            "`status` reports it. None = no anchor opened the day."
+            "the document for `at`, if one exists. Drawn in the band when it carries a "
+            "summary; an open day without prose is drawn as its own pending row, with the "
+            "anchor count from `today_anchors`. None = the day has not been established."
+        ),
+    )
+    today_anchors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "the anchors attached to `today`, oldest first — what makes an open day readable "
+            "before its prose exists."
         ),
     )
 
@@ -440,8 +450,9 @@ class JournalStatus(BaseModel):
     today: DocStatus | None = Field(
         default=None,
         description=(
-            "the document for `at`; None = no anchor opened the day. Absence is natural — "
-            "a body is not always present, so a day it did not live has no document."
+            "the day's status; None = the day has no document. The mechanism establishes the "
+            "current day at boot and at the day boundary, so absence here is a pre-hook state "
+            "or a removed document, not the normal shape of a lived day."
         ),
     )
     budgets: list[BudgetReport] = Field(
@@ -464,12 +475,13 @@ class JournalStatus(BaseModel):
 class DoloresJournal(ABC):
     """The first-order surface of the journal.
 
-    Read side: ``view`` / ``render`` / ``status`` / ``commits`` — everything a caller needs
-    to consult the journal. Event side: ``record_commit`` — the one moment the mechanism
-    acts without a writer, and the moment that opens a day.
+    Read side: ``view`` / ``render`` / ``status`` / ``commits`` / ``today`` — everything a
+    caller needs to consult the journal. Event side: ``establish`` (open the day's documents)
+    and ``record_commit`` (attach an anchor to its day). Those are the mechanism's two writes;
+    both are idempotent and neither writes prose.
 
-    None of these methods write prose. The writer is a ghost; this contract only tells it
-    what to read and where its own judgment begins.
+    The writer is a ghost; this contract only tells it what to read and where its own
+    judgment begins.
     """
 
     @abstractmethod
@@ -507,6 +519,19 @@ class DoloresJournal(ABC):
         """The anchors attached to a day, oldest first — the material a writer reconstructs from."""
 
     @abstractmethod
+    def today(self) -> date:
+        """The journal's current calendar day, in its configured clock."""
+
+    @abstractmethod
+    async def establish(self, at: date | datetime | None = None) -> date:
+        """Open the day's documents — year, month, day — creating only what is missing.
+
+        Idempotent. ``None`` = the journal's current day. Returns the day opened. This is
+        the mechanism's calendar write: it never writes prose; an opened day is ``pending``
+        and the renderer draws it even before the writer fills it.
+        """
+
+    @abstractmethod
     async def export(self) -> str:
         """Write the journal's root ``AGENTS.md`` from the spec and the configured limits.
 
@@ -518,10 +543,10 @@ class DoloresJournal(ABC):
 
     @abstractmethod
     async def record_commit(self, coord: str, at: datetime | None = None) -> None:
-        """Attach a memento coordinate to the day it belongs to, opening the day on first contact.
+        """Attach a memento coordinate to the day it belongs to.
 
-        Opening means: the day's document exists (``pending``) and the coordinate is in its
-        ``.commits``. Idempotent — one coordinate appears once, and an existing document is
-        read, never rewritten. Coordinates carry their branch, so a day shared by the ego and
-        its emanations holds all of their anchors in one list.
+        The day's documents are opened if missing (``pending``), then the coordinate is
+        appended to ``.commits``. Idempotent — one coordinate appears once, and an existing
+        document is read, never rewritten. Coordinates carry their branch, so a day shared by
+        the ego and its emanations holds all of their anchors in one list.
         """

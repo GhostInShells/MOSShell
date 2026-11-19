@@ -28,10 +28,11 @@ import contextlib
 import dataclasses
 import itertools
 import shutil
+from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, Field
@@ -46,14 +47,14 @@ from ghoshell_moss.deepseek_harness.v0_2_0 import (
     event_from_dict,
     render_transcript,
 )
-from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA_REMINDER, NIRMANAKAYA
+from ghoshell_moss.ghosts.dolores.constants import NIRMANAKAYA, NIRMANAKAYA_REMINDER
+from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitEvent, CommitNoteEvent
 from ghoshell_moss.ghosts.dolores.mindset.emanation import emanation_position
 from ghoshell_moss.ghosts.dolores.mindset.emanation_task import (
     EmanationChatError,
     EmanationTasks,
     log_emanation_usage,
 )
-from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitNoteEvent
 from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     DefaultPrompterKeys,
     PromptManager,
@@ -313,6 +314,7 @@ class EgoMementoManager:
             emanation_tasks: EmanationTasks | None = None,
             seed_ground: Path | None = None,
             on_note_ready: Callable[[CommitNoteEvent], None] | None = None,
+            on_commit: Callable[[CommitEvent], None] | None = None,
             logger: LoggerItf | None = None,
     ) -> None:
         self._connection = connection
@@ -329,6 +331,7 @@ class EgoMementoManager:
         # asset (§ego-branch-ground). None = no seeding; the render falls back to absence.
         self._seed_ground = Path(seed_ground) if seed_ground is not None else None
         self._on_note_ready = on_note_ready
+        self._on_commit = on_commit
         self._grounds = None  # DefaultGroundSet over the owner's branches/, built on first use
         self._unsubscribe = None
         self._logger = logger or get_moss_logger()
@@ -413,14 +416,22 @@ class EgoMementoManager:
         if start_turn == end_turn:
             return None
         ref = DshSessionRef(session_id=session_id, start_turn=start_turn, end_turn=end_turn)
-        commit = self._branch(branch).commit(
+        target = self._branch(branch)
+        commit = target.commit(
             message=message,
             metatype="session",
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
         )
-        # 旁路: 锚点已落地. hook 机制已整体移除 (文件即契约无法随 dolores 升级) ——
-        # 先在代码侧重做, 完成后再把进程侧作为薄适配层接回:
-        # self.fire_hook("on_commit", commit)
+        # The anchor is durable now: hand the fact to the lifecycle. The callback is
+        # synchronous (the bus spawns listeners), so a slow journal append never holds
+        # the commit path.
+        if self._on_commit is not None:
+            self._on_commit(CommitEvent(
+                commit_id=commit.id,
+                coord=f"{target.index}-{commit.seq}",
+                at=commit.created,
+                branch=branch or self.active_branch,
+            ))
         return commit
 
     # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
@@ -1140,7 +1151,7 @@ class EgoMementoManager:
             attributes = {"path": str(path), "default": "true"}
             face = self._seed_text() or "(no ground yet — write one at the path above)"
             return Message.new(tag="ground", attributes=attributes).with_content(face)
-        except Exception as exc:  # noqa: BLE001 — memory must survive a broken field
+        except Exception as exc:  # memory must survive a broken field
             self._logger.exception("branch ground render failed for #%s", view.index)
             attributes = {"path": str(path), "error": str(exc)[:200]}
             return Message.new(tag="ground", attributes=attributes)

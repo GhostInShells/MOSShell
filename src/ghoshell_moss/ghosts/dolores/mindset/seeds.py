@@ -82,6 +82,9 @@ Worth recording comes before length. A day worth one sentence gets one sentence.
 - The document fields and the directory layout. The contract is the authority; this page is not.
 - The status: `pending` → `writing` → `closed`. A stuck `writing` is indistinguishable from a
   crash; the repair path treats it as unfinished.
+- The day's existence. The mechanism opens the current day at boot and when the ego next runs
+  after a day boundary; an open day is drawn as `pending` even before it has prose. Existence is
+  a calendar fact; the prose is yours.
 - The anchor log, `.commits.jsonl` — written by the mechanism, never by you.
 - The limits. The mechanism appends them at the end of this page, and the rendered face enforces
   them by truncation; in the files they are a report, not a gate. Stay inside them by compressing,

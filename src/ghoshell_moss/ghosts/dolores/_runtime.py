@@ -6,28 +6,27 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING
 
 import yaml
-
-from ._meta import DoloresProviderSpec
-from .constants import DOLORES_META_DIRECTORY
+from ghoshell_container import Contracts, IoCContainer
 from typing_extensions import Self
 
-from ghoshell_container import IoCContainer, Contracts
-
 from ghoshell_moss.contracts.logger import get_moss_logger
-
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostEvent, GhostMeta, Logos
+from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.ground import DefaultGroundSet
 from ghoshell_moss.message import Message
+
+from ._meta import DoloresProviderSpec
+from .constants import DOLORES_META_DIRECTORY
 
 if TYPE_CHECKING:
     from ghoshell_moss.core.blueprint.channel_builder import MutableChannel
@@ -38,17 +37,17 @@ if TYPE_CHECKING:
     from ._ego import CompactOutcome, DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._ego_memento import EgoMementoManager
     from ._meta import DoloresMeta
-    from .journal.contract import DoloresJournal
     from ._startup import StartupDoc
+    from .journal.contract import DoloresJournal
     from .mindset.beside.runtime import BesideRuntime
     from .mindset.ego_lifecycle_bus import EgoLifecycleBus
 
 __all__ = ["Dolores"]
 
 from ._prompts import (
+    DOLORES_INSTRUCTION_END,
     dolores_ego_instruction,
     dolores_inception,
-    DOLORES_INSTRUCTION_END,
 )
 
 # ego 轨迹索引的根目录 (相对 ghost_home); branch 名由 memento config 决定.
@@ -304,6 +303,9 @@ class Dolores(Ghost):
         self._memento_manager: EgoMementoManager | None = None
         # ego lifecycle bus — ghost-owned; modules see only the EgoLifecycle registry in IoC.
         self._lifecycle: EgoLifecycleBus | None = None
+        # hooks: registered by providers at bootstrap, started once at the born hook,
+        # before fire_startup, so a hook can listen to the startup phase itself.
+        self._lifecycle_hooks_started = False
         # beside: the first parallel-thought organ. Built only when config enables it; the
         # channel factory reads the same config and mounts nothing when it is absent.
         self._beside_runtime: BesideRuntime | None = None
@@ -311,7 +313,7 @@ class Dolores(Ghost):
         # ``_memento_view`` is the epoch's <memento>; ``_journal_view`` is the <journal> that
         # rides <memory>. Both are snapshots at the moment they are formed.
         self._memento_view: Message | None = None
-        self._journal: "DoloresJournal | None" = None
+        self._journal: DoloresJournal | None = None
         self._journal_view: str | None = None
         # <memory instanced_at> — the snapshot's absolute anchor, stored/rendered in UTC.
         self._memory_instanced_at: datetime | None = None
@@ -324,7 +326,7 @@ class Dolores(Ghost):
         # reflexive control channel — built lazily in channel(), registered by the runtime as 'ghost'.
         self._channel: MutableChannel | None = None
         # startup doc (StartupDoc) — loaded once in __aenter__, read by channel() and startup().
-        self._startup_doc: "StartupDoc | None" = None
+        self._startup_doc: StartupDoc | None = None
         # the cognition epoch is opened on the first thinking and again after every compact (see think()).
         self._epoch_opened: bool = False
         # the plugin bundles' patches, installed in __aenter__ — the launcher applies each with
@@ -622,7 +624,7 @@ class Dolores(Ghost):
         ``<cognition_epoch>`` (memento → supplement → baseline); the old pair is replaced by the
         compact, never duplicated.
         """
-        outcome: "CompactOutcome | None" = None
+        outcome: CompactOutcome | None = None
         if self._ego is not None:
             # 遗留优先: 它意味着「上次 compact 可能已经换了 surface、epoch 还没开」, 比本帧再压
             # 一次更急. 先取走它, 取不到才发起本帧的 compact.
@@ -736,8 +738,9 @@ class Dolores(Ghost):
                 # ground 或进程 hook —— 那套文件即契约的机制已整体移除。
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
-            from ._ego import DoloresEgo, DoloresEgoContext, EgoState
             from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
+
+            from ._ego import DoloresEgo, DoloresEgoContext, EgoState
 
             # live ego state: the ego writes it at session-create / every turn boundary, and
             # anything that needs "where is the ego now" reads it from IoC instead of reaching
@@ -781,6 +784,7 @@ class Dolores(Ghost):
                         emanation_tasks=emanation_tasks,
                         seed_ground=self._home / ".dolores/seeds/branch_ground",
                         on_note_ready=self._lifecycle.fire_commit_note,
+                        on_commit=self._lifecycle.fire_commit,
                         logger=self.logger,
                     )
                 )
@@ -876,6 +880,21 @@ class Dolores(Ghost):
         the same snapshot. Boot is silent when the doc is absent or when both command
         and instruction are empty.
         """
+        # Activation, not registration: providers populated the catalog during bootstrap;
+        # the born hook is where the ghost is ready for the hooks to run. It sits before
+        # ``fire_startup`` so a hook can subscribe to the startup phase itself.
+        if (
+                not self._lifecycle_hooks_started
+                and self._container is not None
+                and self._lifecycle is not None
+        ):
+            from .mindset.ego_lifecycle_hook import EgoLifecycleRegistry
+
+            registry = self._container.get(EgoLifecycleRegistry)
+            if registry is not None:
+                self._lifecycle_hooks_started = True
+                await registry.start(self._lifecycle)
+                self._exit_stack.push_async_callback(registry.stop)
         if self._matrix is None:
             return
         if self._lifecycle is not None:
@@ -1176,7 +1195,10 @@ class Dolores(Ghost):
         if self._home is None:
             return
         from ghoshell_moss.deepseek_harness.v0_2_0 import (
-            bundle_dir, installed_patch, refresh_bundle, resolve_dsh_binary,
+            bundle_dir,
+            installed_patch,
+            refresh_bundle,
+            resolve_dsh_binary,
         )
 
         config = self._load_config().dsh
@@ -1214,7 +1236,7 @@ class Dolores(Ghost):
                 init=True,
                 verify_marker=_DSH_SERVICE_NAME,
             )
-        except Exception:  # noqa: BLE001 — a missing verb must not take the ego down
+        except Exception:  # a missing verb must not take the ego down
             self.logger.exception("dolores: cannot install the %s bundle", _DSH_SERVICE_NAME)
         else:
             self._plugin_patches.append(installed_patch(home, _DSH_SERVICE_NAME))

@@ -18,9 +18,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TypeAlias
 
 __all__ = [
+    "CommitEvent",
     "CommitNoteEvent",
     "Discard",
     "EgoLifecycle",
@@ -60,6 +62,20 @@ class ThinkingExitEvent:
 
     seq: int
     ok: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class CommitEvent:
+    """An anchor became durable: the coordinate exists and its span is fixed.
+
+    ``at`` is the anchor's own ``created`` instant — the commit's clock, not the note's.
+    A note can land after midnight; the day the anchor belongs to is the day it was made.
+    """
+
+    commit_id: str
+    coord: str
+    at: datetime
+    branch: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +131,14 @@ class EgoLifecycle(ABC):
 
         **Non-blocking phase**: fired after the exit RPC; listeners run as tasks.
         Exceptions are logged and never propagated to the ego.
+        """
+
+    @abstractmethod
+    def on_commit(self, callback: Callable[[CommitEvent], ListenerResult]) -> Discard:
+        """Register an anchor listener.
+
+        **Non-blocking phase**: fired when an anchor becomes durable; listeners run as
+        tasks. Exceptions are logged and never propagated to the ego.
         """
 
     @abstractmethod

@@ -1,9 +1,9 @@
 """FileJournal — the filesystem-first journal.
 
-The documents are the truth; this module is only their reader plus the two writes that
-are not prose (opening a day, and appending its anchors). It keeps no state between
-calls: every method re-reads the tree, so a restart, a hand edit, or a second reader
-cannot make it lie.
+The documents are the truth; this module is only their reader plus the writes that are
+not prose (opening a day's calendar containers, and appending its anchors). It keeps no
+state between calls: every method re-reads the tree, so a restart, a hand edit, or a
+second reader cannot make it lie.
 
 File content is read and written through ``aiofiles``: the shell's event loop also carries
 voice, GUI and the scheduler, and a journal read on a network-mounted home must not stall
@@ -146,6 +146,11 @@ class FileJournal(DoloresJournal):
         day = at or self._day_of(None)
         problems: list[str] = []
         years, months, days, last_day, today = await self._collect(day, problems)
+        today_anchors: list[str] = []
+        if today is not None:
+            today_anchors = await self._aread_coords(
+                Daily.commits_filepath(self._root, day), problems,
+            )
         self._report(problems)
         return DateView(
             at=day,
@@ -154,7 +159,12 @@ class FileJournal(DoloresJournal):
             days=days,
             last_day=last_day,
             today=today,
+            today_anchors=today_anchors,
         )
+
+    def today(self) -> date:
+        """The journal's current calendar day, in its configured clock."""
+        return self._day_of(None)
 
     async def render(self, at: date | None = None) -> str:
         view = await self.view(at)
@@ -188,6 +198,37 @@ class FileJournal(DoloresJournal):
                     "day", f'date="{entry.day.isoformat()}"{status}',
                     self._clip(entry.summary, self._config.summary_chars),
                 ))
+            else:
+                # An established day is part of the face even before it has prose: the date
+                # and the status are the readable minimum. The current day also carries its
+                # anchor count, which is what the mechanism already knows about it.
+                text = ""
+                if view.today is not None and entry.day == view.today.day and view.today_anchors:
+                    count = len(view.today_anchors)
+                    text = f"{count} anchor" if count == 1 else f"{count} anchors"
+                status = "" if entry.status == "closed" else f' status="{entry.status}"'
+                rows.append(self._row(
+                    "day", f'date="{entry.day.isoformat()}"{status}',
+                    self._clip(text, self._config.summary_chars),
+                ))
+        # An established day is part of the face even before it has prose: the date and the
+        # status are the readable minimum, and the anchor count says what the day already
+        # holds. The writer's summary, once written, takes the row over.
+        drawn = {entry.day for entry in view.days}
+        if view.today is not None and view.today.day not in drawn:
+            today = view.today
+            if today.summary.strip():
+                text = today.summary
+            elif view.today_anchors:
+                count = len(view.today_anchors)
+                text = f"{count} anchor" if count == 1 else f"{count} anchors"
+            else:
+                text = ""
+            status = "" if today.status == "closed" else f' status="{today.status}"'
+            rows.append(self._row(
+                "day", f'date="{today.day.isoformat()}"{status}',
+                self._clip(text, self._config.summary_chars),
+            ))
         if not rows:
             return f"<journal {attrs}/>"
         return "\n".join([f"<journal {attrs}>", *rows, "</journal>"])
@@ -227,20 +268,52 @@ class FileJournal(DoloresJournal):
 
     # ── event side ───────────────────────────────────────────────────
 
+    async def establish(self, at: date | datetime | None = None) -> date:
+        """Open the year, month and day documents, creating only what is missing.
+
+        Idempotent and prose-free: an opened day is ``pending``. ``None`` = the journal's
+        current day; a ``date`` is taken as the day itself; a ``datetime`` is read in the
+        journal's clock. Returns the day opened.
+        """
+        if isinstance(at, datetime):
+            day = self._day_of(at)
+        elif isinstance(at, date):
+            day = at
+        else:
+            day = self._day_of(None)
+        created = datetime.now(timezone.utc)
+        await self._ensure_doc(
+            Yearly.filepath(self._root, day.year),
+            Yearly(year=day.year, created=created),
+        )
+        await self._ensure_doc(
+            Monthly.filepath(self._root, day.year, day.month),
+            Monthly(year=day.year, month=day.month, created=created),
+        )
+        opened = await self._ensure_doc(
+            Daily.filepath(self._root, day),
+            Daily(day=day, created=created),
+        )
+        if opened:
+            self._logger.info("journal: opened day %s", day.isoformat())
+        return day
+
+    async def _ensure_doc(self, path: Path, document: JournalDoc) -> bool:
+        """Create a document only when it is absent. True = this call wrote it."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            async with aiofiles.open(path, "x", encoding="utf-8") as stream:
+                await stream.write(document.to_text())
+        except FileExistsError:
+            return False
+        return True
+
     async def record_commit(self, coord: str, at: datetime | None = None) -> None:
         coord = coord.strip()
         if not coord:
             raise ValueError("journal: an anchor coordinate cannot be empty")
         day = self._day_of(at)
-        document = Daily.filepath(self._root, day)
-        document.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            # Exclusive create, never overwrite: the document may already hold the writer's prose.
-            async with aiofiles.open(document, "x", encoding="utf-8") as stream:
-                await stream.write(Daily(day=day, created=datetime.now(timezone.utc)).to_text())
-            self._logger.info("journal: opened day %s", day.isoformat())
-        except FileExistsError:
-            pass
+        await self.establish(day)
         commits = Daily.commits_filepath(self._root, day)
         commits.parent.mkdir(parents=True, exist_ok=True)
         # Append-only: the read side de-duplicates, so a racing duplicate is silence rather
@@ -338,11 +411,13 @@ class FileJournal(DoloresJournal):
         return [doc for doc in docs if doc is not None]
 
     async def _recent_days(self, day: date, problems: list[str]) -> list[Daily]:
-        """The day band: the most recent ``day_summaries`` days that carry a summary.
+        """The day band: the most recent ``day_summaries`` days that have a document.
 
-        Anchored on the newest day with something to say, not on the last closed day: a day
-        still being written is part of the recent life, and anchoring on the last close would
-        hide every day after it. ``closed`` decides depth (see ``render``), not existence.
+        Anchored on the newest day with a document, not on the last closed day: a day still
+        being written is part of the recent life, and anchoring on the last close would hide
+        every day after it. A day with no prose yet is part of the band too — its date and
+        status are readable, and hiding it would make an established day vanish. ``closed``
+        decides depth (see ``render``), not existence.
         """
         count = self._config.day_summaries
         if count <= 0:
@@ -352,7 +427,7 @@ class FileJournal(DoloresJournal):
             if len(found) >= count:
                 break
             document = await self._aload(Daily, Daily.filepath(self._root, entry), problems)
-            if document is not None and document.summary.strip():
+            if document is not None:
                 found.append(document)
         found.reverse()
         return found

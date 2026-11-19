@@ -63,14 +63,14 @@ class TestEgoMementoSidecar:
             return TestEgoMementoSidecar._Session(self, session_id)
 
     @staticmethod
-    def _manager(tmp_path: Path, connection, config=None):
+    def _manager(tmp_path: Path, connection, config=None, **kwargs):
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
 
         memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         manager = EgoMementoManager(
-            connection=connection, memento=memento, config=config or EgoMementoConfig()
+            connection=connection, memento=memento, config=config or EgoMementoConfig(), **kwargs
         )
         return manager, memento
 
@@ -81,6 +81,22 @@ class TestEgoMementoSidecar:
     @staticmethod
     def _note_text(conn) -> str:
         return conn.chats[0][1][0][0].text
+
+    @pytest.mark.asyncio
+    async def test_commit_fires_the_commit_event_with_its_own_instant(self, tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitEvent
+
+        events: list[CommitEvent] = []
+        conn = self._FakeConnection({"text": "title\nbody"})
+        manager, _ = self._manager(tmp_path, conn, on_commit=events.append)
+
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        assert anchor is not None
+        assert len(events) == 1
+        assert events[0].commit_id == anchor.id
+        assert events[0].coord == f"1-{anchor.seq}"
+        assert events[0].at == anchor.created
 
     @pytest.mark.asyncio
     async def test_sidecar_writes_note(self, tmp_path: Path):

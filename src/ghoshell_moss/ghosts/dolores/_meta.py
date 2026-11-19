@@ -1,7 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from ghoshell_container import IoCContainer, Provider
+
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -144,6 +145,7 @@ class DoloresMeta(GhostMeta):
         from .configs import DoloresConfigStoreProvider
         from .journal.provider import JournalProvider
         from .mindset.emanation_task import EmanationTasksProvider
+        from .mindset.journal_hook import EgoLifecycleRegistryProvider, JournalHookProvider
         from .mindset.prompter import PromptManagerProvider
         from .scheduler_recall import SchedulerRecallerProvider
 
@@ -153,6 +155,11 @@ class DoloresMeta(GhostMeta):
             EmanationTasksProvider(),
             SchedulerRecallerProvider(),
             JournalProvider(),
+            # The registry must be bound before the hook providers' bootstrap runs: a
+            # BootstrapProvider bootstraps immediately when registered after container
+            # bootstrap, and it resolves the registry by contract.
+            EgoLifecycleRegistryProvider(),
+            JournalHookProvider(),
         ]
 
     # ── factory ─────────────────────────────────────

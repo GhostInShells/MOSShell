@@ -28,6 +28,7 @@ from typing_extensions import Self
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
 from .ego_lifecycle import (
+    CommitEvent,
     CommitNoteEvent,
     Discard,
     EgoLifecycle,
@@ -51,6 +52,7 @@ class EgoLifecycleBus(EgoLifecycle):
         self._startup: list[Listener] = []
         self._thinking_start: list[Listener] = []
         self._thinking_exit: list[Listener] = []
+        self._commit: list[Listener] = []
         self._commit_note: list[Listener] = []
         self._step_end: list[Listener] = []
         self._tasks: set[asyncio.Task[None]] = set()
@@ -70,6 +72,9 @@ class EgoLifecycleBus(EgoLifecycle):
             self, callback: Callable[[ThinkingExitEvent], ListenerResult],
     ) -> Discard:
         return self._register(self._thinking_exit, callback)
+
+    def on_commit(self, callback: Callable[[CommitEvent], ListenerResult]) -> Discard:
+        return self._register(self._commit, callback)
 
     def on_commit_note(
             self, callback: Callable[[CommitNoteEvent], ListenerResult],
@@ -94,6 +99,10 @@ class EgoLifecycleBus(EgoLifecycle):
     def fire_thinking_exit(self, event: ThinkingExitEvent) -> None:
         """Non-blocking phase: schedule every post-thinking listener as a task."""
         self._spawn("thinking_exit", self._thinking_exit, event)
+
+    def fire_commit(self, event: CommitEvent) -> None:
+        """Non-blocking phase: schedule every anchor listener as a task."""
+        self._spawn("commit", self._commit, event)
 
     def fire_commit_note(self, event: CommitNoteEvent) -> None:
         """Non-blocking phase: schedule every commit-note listener as a task."""
