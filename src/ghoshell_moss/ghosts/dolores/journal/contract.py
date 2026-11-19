@@ -142,8 +142,8 @@ class JournalConfig(ConfigType):
         ),
     )
     day_chars: int = Field(default=2000, ge=0, description="the character budget of one day's body.")
-    month_chars: int = Field(default=4000, ge=0, description="the character budget of one month's body.")
-    year_chars: int = Field(default=3000, ge=0, description="the character budget of one year's body.")
+    month_chars: int = Field(default=3000, ge=0, description="the character budget of one month's body.")
+    year_chars: int = Field(default=2000, ge=0, description="the character budget of one year's body.")
     summary_chars: int = Field(
         default=120,
         ge=0,

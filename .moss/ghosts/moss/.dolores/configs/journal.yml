@@ -7,6 +7,6 @@ month_summaries: 3
 day_summaries: 15
 backfill_days: 3
 day_chars: 2000
-month_chars: 4000
-year_chars: 3000
+month_chars: 3000
+year_chars: 2000
 summary_chars: 120
