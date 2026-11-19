@@ -13,8 +13,12 @@ status_note: >-
   and scoring are deferred. D12 night closed the bypass debt (read-only sidecar, Ω archive,
   effort/cache measurements) and settled the memory surface + prompt slot direction; the
   build order for tonight is memory surface → ground slot → prompt slots → staged search.
+  D20: the lifecycle module registry landed — EgoLifecycleModule/EgoLifecycleRegistry separate
+  registration (providers at bootstrap) from activation (runtime at the born hook); on_commit
+  carries the anchor's ref.created; the journal module is the first consumer. The shutdown
+  phases (on_sleep/on_shutdown) are a separate workstream (dolores-shutdown).
 title: Dolores Concurrent Mind — one ghost, several attentions at once
-updated: '2026-11-16'
+updated: '2026-11-20'
 ---
 
 # Dolores Concurrent Mind
@@ -363,6 +367,33 @@ After these four, concurrent thinking starts for real.
   `DoloresMeta.contracts()` lists the config store + prompt manager, which boot instantiates.
 - **no plan store, no scheduler, no clone runtime.** `AbsMindflow._current_attention` is still
   singular.
+- **the lifecycle module registry** — `EgoLifecycleModule` / `EgoLifecycleRegistry`: providers
+  register at bootstrap, the runtime starts once at the born hook; the journal module is the
+  first consumer. The event surface adds `on_commit`, carrying the anchor's `ref.created`.
+
+## Lifecycle module registry (2026-11-20)
+
+Built in `mindset/ego_lifecycle_module.py` + `mindset/journal_module.py`; the substrate landed
+with the journal calendar, and the vocabulary was finished this round.
+
+- **Registration is not activation.** A `BootstrapProvider` registers an `EgoLifecycleModule`
+  into `EgoLifecycleRegistry` during container bootstrap; the runtime calls `start(lifecycle)`
+  once at the born hook, before `fire_startup`. Construction is side-effect-free; `__aenter__`
+  resolves late dependencies and does boot work; `listen` registers listeners; `__aexit__`
+  releases them in reverse order.
+- **The listener surface is `EgoLifecycle`.** Phases: startup / thinking_start / thinking_exit
+  / step_end / commit / commit_note. `on_commit` is the new one: the memento manager fires it
+  when an anchor becomes durable, with `ref.created` — the anchor's own instant, not its
+  note's.
+- **The first consumer is the journal module**: it establishes the current day at start,
+  re-opens after a day boundary on `thinking_start`, and records every durable anchor on its
+  own day. The journal remains the mechanical calendar; prose is a ghost-side writer.
+- **Shutdown is not here.** `on_sleep` / `on_shutdown` and the dreamers live in
+  `dolores-shutdown`; the registry is the substrate. The multi-lifecycle bundle was
+  considered and deferred — shutdown is still ego's lifecycle.
+- **Vocabulary**: a *module* owns a lifetime and registers listeners; a *listener* is one
+  callback on a phase; a *hook* is reserved for a single callback point. The bundle is not a
+  hook.
 
 ## Index — where the discussions live
 
