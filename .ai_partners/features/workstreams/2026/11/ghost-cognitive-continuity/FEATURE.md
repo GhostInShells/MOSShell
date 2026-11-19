@@ -1,11 +1,13 @@
 ---
 title: Ghost Cognitive Continuity
 status: in-progress
-status_note: 'D14: design settled in one night of discussion; implementation starts D15, one
-  piece at a time with thirdgerb. No code touched yet.'
+status_note: 'D20: the journal half is built — contract, establish/record_commit,
+  <memory><journal>, pending-day render, journal.spec, and the ego lifecycle module. The writer
+  is moving from the ego to a shutdown-time dreamer (dolores-shutdown + the future
+  dolores-dreamers). The checkout/branch half remains.'
 priority: P1
 created: 2026-11-14
-updated: 2026-11-14
+updated: 2026-11-20
 depends: []
 milestone:
 description: >-
@@ -132,8 +134,15 @@ He puts it as: the most important thing about writing a diary is **smoothness on
 time**, and it may be the only thing it does. It must roll forward. `purpose` and `existence`
 are distilled from it.
 
-**The diary has no prompt and no bypass today** — the human reminds the ghost to write it by
-hand, every day. Writing it is manual, and the mechanism is not built.
+**The diary mechanism is built; its writer is moving.** The journal contract now carries the
+three levels, `establish` / `record_commit`, the `<memory><journal>` face, the pending-day
+render, and a `journal.spec` prompt; the ego's lifecycle module opens the current day and
+records anchors on their own day. Prose is still hand-written by the ego; the next step is a
+shutdown-time dreamer that owns the journal branch and writes it in parallel with the
+commit-note and superego dreamers (`dolores-shutdown` + the future `dolores-dreamers`).
+
+The dreamer is the writer; the ego observes. That split belongs to the shutdown workstream;
+the journal's mechanical calendar remains in the lifecycle module.
 
 Whether it is written in one pass or in segments is undecided (his words: "我这点没想好"), but
 the day's perspective can be computed exactly.
@@ -173,9 +182,12 @@ astrology.
 
 ### D12 · Sleep is the trigger, and it is the graceful exit
 
-Every day: sleep → auto shutdown → and the parallel governance runs before the graceful exit.
-Whether there are dreams is another matter. The `exit: graceful shutdown` hook already exists
-(see memento 1-696 / 1-700 / 1-714).
+Every day: sleep → auto shutdown → the parallel governance runs before the graceful exit. The
+shutdown is its own lifecycle (`dolores-shutdown`): `ghost.shutdown` → grace → `on_sleep`
+(dreamers run in parallel; the ego observes) → `on_shutdown` (prepare/veto) → quiesce → close.
+Dreams are not another matter; they are the `on_sleep` phase. The old `exit: graceful
+shutdown` file hook was removed; the commit note is now a lifecycle event (`on_commit`), and
+the shutdown-time note is a dreamer.
 
 moss 推: the day boundary must be idempotent and run by whoever notices first (exit preferred,
 next boot as fallback), guarded by the existing `status: pending → writing → closed` frontmatter
@@ -191,9 +203,12 @@ checkout, the journal spine, and the night pass cannot be separated: each is an 
 
 | object | what | writer |
 | --- | --- | --- |
-| day ledger | `journal/<Y>/<M>/<D>/raw.md`, append-only, wall clock | commit hook, checkout, inbox traffic, day close |
+| day ledger | `journal/Y<Y>/M<M>/D<D>/daily.md` + `.commits.jsonl`, wall clock | `on_commit`, checkout, inbox traffic, day close |
 | branch | memento branch + ground directory + inbox | only the ego holding it |
-| spine | existence / year / month / daily, budgeted faces | only the night pass |
+| spine | existence / year / month / daily, budgeted faces | only the night pass (the `on_sleep` dreamer; `dolores-shutdown` / `dolores-dreamers`) |
+
+The spine's writer is the night-pass dreamer; the ego observes. The journal's mechanical
+calendar (`establish` / `record_commit`) stays in the ego lifecycle; the prose is the dreamer's.
 
 Any mechanism that cannot be expressed as writing one of these should not be added. The ground
 rework rotted exactly because the protocol stayed single-layer while the channel grew extra
@@ -264,7 +279,11 @@ reading the protocol first. Same shape as the ground rework (D13), which cost a 
 
 ## Implementation Notes
 
-Nothing implemented. First cut starts D15, driven step by step by thirdgerb.
+The journal half is implemented: `journal/contract.py`, `journal_file.py`, `journal_module.py`
+(the ego-side calendar), the `<memory><journal>` face, `establish` / `record_commit`, the
+pending-day render, and the `journal.spec` prompt. The checkout/branch half and the dreamer
+writer remain. The shutdown lifecycle is `dolores-shutdown`; the dreamers are a future
+`dolores-dreamers`.
 
 ## Open questions
 
@@ -274,7 +293,6 @@ Nothing implemented. First cut starts D15, driven step by step by thirdgerb.
    the branch? The two objects differ, but the delivery mechanism may be shareable.
 4. Who renders the ~20k branch index — memento or ground? (moss 推: memento, because it follows
    the branch and changes on checkout)
-5. The diary has no prompt yet. It has to be written, and it is the opposite shape from
-   `memento-note` (which is a four-section retrieval format: Process / Thoughts / Facts /
-   Effects).
+5. The diary prompt exists (`journal.spec`); the open question is the dreamer's definition,
+   branch, and whether the dreamer writes one pass or segments.
 6. Inbox `taken` state: move the file, or flip a field?
