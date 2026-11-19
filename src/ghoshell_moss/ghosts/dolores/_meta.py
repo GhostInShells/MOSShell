@@ -145,7 +145,7 @@ class DoloresMeta(GhostMeta):
         from .configs import DoloresConfigStoreProvider
         from .journal.provider import JournalProvider
         from .mindset.emanation_task import EmanationTasksProvider
-        from .mindset.journal_hook import EgoLifecycleRegistryProvider, JournalHookProvider
+        from .mindset.journal_module import EgoLifecycleRegistryProvider, JournalModuleProvider
         from .mindset.prompter import PromptManagerProvider
         from .scheduler_recall import SchedulerRecallerProvider
 
@@ -155,11 +155,11 @@ class DoloresMeta(GhostMeta):
             EmanationTasksProvider(),
             SchedulerRecallerProvider(),
             JournalProvider(),
-            # The registry must be bound before the hook providers' bootstrap runs: a
+            # The registry must be bound before the module providers' bootstrap runs: a
             # BootstrapProvider bootstraps immediately when registered after container
             # bootstrap, and it resolves the registry by contract.
             EgoLifecycleRegistryProvider(),
-            JournalHookProvider(),
+            JournalModuleProvider(),
         ]
 
     # ── factory ─────────────────────────────────────

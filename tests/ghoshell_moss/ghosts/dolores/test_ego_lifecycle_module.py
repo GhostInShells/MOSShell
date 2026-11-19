@@ -1,4 +1,4 @@
-"""The ego lifecycle hook surface: registration is inert, start is the one activation point."""
+"""The ego lifecycle module surface: registration is inert, start is the one activation point."""
 
 from datetime import date, datetime, timezone
 
@@ -6,15 +6,15 @@ import pytest
 
 from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle import CommitEvent, ThinkingStartEvent
 from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle_bus import EgoLifecycleBus
-from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle_hook import EgoLifecycleRegistry
-from ghoshell_moss.ghosts.dolores.mindset.journal_hook import (
+from ghoshell_moss.ghosts.dolores.mindset.ego_lifecycle_module import EgoLifecycleRegistry
+from ghoshell_moss.ghosts.dolores.mindset.journal_module import (
     EgoLifecycleRegistryProvider,
-    JournalHook,
-    JournalHookProvider,
+    JournalModule,
+    JournalModuleProvider,
 )
 
 
-class _Hook:
+class _Module:
     def __init__(self, *, fail_enter: bool = False, fail_listen: bool = False) -> None:
         self.entered = 0
         self.listened = 0
@@ -67,24 +67,24 @@ class TestEgoLifecycleRegistry:
     @pytest.mark.asyncio
     async def test_registration_is_inert_until_start(self):
         registry = EgoLifecycleRegistry()
-        hook = _Hook()
-        registry.register("h", hook)
+        module = _Module()
+        registry.register("h", module)
 
-        assert (hook.entered, hook.listened, hook.exited) == (0, 0, 0)
+        assert (module.entered, module.listened, module.exited) == (0, 0, 0)
 
         await registry.start(object())
-        assert (hook.entered, hook.listened) == (1, 1)
+        assert (module.entered, module.listened) == (1, 1)
 
         await registry.stop()
-        assert hook.exited == 1
+        assert module.exited == 1
 
     @pytest.mark.asyncio
     async def test_duplicate_names_are_rejected(self):
         registry = EgoLifecycleRegistry()
-        registry.register("h", _Hook())
+        registry.register("h", _Module())
 
         with pytest.raises(ValueError):
-            registry.register("h", _Hook())
+            registry.register("h", _Module())
 
     @pytest.mark.asyncio
     async def test_register_after_start_is_rejected(self):
@@ -92,24 +92,24 @@ class TestEgoLifecycleRegistry:
         await registry.start(object())
 
         with pytest.raises(RuntimeError):
-            registry.register("late", _Hook())
+            registry.register("late", _Module())
 
     @pytest.mark.asyncio
     async def test_start_is_idempotent(self):
         registry = EgoLifecycleRegistry()
-        hook = _Hook()
-        registry.register("h", hook)
+        module = _Module()
+        registry.register("h", module)
 
         await registry.start(object())
         await registry.start(object())
 
-        assert hook.entered == 1
+        assert module.entered == 1
 
     @pytest.mark.asyncio
     async def test_non_critical_failure_is_isolated(self):
         registry = EgoLifecycleRegistry()
-        broken = _Hook(fail_enter=True)
-        healthy = _Hook()
+        broken = _Module(fail_enter=True)
+        healthy = _Module()
         registry.register("broken", broken)
         registry.register("healthy", healthy)
 
@@ -122,8 +122,8 @@ class TestEgoLifecycleRegistry:
     @pytest.mark.asyncio
     async def test_critical_failure_stops_started_hooks_and_raises(self):
         registry = EgoLifecycleRegistry()
-        first = _Hook()
-        critical = _Hook(fail_enter=True)
+        first = _Module()
+        critical = _Module(fail_enter=True)
         registry.register("first", first)
         registry.register("critical", critical, critical=True)
 
@@ -135,23 +135,23 @@ class TestEgoLifecycleRegistry:
     @pytest.mark.asyncio
     async def test_stop_before_start_is_a_noop(self):
         registry = EgoLifecycleRegistry()
-        hook = _Hook()
-        registry.register("h", hook)
+        module = _Module()
+        registry.register("h", module)
 
         await registry.stop()
 
-        assert hook.entered == 0
-        assert hook.exited == 0
+        assert module.entered == 0
+        assert module.exited == 0
 
 
-class TestJournalHook:
+class TestJournalModule:
     @pytest.mark.asyncio
     async def test_start_opens_today_and_midnight_check_opens_the_next_day(self):
         journal = _FakeJournal()
-        hook = JournalHook(_Container(journal))
+        module = JournalModule(_Container(journal))
         bus = EgoLifecycleBus()
         registry = EgoLifecycleRegistry()
-        registry.register("journal", hook)
+        registry.register("journal", module)
 
         await registry.start(bus)
         assert journal.established == [date(2026, 11, 18)]
@@ -165,10 +165,10 @@ class TestJournalHook:
     @pytest.mark.asyncio
     async def test_commit_event_is_recorded_with_its_own_instant(self):
         journal = _FakeJournal()
-        hook = JournalHook(_Container(journal))
+        module = JournalModule(_Container(journal))
         bus = EgoLifecycleBus()
         registry = EgoLifecycleRegistry()
-        registry.register("journal", hook)
+        registry.register("journal", module)
         await registry.start(bus)
         at = datetime(2026, 11, 18, 23, 59, tzinfo=timezone.utc)
 
@@ -181,10 +181,10 @@ class TestJournalHook:
     @pytest.mark.asyncio
     async def test_stop_unregisters_the_hooks_listeners(self):
         journal = _FakeJournal()
-        hook = JournalHook(_Container(journal))
+        module = JournalModule(_Container(journal))
         bus = EgoLifecycleBus()
         registry = EgoLifecycleRegistry()
-        registry.register("journal", hook)
+        registry.register("journal", module)
         await registry.start(bus)
         await registry.stop()
 
@@ -196,7 +196,7 @@ class TestJournalHook:
         assert journal.recorded == []
 
 
-class TestJournalHookProvider:
+class TestJournalModuleProvider:
     @pytest.mark.asyncio
     async def test_provider_bootstrap_registers_and_start_activates(self, tmp_path):
         from ghoshell_container.containers import Container
@@ -206,7 +206,7 @@ class TestJournalHookProvider:
 
         container = Container(name="test")
         container.register(EgoLifecycleRegistryProvider())
-        container.register(JournalHookProvider())
+        container.register(JournalModuleProvider())
         container.bootstrap()
         journal = FileJournal(tmp_path, JournalConfig(tz="+08:00"))
         container.set(DoloresJournal, journal)

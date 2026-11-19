@@ -1,8 +1,9 @@
-"""JournalHook — wire the journal's calendar to the ego's lifecycle.
+"""JournalModule — wire the journal's calendar to the ego's lifecycle.
 
-The journal is a ghost organ; this hook is its ego-side adapter. It opens the current day
+The journal is a ghost organ; this module is its ego-side adapter. It opens the current day
 when the registry starts, re-opens it when the ego crosses midnight, and records every
-durable anchor on the anchor's own day. It writes no prose: the writer remains the ghost.
+durable anchor on the anchor's own day. It writes no prose: the writer remains a ghost-side
+author, not this module.
 """
 
 from __future__ import annotations
@@ -15,12 +16,12 @@ from typing_extensions import Self
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
 from .ego_lifecycle import CommitEvent, Discard, EgoLifecycle, ThinkingStartEvent
-from .ego_lifecycle_hook import EgoLifecycleRegistry
+from .ego_lifecycle_module import EgoLifecycleRegistry
 
-__all__ = ["EgoLifecycleRegistryProvider", "JournalHook", "JournalHookProvider"]
+__all__ = ["EgoLifecycleRegistryProvider", "JournalModule", "JournalModuleProvider"]
 
 
-class JournalHook:
+class JournalModule:
     """Open the journal's day at start, keep it current, and record anchors by their own day."""
 
     def __init__(self, container: IoCContainer, *, logger: LoggerItf | None = None) -> None:
@@ -58,7 +59,7 @@ class JournalHook:
         if today == self._day:
             return
         self._day = await self._journal.establish(today)
-        self._logger.info("journal hook: opened day %s", today.isoformat())
+        self._logger.info("journal module: opened day %s", today.isoformat())
 
     async def _record_commit(self, event: CommitEvent) -> None:
         if self._journal is None:
@@ -67,7 +68,7 @@ class JournalHook:
 
 
 class EgoLifecycleRegistryProvider(Provider[EgoLifecycleRegistry]):
-    """The hook catalog itself — a singleton, registered before the hook providers."""
+    """The module catalog itself — a singleton, registered before the module providers."""
 
     def singleton(self) -> bool:
         return True
@@ -76,17 +77,17 @@ class EgoLifecycleRegistryProvider(Provider[EgoLifecycleRegistry]):
         return EgoLifecycleRegistry(logger=con.get(LoggerItf))
 
 
-class JournalHookProvider(BootstrapProvider[JournalHook]):
-    """Register the journal hook at container bootstrap; the runtime starts it later."""
+class JournalModuleProvider(BootstrapProvider[JournalModule]):
+    """Register the journal module at container bootstrap; the runtime starts it later."""
 
     def singleton(self) -> bool:
         return False
 
-    def contract(self) -> type[JournalHook]:
-        return JournalHook
+    def contract(self) -> type[JournalModule]:
+        return JournalModule
 
     def factory(self, con: IoCContainer) -> INSTANCE:
-        return JournalHook(con, logger=con.get(LoggerItf))
+        return JournalModule(con, logger=con.get(LoggerItf))
 
     def bootstrap(self, con: IoCContainer) -> None:
         registry = con.force_fetch(EgoLifecycleRegistry)

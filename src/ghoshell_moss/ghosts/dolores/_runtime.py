@@ -303,9 +303,9 @@ class Dolores(Ghost):
         self._memento_manager: EgoMementoManager | None = None
         # ego lifecycle bus — ghost-owned; modules see only the EgoLifecycle registry in IoC.
         self._lifecycle: EgoLifecycleBus | None = None
-        # hooks: registered by providers at bootstrap, started once at the born hook,
-        # before fire_startup, so a hook can listen to the startup phase itself.
-        self._lifecycle_hooks_started = False
+        # modules: registered by providers at bootstrap, started once at the born hook,
+        # before fire_startup, so a module can listen to the startup phase itself.
+        self._lifecycle_modules_started = False
         # beside: the first parallel-thought organ. Built only when config enables it; the
         # channel factory reads the same config and mounts nothing when it is absent.
         self._beside_runtime: BesideRuntime | None = None
@@ -881,18 +881,18 @@ class Dolores(Ghost):
         and instruction are empty.
         """
         # Activation, not registration: providers populated the catalog during bootstrap;
-        # the born hook is where the ghost is ready for the hooks to run. It sits before
-        # ``fire_startup`` so a hook can subscribe to the startup phase itself.
+        # the born hook is where the ghost is ready for the modules to run. It sits before
+        # ``fire_startup`` so a module can subscribe to the startup phase itself.
         if (
-                not self._lifecycle_hooks_started
+                not self._lifecycle_modules_started
                 and self._container is not None
                 and self._lifecycle is not None
         ):
-            from .mindset.ego_lifecycle_hook import EgoLifecycleRegistry
+            from .mindset.ego_lifecycle_module import EgoLifecycleRegistry
 
             registry = self._container.get(EgoLifecycleRegistry)
             if registry is not None:
-                self._lifecycle_hooks_started = True
+                self._lifecycle_modules_started = True
                 await registry.start(self._lifecycle)
                 self._exit_stack.push_async_callback(registry.stop)
         if self._matrix is None:
