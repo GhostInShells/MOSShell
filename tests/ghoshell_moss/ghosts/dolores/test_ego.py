@@ -911,6 +911,16 @@ class TestDoloresEgoCommit:
         assert branch.notes()[branch.commits()[0].id].message == "second"
 
     @pytest.mark.asyncio
+    async def test_manual_note_is_stripped_at_intake(self, tmp_path: Path):
+        """CTML 的 note 从 tag body 过来会带前导换行; 收的时候就 strip, 存下来的是标题."""
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9)
+        ego.commit_anchor("\n\n  the note  ")
+
+        await ego._on_turn_end(self._turn_end(1))
+        branch = memento.get_branch("main")
+        assert branch.notes()[branch.commits()[0].id].message == "the note"
+
+    @pytest.mark.asyncio
     async def test_replan_commit_requests_a_no_tail_compact(self, tmp_path: Path):
         """replan 的 note 落地之后, 下一 run 的压缩切在它自己的 end_turn 上 —— 整段不留."""
         ego, _ = self._set_up(tmp_path, force_tokens=10 ** 9)

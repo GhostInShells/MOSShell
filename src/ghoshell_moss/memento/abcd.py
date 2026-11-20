@@ -403,8 +403,12 @@ class CommitMessage(BaseModel):
 
         ``strict=True`` raises when the first line is not an op line — for writers and
         tests, never for readers of existing notes.
+
+        Leading blank lines are formatting, not a title: a note written from a CTML tag
+        body often opens with a newline, and reading the empty line as the headline would
+        lose the title.
         """
-        first, _, rest = message.partition("\n")
+        first, _, rest = message.lstrip().partition("\n")
         first = first.strip()
         match = _COMMIT_OP_LINE.match(first)
         if match is None:

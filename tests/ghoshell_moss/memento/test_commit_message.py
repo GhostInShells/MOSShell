@@ -43,6 +43,22 @@ def test_parse_empty_message():
     assert message.to_str() == ""
 
 
+def test_parse_skips_leading_blank_lines():
+    # A note handed over from a CTML tag body opens with a newline; the title is the
+    # first non-empty line, not the empty one.
+    message = CommitMessage.parse("\n\nD20 18:30：title\n\nbody")
+
+    assert message.headline == "D20 18:30：title"
+    assert message.body == "body"
+
+
+def test_parse_skips_leading_blank_lines_before_an_op_line():
+    message = CommitMessage.parse("\n\npropose(dev): v1\n\nbody")
+
+    assert (message.op, message.target, message.content) == ("propose", "dev", "v1")
+    assert message.body == "body"
+
+
 def test_strict_requires_an_op_line():
     with pytest.raises(ValueError):
         CommitMessage.parse("just prose", strict=True)

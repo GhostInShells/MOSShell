@@ -1026,7 +1026,12 @@ class DoloresEgo:
         ``replan=True`` 在落锚之后再登记一次"整段不留 tail"的压缩: anchor 落地时它才拿到
         自己的 ``end_turn``, 下一 run 启动时按它切 —— 重启后的上下文是这条 note 的 memento
         与（必要时）raw last span 的 supplement.
+
+        The note is stripped here, at the one intake the CTML path has: a note handed over
+        from a tag body usually starts with the body's newline, and the stored message is
+        what the digest later reads its title from.
         """
+        note = note.strip()
         if self._memento_manager is None:
             return "[memento] no memento manager is wired — nothing can be anchored"
         if self._ego_session_id is None:
