@@ -61,6 +61,7 @@ from ghoshell_moss.ghosts.dolores.mindset.prompter import (
 )
 from ghoshell_moss.ghosts.dolores.mindset.seeds import MEMENTO_CHAT_SEED
 from ghoshell_moss.memento.abcd import (
+    MAIN,
     Branch,
     BranchAddr,
     BranchEvent,
@@ -72,6 +73,8 @@ from ghoshell_moss.memento.abcd import (
     Note,
 )
 from ghoshell_moss.message import Message, format_zone
+
+from .mementos import DoloresMementos
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection
@@ -312,6 +315,7 @@ class EgoMementoManager:
             config: EgoMementoConfig | None = None,
             prompt_manager: PromptManager | None = None,
             emanation_tasks: EmanationTasks | None = None,
+            mementos: DoloresMementos | None = None,
             seed_ground: Path | None = None,
             on_note_ready: Callable[[CommitNoteEvent], None] | None = None,
             on_commit: Callable[[CommitEvent], None] | None = None,
@@ -319,6 +323,8 @@ class EgoMementoManager:
     ) -> None:
         self._connection = connection
         self._memento = memento
+        # The process's owner registry: reads may name another owner, writes never do.
+        self._mementos = mementos
         self._config = config or EgoMementoConfig()
         # The line the ego lives on **now**. The config only answers "where do I wake up";
         # a checkout moves this, not the config, so every read of the current line goes here.
@@ -353,6 +359,20 @@ class EgoMementoManager:
         the next restart, so nothing outside boot may read the config for the current line.
         """
         return self._branch_name or self._config.branch_name
+
+    def _scoped(self, owner: str | None) -> Memento:
+        """The memento a read resolves against — this owner when nothing is named."""
+        if owner is None:
+            return self._memento
+        if self._mementos is None:
+            raise LookupError("memento owners are not wired into this runtime")
+        return self._mementos.get(owner)
+
+    def _default_branch(self, owner: str | None, name: str | None) -> str:
+        """An unnamed line: the ego's current one, or the reference `main` for another owner."""
+        if name:
+            return name
+        return self.active_branch if owner is None else MAIN
 
     def switch_branch(self, name: str) -> None:
         """Move the ego's identity onto another line — identity only; the transition is the caller's."""
@@ -437,15 +457,15 @@ class EgoMementoManager:
 
     # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
 
-    def memento_dir(self, coord: str) -> str:
+    def memento_dir(self, coord: str, *, owner: str | None = None) -> str:
         """某条 commit 自己的目录地址 —— 只算地址, 不建、不读、不列.
 
         目录内容归写者; store 只遵守 ``MEMENTO.md`` 这个索引约定 —— 它的存在就是"这条锚点
         有 memento"的标记, 也是 ``_probe_memento`` 认的东西. 坐标不存在抛 ``KeyError``
         (命令侧转文本提示, 与 read/chat 同一条约定).
         """
-        view = self._require_commit(coord)
-        return str(view.memento_path(self._memento.root).parent)
+        view = self._require_commit(coord, owner=owner)
+        return str(view.memento_path(self._scoped(owner).root).parent)
 
     # ── 旁路 (慢腿: 排任务归 manager, 生命周期同 ghost) ───────────────
 
@@ -692,7 +712,7 @@ class EgoMementoManager:
 
     # ── read / chat (旁路原语的另两个调用方; 目标用坐标引用) ──────────
 
-    async def read(self, coord: str) -> str:
+    async def read(self, coord: str, *, owner: str | None = None) -> str:
         """commit 区间 → 可读文本.
 
         取的是源 session 的**原始 log 区间**, 不是 surface 投影 —— transcript 要 ``tool/call``
@@ -702,7 +722,7 @@ class EgoMementoManager:
         源存档读不出来 (格式代际不兼容) 时抛 :class:`SourceUnreadableError` —— 不回落成空串、
         不返回一段看起来像正文的东西: 读不到就报读不到.
         """
-        view = self._require_commit(coord)
+        view = self._require_commit(coord, owner=owner)
         ref = self._ref_of_view(view)
         try:
             raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
@@ -773,7 +793,7 @@ class EgoMementoManager:
             ).with_content(text)
         ]
 
-    async def chat(self, coord: str, prompt: str) -> str:
+    async def chat(self, coord: str, prompt: str, *, owner: str | None = None) -> str:
         """和某条 commit **所属的上下文**对话一轮 (chat off record).
 
         坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
@@ -782,7 +802,7 @@ class EgoMementoManager:
         被问的那一刻, ``coord`` 是被问的那一段 —— 分身的视界止于锚点, 不给它这两件,
         它的「现在」就停在最后一条它见过的帧上.
         """
-        view = self._require_commit(coord)
+        view = self._require_commit(coord, owner=owner)
         if view.is_broken:
             raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
@@ -828,8 +848,8 @@ class EgoMementoManager:
             f"commit's note (if any) is still in view/history. dsh said: {_unreadable_reason(exc)}"
         )
 
-    def _require_commit(self, coord: str) -> CommitView:
-        view = self.resolve(coord)
+    def _require_commit(self, coord: str, *, owner: str | None = None) -> CommitView:
+        view = self.resolve(coord, owner=owner)
         if view is None:
             raise KeyError(f"commit {coord} not found")
         return view
@@ -904,6 +924,7 @@ class EgoMementoManager:
             *,
             n: int | None = None,
             until: str | None = None,
+            owner: str | None = None,
     ) -> Message | None:
         """Render a branch view into the xml-like memory block — the only entry point.
 
@@ -916,17 +937,18 @@ class EgoMementoManager:
         ground's exec pins are async. A sync twin would render a face production never emits
         (no ``<ground>``), so there is none.
         """
-        branch = self._memento.get_branch(name or self.active_branch)
+        memento = self._scoped(owner)
+        branch = memento.get_branch(self._default_branch(owner, name))
         if branch is None:
             return None
         view = await branch.aview(
             n=n if n is not None else self._config.view_limit,
-            until=self._seq_before(branch, until),
+            until=self._seq_before(branch, until, memento),
             titles=self._config.digest_titles,
         )
         return await self._render_view(view)
 
-    def _seq_before(self, branch: Branch, coord: str | None) -> int | None:
+    def _seq_before(self, branch: Branch, coord: str | None, memento: Memento | None = None) -> int | None:
         """坐标 → 该 branch 上的 seq; 渲染时用它做**排他**上界.
 
         坐标属于别的 branch 时返回 None (整条线渲染) —— 一条线的 snapshot 不该被另一条线的
@@ -934,28 +956,28 @@ class EgoMementoManager:
         """
         if not coord:
             return None
-        view = self._memento.resolve_commit(coord)
+        view = (memento or self._memento).resolve_commit(coord)
         if view is None or view.branch_index != branch.index:
             return None
         return view.seq
 
-    def list_branches(self) -> list[tuple[int, BranchRef]]:
+    def list_branches(self, *, owner: str | None = None) -> list[tuple[int, BranchRef]]:
         """Active branches with their branch-log ordinal — owner data only.
 
         A listing needs the branch's identity, not its trajectory: reading commits or notes
         here made every notice refresh O(owner). The ordinal comes from the roster position,
         so it survives archive and name reuse.
         """
-        return self._memento.list_branch_entries()
+        return self._scoped(owner).list_branch_entries()
 
-    def branch_index(self, name: str | None = None) -> int | None:
+    def branch_index(self, name: str | None = None, *, owner: str | None = None) -> int | None:
         """The branch-log ordinal of a line — the first half of every coordinate on it.
 
         Kept separate from ``list_branches`` so a caller can check "does this coordinate
         belong to the line I am about to scroll" without holding the roster.
         """
-        target = name or self.active_branch
-        for index, ref in self.list_branches():
+        target = self._default_branch(owner, name)
+        for index, ref in self.list_branches(owner=owner):
             if ref.name == target:
                 return index
         return None
@@ -1015,9 +1037,10 @@ class EgoMementoManager:
             self,
             offset: int = 0,
             limit: int = 20,
+            owner: str | None = None,
     ) -> tuple[int, list[tuple[int, BranchRef, bool]]]:
         """A page of every line the owner ever opened — archived included."""
-        return self._memento.list_branch_catalog(offset=offset, limit=limit)
+        return self._scoped(owner).list_branch_catalog(offset=offset, limit=limit)
 
     def list_commits(
             self,
@@ -1025,9 +1048,10 @@ class EgoMementoManager:
             *,
             from_date: datetime | None = None,
             until_date: datetime | None = None,
+            owner: str | None = None,
     ) -> list[CommitDigest]:
         """按时间区间列 commit (seq + title + body), 等价 ``git log --oneline``; 详情就在同一条里."""
-        branch = self._memento.get_branch(name or self.active_branch)
+        branch = self._scoped(owner).get_branch(self._default_branch(owner, name))
         if branch is None:
             return []
         digests: list[CommitDigest] = []
@@ -1041,9 +1065,9 @@ class EgoMementoManager:
             ))
         return digests
 
-    def resolve(self, coord: str) -> CommitView | None:
+    def resolve(self, coord: str, *, owner: str | None = None) -> CommitView | None:
         """坐标 (如 ``1-27``) → CommitView; 格式错 / 不存在返回 None. read / chat 的入口."""
-        return self._memento.resolve_commit(coord)
+        return self._scoped(owner).resolve_commit(coord)
 
     def compact_cut_turn(self) -> int | None:
         """安全 compact 位点 (SCS): 倒数第二个 commit 的 end_turn, 即 tip commit 的 start_turn.

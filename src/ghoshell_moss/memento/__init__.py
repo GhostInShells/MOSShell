@@ -6,6 +6,7 @@ See ``SPECIFICATION.md`` for the full specification.
 
 from .abcd import (
     COMMIT_MEMENTO_FILE,
+    MAIN,
     BranchAddr,
     BranchEvent,
     Child,

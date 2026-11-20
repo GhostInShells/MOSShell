@@ -770,6 +770,7 @@ class Dolores(Ghost):
             # 生命周期入 exit stack —— 旁路任务归它治理, ghost 关停时随栈取消.
             if self._memento is not None:
                 from ._ego_memento import EgoMementoManager
+                from .mementos import DoloresMementos
                 from .mindset.emanation_task import EmanationTasks
                 from .mindset.prompter import PromptManager
 
@@ -788,6 +789,7 @@ class Dolores(Ghost):
                         config=self._load_config().memento,
                         prompt_manager=prompt_manager,
                         emanation_tasks=emanation_tasks,
+                        mementos=self._container.force_fetch(DoloresMementos),
                         seed_ground=self._home / ".dolores/seeds/branch_ground",
                         on_note_ready=self._lifecycle.fire_commit_note,
                         on_commit=self._lifecycle.fire_commit,

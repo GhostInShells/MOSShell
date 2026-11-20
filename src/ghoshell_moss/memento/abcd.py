@@ -61,6 +61,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 __all__ = [
     "COMMIT_MEMENTO_FILE",
+    "MAIN",
     "CommitRef",
     "BranchAddr",
     "Child",
@@ -80,6 +81,9 @@ __all__ = [
 ]
 
 COMMIT_MEMENTO_FILE = "MEMENTO.md"
+
+MAIN = "main"
+"""The conventional default branch — what a caller means when it names no line."""
 """File name of a commit node's index — part of the on-disk convention.
 
 A directory containing this file is a memento node. The name is unique to memento on

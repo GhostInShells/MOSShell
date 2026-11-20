@@ -47,6 +47,7 @@ from ghoshell_moss.ghosts.dolores.mindset.prompter import (
     PromptError,
     PromptManager,
 )
+from ghoshell_moss.memento import MAIN
 from ghoshell_moss.memento.abcd import CommitMessage
 
 __all__ = ["build_memento_channel"]
@@ -246,6 +247,7 @@ def build_memento_channel(
         branch: str | None = None,
         limit: int | None = None,
         coord: str | None = None,
+        owner: str | None = None,
     ) -> str:
         """Look at one line's view — the window at the tip, or one scrolled back by coordinate.
 
@@ -254,18 +256,19 @@ def build_memento_channel(
         :param coord: cursor — render the trajectory *before* this commit, e.g. `1-700`.
             The commit itself is excluded: it is the place you already stand, not the view.
             `history` reads a range instead.
+        :param owner: another memento owner to read; None = your own trajectory.
         """
         if coord:
-            hit = manager.resolve(coord)
+            hit = manager.resolve(coord, owner=owner)
             if hit is None:
                 return f"[memento] no commit at `{coord}`"
-            index = manager.branch_index(branch)
+            index = manager.branch_index(branch, owner=owner)
             if index is not None and hit.branch_index != index:
                 return (
                     f"[memento] `{coord}` lives on branch #{hit.branch_index}; "
                     "a cursor only scrolls the line it belongs to"
                 )
-        message = await manager.aview_message(branch, n=limit, until=coord)
+        message = await manager.aview_message(branch, n=limit, until=coord, owner=owner)
         if message is None:
             return f"[memento] no branch `{branch}`"
         return message.to_content_string()
@@ -316,16 +319,17 @@ def build_memento_channel(
         return f"[memento] archived {len(closed)} line(s), deepest first: {names}"
 
     @chan.build.command(name="branches", always_observe=True)
-    async def branches(offset: int = 0, limit: int = 20) -> str:
+    async def branches(offset: int = 0, limit: int = 20, owner: str | None = None) -> str:
         """List every branch — closed lines included — one page at a time.
 
         :param offset: start at this 0-based branch position; `total` in the answer says how to page.
         :param limit: rows in this page, 20 by default.
+        :param owner: another memento owner to read; None = your own trajectory.
         """
-        total, page = manager.branch_catalog(offset, limit)
+        total, page = manager.branch_catalog(offset, limit, owner=owner)
         if not page:
             return f"[memento] no branches at offset {offset} (total {total})"
-        current = manager.active_branch
+        current = manager.active_branch if owner is None else ""
         lines = [f"[memento] branches {offset + 1}-{offset + len(page)} of {total}:"]
         for index, ref, active in page:
             about = f" — {ref.description}" if ref.description else ""
@@ -335,13 +339,14 @@ def build_memento_channel(
         return "\n".join(lines)
 
     @chan.build.command(name="read", always_observe=True)
-    async def read(coord: str) -> str:
+    async def read(coord: str, owner: str | None = None) -> str:
         """Read a span's raw conversation.
 
         :param coord: commit coordinate, e.g. `1-27`.
+        :param owner: another memento owner to read; None = your own trajectory.
         """
         try:
-            text = await manager.read(coord)
+            text = await manager.read(coord, owner=owner)
         except KeyError:
             return f"[memento] no commit at `{coord}`"
         return text or f"[memento] nothing was said in that span ({coord})"
@@ -352,6 +357,7 @@ def build_memento_channel(
         from_date: str | None = None,
         until_date: str | None = None,
         tz: str = "",
+        owner: str | None = None,
     ) -> str:
         """List one line's commits over a time range — like `git log --oneline`, with detail.
 
@@ -361,15 +367,17 @@ def build_memento_channel(
         :param from_date: start of the range, inclusive; ISO.
         :param until_date: end of the range, inclusive; ISO.
         :param tz: an IANA name or an offset like `+08:00`; empty = this machine's clock.
+        :param owner: another memento owner to read; None = your own trajectory.
         """
         try:
             start = _parse_date(from_date, "from_date", tz)
             end = _parse_date(until_date, "until_date", tz)
         except ValueError as error:
             return f"[memento] {error}"
-        digests = manager.list_commits(branch, from_date=start, until_date=end)
+        digests = manager.list_commits(branch, from_date=start, until_date=end, owner=owner)
         if not digests:
-            return f"[memento] no commits in {branch or manager.active_branch} for that range"
+            line = branch or (manager.active_branch if owner is None else MAIN)
+            return f"[memento] no commits in {line} for that range"
         lines: list[str] = []
         for digest in digests:
             broken = " (broken placeholder, chat unavailable)" if digest.broken else ""
@@ -379,7 +387,7 @@ def build_memento_channel(
         return "\n".join(lines)
 
     @chan.build.command(name="chat", always_observe=True)
-    async def chat(coord: str, prompt: str) -> str:
+    async def chat(coord: str, prompt: str, owner: str | None = None) -> str:
         """Talk one round with the context of a span — the answer arrives later.
 
         The other side sees only what had happened by the time that commit was made. This returns
@@ -388,8 +396,9 @@ def build_memento_channel(
 
         :param coord: commit coordinate, e.g. `1-27`.
         :param prompt: what you want to ask.
+        :param owner: another memento owner to read; None = your own trajectory.
         """
-        view = manager.resolve(coord)
+        view = manager.resolve(coord, owner=owner)
         if view is None:
             return f"[memento] no commit at `{coord}`"
         if view.is_broken:
@@ -408,7 +417,7 @@ def build_memento_channel(
             outcome = "aborted"
             try:
                 try:
-                    text = await manager.chat(coord, prompt)
+                    text = await manager.chat(coord, prompt, owner=owner)
                 except asyncio.CancelledError:
                     # Cancellation is not a failure, but it must not look like success in
                     # the trail either: the token is removed and the reason is recorded.
@@ -466,7 +475,7 @@ def build_memento_channel(
             return commit_anchor(message, replan=(op == "replan"))
 
     @chan.build.command(name="memento_dir", always_observe=True)
-    async def memento_dir(coord: str) -> str:
+    async def memento_dir(coord: str, owner: str | None = None) -> str:
         """The directory this commit owns — where the mementos of that moment live.
 
         Only the address: the directory is not created for you, and nothing here reads or lists
@@ -474,9 +483,10 @@ def build_memento_channel(
         what marks this anchor as having a memento space.
 
         :param coord: commit coordinate, e.g. `1-27`.
+        :param owner: another memento owner's anchor; None = your own trajectory.
         """
         try:
-            path = manager.memento_dir(coord)
+            path = manager.memento_dir(coord, owner=owner)
         except KeyError:
             return f"[memento] no commit at `{coord}`"
         return path

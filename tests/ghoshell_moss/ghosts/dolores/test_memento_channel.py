@@ -51,7 +51,7 @@ class TestMementoChannel:
                 self.conn.closed += 1
 
     @staticmethod
-    def _manager(tmp_path: Path, connection=None):
+    def _manager(tmp_path: Path, connection=None, mementos=None):
         from ghoshell_moss.memento import new_local_memento
 
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
@@ -59,7 +59,10 @@ class TestMementoChannel:
         memento = new_local_memento(tmp_path / "owner", writable=True)
         memento.create_branch("main")
         return EgoMementoManager(
-            connection=connection or _OfflineConnection(), memento=memento, config=EgoMementoConfig()
+            connection=connection or _OfflineConnection(),
+            memento=memento,
+            config=EgoMementoConfig(),
+            mementos=mementos,
         ), memento
 
     @staticmethod
@@ -518,3 +521,28 @@ class TestMementoChannel:
         async with chan.bootstrap() as runtime:
             window = await runtime.execute_command("history", kwargs={"from_date": start, "until_date": end})
         assert "late night" in window
+
+
+class TestMementoOwnerScope:
+    """A read may name another owner; an unnamed line stays that owner's `main`."""
+
+    def test_a_named_owner_resolves_against_its_own_branches(self, tmp_path):
+        from ghoshell_moss.ghosts.dolores.mementos import FsDoloresMementos
+
+        mementos = FsDoloresMementos(tmp_path / ".memento")
+        other = mementos.get("dreamers/journal", or_create=True)
+        other.create_branch("journal")
+
+        manager, _own = TestMementoChannel._manager(tmp_path, mementos=mementos)
+
+        assert [ref.name for _, ref in manager.list_branches(owner="dreamers/journal")] == ["journal"]
+        assert [ref.name for _, ref in manager.list_branches()] == ["main"]
+        total, page = manager.branch_catalog(owner="dreamers/journal")
+        assert total == 1
+        assert page[0][1].name == "journal"
+
+    def test_naming_an_owner_without_a_registry_is_an_error(self, tmp_path):
+        manager, _own = TestMementoChannel._manager(tmp_path)
+
+        with pytest.raises(LookupError):
+            manager.list_branches(owner="ghost")
