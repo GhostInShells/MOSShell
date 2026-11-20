@@ -377,8 +377,11 @@ class TestDoloresEpochPayload:
         epoch = Epoch(
             id="e1",
             index=1,
-            memento=[Message.new(tag="memento").with_content("trail")],
-            supplement=[Message.new(tag="transcript").with_content("past")],
+            # 故意逆序注册: 桶间无序, 渲染者按 key 排序, 注册顺序不该泄漏到线上字节.
+            context={
+                "supplement": [Message.new(tag="supplement").with_content("past")],
+                "memento": [Message.new(tag="memento").with_content("trail")],
+            },
             baseline={"facade": "channel tree"},
         )
         opening = self._ego()._epoch_payload(self._thinking(epoch))
@@ -400,10 +403,10 @@ class TestDoloresEpochPayload:
         from ghoshell_moss.core.blueprint.moment import Epoch
 
         ego = self._ego()
-        epoch = Epoch(id="e1", index=1, memento=[], supplement=[], baseline={})
+        epoch = Epoch(id="e1", index=1, context={}, baseline={})
         assert ego._epoch_payload(self._thinking(epoch)) is None  # 空 epoch → 不注入
         # 已记录的 epoch 再次进入 → None (不变更).
-        epoch2 = Epoch(id="e1", index=1, memento=[], supplement=[], baseline={})
+        epoch2 = Epoch(id="e1", index=1, context={}, baseline={})
         assert ego._epoch_payload(self._thinking(epoch2)) is None
 
 
@@ -431,8 +434,9 @@ class TestDoloresEpoch:
         assert [delta async for delta in ghost.think(None)] == ["x"]
 
         assert moments.epochs == 1
-        assert moments.memento_funcs  # memento provider is registered on every epoch
-        assert moments.epoch_supplements == [[]]
+        assert moments.context_funcs  # the memento provider is registered on every epoch
+        assert moments.epoch_contexts[0]["memento"] == []
+        assert moments.epoch_contexts[0]["supplement"] == []
 
     @pytest.mark.asyncio
     async def test_compact_opens_epoch_with_supplement(self):
@@ -443,7 +447,7 @@ class TestDoloresEpoch:
 
         assert ghost._ego.compact_calls == 1
         assert moments.epochs == 1
-        assert "last span" in moments.epoch_supplements[0][0].to_content_string()
+        assert "last span" in moments.epoch_contexts[0]["supplement"][0].to_content_string()
 
     @pytest.mark.asyncio
     async def test_cancelled_compact_is_completed_on_the_next_frame(self):
@@ -454,25 +458,28 @@ class TestDoloresEpoch:
         assert [delta async for delta in ghost.think(None)] == ["x"]
 
         assert ghost._ego.take_calls == 1
-        assert "last span" in moments.epoch_supplements[0][0].to_content_string()
+        assert "last span" in moments.epoch_contexts[0]["supplement"][0].to_content_string()
 
 
 class _FakeMoments:
-    """moments 的录制替身 — epoch 次数 / memento provider / supplement 产物."""
+    """moments 的录制替身 — epoch 次数 / context provider 产物."""
 
     def __init__(self):
         self.epochs = 0
-        self.memento_funcs: dict = {}
-        self.epoch_mementos: list[list] = []
-        self.epoch_supplements: list[list] = []
+        self.context_funcs: dict = {}
+        self.epoch_contexts: list[dict] = []
 
-    def with_epoch_memento(self, key, memento_func):
-        self.memento_funcs[key] = memento_func
+    def with_epoch_context(self, key, func):
+        self.context_funcs[key] = func
 
-    def new_epoch(self, supplement):
+    def new_epoch(self, context=None):
         self.epochs += 1
-        self.epoch_mementos.append([msg for func in self.memento_funcs.values() for msg in func()])
-        self.epoch_supplements.append(list(supplement))
+        built = {key: list(messages) for key, messages in (context or {}).items()}
+        for key, func in self.context_funcs.items():
+            if key in built:
+                continue
+            built[key] = list(func())
+        self.epoch_contexts.append(built)
 
 
 class _FakeRunContext:

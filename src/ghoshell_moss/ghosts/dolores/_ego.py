@@ -1511,8 +1511,9 @@ class DoloresEgo:
     def _epoch_payload(self, thinking: "Thinking") -> EpochOpening | None:
         """epoch slot — memory + <cognition_epoch> content blocks, only on epoch change.
 
-        The frame carries memory first, then one ``<cognition_epoch index=N>`` container with
-        ``<memento>``, ``<supplement>`` and ``<baseline>`` in that order. Memory is the ghost's
+        The frame carries memory first, then one ``<cognition_epoch index=N>`` container:
+        the context buckets' messages (each carries its own tag, buckets sorted by key),
+        then the ``<baseline>`` block. Memory is the ghost's
         shared long-term face (journal today); the epoch is this cognition span's opening. Both
         are rebuilt on every epoch change, so a compact replaces the previous pair instead of
         appending a second copy. The plugin is a dumb transport — it only receives content
@@ -1527,10 +1528,10 @@ class DoloresEgo:
         if epoch.id == self._moment_epoch:
             return None
         children: list[Message] = []
-        if epoch.memento:
-            children.extend(epoch.memento)
-        if epoch.supplement:
-            children.append(Message.new(tag="supplement").with_messages(*epoch.supplement))
+        # 桶间没有顺序: 容器声明"平级", 渲染者负责把它落成确定的字节 — 按 key 排序,
+        # 不依赖注册顺序. 桶内顺序仍然是提供者的.
+        for context_key in sorted(epoch.context):
+            children.extend(epoch.context[context_key])
         if epoch.baseline:
             baseline_msgs = [
                 Message.new(tag=key).with_content(value)

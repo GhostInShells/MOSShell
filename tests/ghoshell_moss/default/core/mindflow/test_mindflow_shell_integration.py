@@ -749,18 +749,18 @@ async def test_mindflow_channel_facade_delivered_at_epoch_baseline():
             await asyncio.sleep(0.01)
         assert any("mindflow" in p for p in suite.shell.channel_metas()), \
             "mindflow channel 未进 shell metas — 测试作用面变了"
-        epoch = suite.mindflow.moments.new_epoch([])
+        epoch = suite.mindflow.moments.new_epoch()
 
         suite.add_signal(input_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
 
-    # 命令面在第零帧 (epoch baseline) 交付, 不进 supplement.
+    # 命令面在第零帧 (epoch baseline) 交付, 不进 context.
     facade = epoch.baseline.get("facade", "")
     assert "specification" in facade, "mindflow facade 未在第零帧 (epoch baseline) 交付"
     assert "peek" in facade
     assert "claim" in facade
-    assert epoch.supplement == []
+    assert epoch.context == {}
 
 
 @pytest.mark.asyncio

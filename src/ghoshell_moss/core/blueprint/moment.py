@@ -486,11 +486,7 @@ Disposer = Callable[[], None]
 class Epoch:
     id: str  # uuid
     index: int  # 生成的第几轮.
-    # 轨迹视图 — 这个 epoch 开始时模型的 memento 面, 每次边界重新渲染.
-    memento: list[Message]
-    # memento 之后必须补进上下文的那些消息 — 迟到的 last span 原文、必读文档等.
-    # 空列表 = 这个 epoch 没有增补, 容器不渲染.
-    supplement: list[Message]
+    context: dict[str, list[Message]]  # 这个 epoch 的 context 桶, key 是注册句柄, 桶间无序.
     baseline: dict[str, str]  # 新的周期的起点信息, 比如 shell full facade.
 
 
@@ -505,19 +501,16 @@ class Moments(ABC):
     @property
     @abstractmethod
     def epoch(self) -> Epoch:
-        """The current epoch — its memento, supplement and baseline."""
+        """The current epoch — its context buckets and baseline."""
         ...
 
     @abstractmethod
-    def with_epoch_memento(self, key: str, memento_func: Callable[[], list[Message]]) -> Disposer:
-        """Register a provider of the trajectory view rendered at each epoch opening."""
-        ...
+    def with_epoch_context(self, key: str, _func: Callable[[], list[Message]]) -> Disposer:
+        """Register the provider for the epoch's ``key`` bucket.
 
-    @abstractmethod
-    def with_epoch_supplement(
-            self, key: str, supplement_func: Callable[[], list[Message]],
-    ) -> Disposer:
-        """Register a provider of messages inserted after the memento at each epoch opening."""
+        Keys dedup and replace, and are never rendered. Buckets are siblings: no order is
+        promised, so a provider that needs a sequence keeps it inside one bucket.
+        """
         ...
 
     @abstractmethod
@@ -526,12 +519,12 @@ class Moments(ABC):
 
     @abstractmethod
     def on_epoch_creating(self, callback: Callable[[Epoch], None]) -> Disposer:
-        """新的 epoch 开启时立即通知 — 早于 memento/supplement/baseline, 供反向绑定刷新自身状态."""
+        """新的 epoch 开启时立即通知 — 早于 context/baseline 的 provider, 供反向绑定刷新自身状态."""
         ...
 
     @abstractmethod
     def on_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
-        """当新的 epoch 完整创建后 (memento/supplement/baseline 已填充) 通知."""
+        """当新的 epoch 完整创建后 (context/baseline 已填充) 通知."""
         ...
 
     @abstractmethod
@@ -644,6 +637,7 @@ class Observer(Moments, ABC):
         scheduler can act on instead of a fact someone has to poll for.
         """
         ...
+
     def observe(self) -> Moment:
         """Produce a Moment at the instant of observation; only observe generates Moments."""
         ...
@@ -651,10 +645,10 @@ class Observer(Moments, ABC):
     @abstractmethod
     def new_epoch(
             self,
-            supplement: list[Message] | None = None,
+            context: dict[str, list[Message]] | None = None,
             end_moment_id: str | None = None,
     ) -> Epoch:
-        """生成新的 epoch — memento 与 supplement 由 providers 填充."""
+        """生成新的 epoch — context 由调用方与 providers 共同填充, baseline 由 providers 填充."""
         ...
 
 
@@ -673,8 +667,7 @@ class BaseMomentsObserver(Observer):
         self._dynamic_context_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._inputs_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._drain_new_echoes_funcs: dict[str, Callable[[], tuple[list[Message], bool]]] = dict()
-        self._epoch_memento_funcs: dict[str, Callable[[], list[Message]]] = dict()
-        self._epoch_supplement_funcs: dict[str, Callable[[], list[Message]]] = dict()
+        self._epoch_context_funcs: dict[str, Callable[[], list[Message]]] = dict()
         self._epoch_baseline_funcs: dict[str, Callable[[], str]] = dict()
 
         self._buffered_drained_percepts = {}
@@ -691,9 +684,13 @@ class BaseMomentsObserver(Observer):
 
     def new_epoch(
             self,
-            supplement: list[Message] | None = None,
+            context: dict[str, list[Message]] | None = None,
             end_moment_id: str | None = None,
     ) -> Epoch:
+        """Open a new epoch: the caller's ``context`` first, then every provider.
+
+        A key the caller supplies skips its provider. Empty output contributes no bucket.
+        """
         index = 0
         if self._current_epoch is not None:
             index = self._current_epoch.index
@@ -703,8 +700,7 @@ class BaseMomentsObserver(Observer):
         epoch = Epoch(
             id=uid,
             index=index,
-            memento=[],
-            supplement=list(supplement or []),
+            context={key: list(messages) for key, messages in (context or {}).items()},
             baseline={},
         )
         self._current_epoch = epoch
@@ -716,20 +712,14 @@ class BaseMomentsObserver(Observer):
                     callback(epoch)
                 except Exception as e:
                     self._logger.exception(e)
-        if len(self._epoch_memento_funcs) > 0:
-            for func in self._epoch_memento_funcs.values():
+        if len(self._epoch_context_funcs) > 0:
+            for key, func in self._epoch_context_funcs.items():
+                if key in epoch.context:
+                    continue
                 try:
-                    messages = func()
+                    messages = list(func() or [])
                     if messages:
-                        epoch.memento.extend(messages)
-                except Exception as e:
-                    self._logger.exception(e)
-        if len(self._epoch_supplement_funcs) > 0:
-            for func in self._epoch_supplement_funcs.values():
-                try:
-                    messages = func()
-                    if messages:
-                        epoch.supplement.extend(messages)
+                        epoch.context[key] = messages
                 except Exception as e:
                     self._logger.exception(e)
         if len(self._epoch_baseline_funcs) > 0:
@@ -754,25 +744,14 @@ class BaseMomentsObserver(Observer):
             if moment.id == end_moment_id:
                 break
 
-    def with_epoch_memento(self, key: str, memento_func: Callable[[], list[Message]]) -> Disposer:
-        self._epoch_memento_funcs[key] = memento_func
+    def with_epoch_context(self, key: str, _func: Callable[[], list[Message]]) -> Disposer:
+        """Hold one provider per key; re-registering a key replaces it in place."""
+        self._epoch_context_funcs[key] = _func
 
         def _dispose() -> None:
-            value = self._epoch_memento_funcs.get(key)
-            if value is memento_func:
-                self._epoch_memento_funcs.pop(key)
-
-        return _dispose
-
-    def with_epoch_supplement(
-            self, key: str, supplement_func: Callable[[], list[Message]],
-    ) -> Disposer:
-        self._epoch_supplement_funcs[key] = supplement_func
-
-        def _dispose() -> None:
-            value = self._epoch_supplement_funcs.get(key)
-            if value is supplement_func:
-                self._epoch_supplement_funcs.pop(key)
+            value = self._epoch_context_funcs.get(key)
+            if value is _func:
+                self._epoch_context_funcs.pop(key)
 
         return _dispose
 

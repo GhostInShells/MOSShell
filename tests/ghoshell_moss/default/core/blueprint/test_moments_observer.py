@@ -44,8 +44,7 @@ def _texts(msgs) -> list[str]:
 def test_observer_defaults():
     obs = BaseMomentsObserver(max_size=5)
     assert obs.need_observe() is False
-    assert obs.epoch.supplement == []
-    assert obs.epoch.memento == []
+    assert obs.epoch.context == {}
     assert obs.moments() == []
 
 
@@ -178,7 +177,7 @@ def test_on_moment_fires_with_produced_moment():
 
 
 # ============================================================
-# compact / epoch slots / clear
+# compact / epoch context / clear
 # ============================================================
 
 def test_compact_drops_up_to_id_and_records_epoch():
@@ -186,20 +185,20 @@ def test_compact_drops_up_to_id_and_records_epoch():
     for _ in range(3):
         obs.observe()
     target = obs.moments()[1].id
-    obs.new_epoch([Message.new().with_content("summary")], target)
+    obs.new_epoch({"inline": [Message.new().with_content("summary")]}, target)
     remaining = obs.moments()
     assert all(m.id != target for m in remaining)
     assert len(remaining) == 1
-    assert _texts(obs.epoch.supplement) == ["summary"]
+    assert _texts(obs.epoch.context["inline"]) == ["summary"]
 
 
 def test_compact_missing_id_clears_all_moments_and_sets_epoch():
     obs = BaseMomentsObserver(max_size=10)
     obs.observe()
     obs.observe()
-    obs.new_epoch([Message.new().with_content("sum")], "does-not-exist")
+    obs.new_epoch({"inline": [Message.new().with_content("sum")]}, "does-not-exist")
     assert obs.moments() == []
-    assert _texts(obs.epoch.supplement) == ["sum"]
+    assert _texts(obs.epoch.context["inline"]) == ["sum"]
 
 
 def test_clear_resets_state():
@@ -213,30 +212,69 @@ def test_clear_resets_state():
     obs.clear()
     assert obs.need_observe() is False
     assert obs.moments() == []
-    assert obs.epoch.supplement == []
-    assert obs.epoch.memento == []
+    assert obs.epoch.context == {}
 
 
-def test_epoch_memento_supplement_and_baseline_are_separate_slots():
-    """memento / supplement / baseline 三槽, 互不污染."""
+def test_epoch_context_collects_every_provider_under_its_own_key():
+    """context 按 key 收集 provider 产物; 容器不承诺桶间顺序, baseline 是另一套容器."""
     obs = BaseMomentsObserver(max_size=5)
-    obs.with_epoch_memento("trajectory", lambda: [Message.new(tag="memento").with_content("trail")])
-    obs.with_epoch_supplement("last-span", lambda: [Message.new().with_content("prior")])
+    obs.with_epoch_context("first", lambda: [Message.new(tag="memento").with_content("trail")])
+    obs.with_epoch_context("second", lambda: [Message.new(tag="supplement").with_content("prior")])
     obs.with_epoch_baseline("facade", lambda: "surface")
-    epoch = obs.new_epoch([])
-    assert _texts(epoch.memento) == ["trail"]
-    assert _texts(epoch.supplement) == ["prior"]
+    epoch = obs.new_epoch()
+    assert set(epoch.context) == {"first", "second"}
+    assert _texts(epoch.context["first"]) == ["trail"]
+    assert _texts(epoch.context["second"]) == ["prior"]
     assert epoch.baseline == {"facade": "surface"}
+
+
+def test_epoch_context_key_is_a_dedup_handle_not_an_accumulator():
+    """同一个 key 重复注册只留最后一份 —— key 用来去重, 不叠加内容."""
+    obs = BaseMomentsObserver(max_size=5)
+    obs.with_epoch_context("trajectory", lambda: [Message.new().with_content("old")])
+    assert _texts(obs.new_epoch().context["trajectory"]) == ["old"]
+    obs.with_epoch_context("trajectory", lambda: [Message.new().with_content("new")])
+    epoch = obs.new_epoch()
+    assert _texts(epoch.context["trajectory"]) == ["new"]
+    assert set(epoch.context) == {"trajectory"}
+
+
+def test_epoch_context_passed_by_caller_outranks_its_provider():
+    """调用方传入的 key 让对应 provider 完全不生产, 其余 provider 照常."""
+    obs = BaseMomentsObserver(max_size=5)
+    called: list[str] = []
+    obs.with_epoch_context(
+        "memento",
+        lambda: called.append("memento") or [Message.new().with_content("provider")],
+    )
+    obs.with_epoch_context(
+        "supplement",
+        lambda: called.append("supplement") or [Message.new().with_content("extra")],
+    )
+    epoch = obs.new_epoch({"memento": [Message.new().with_content("caller")]})
+    assert _texts(epoch.context["memento"]) == ["caller"]
+    assert _texts(epoch.context["supplement"]) == ["extra"]
+    assert called == ["supplement"]
+    assert set(epoch.context) == {"memento", "supplement"}
+
+
+def test_epoch_context_omits_buckets_whose_provider_yields_nothing():
+    """空产出不占 key —— 容器只装真内容, 不给消费者留空条目要处理."""
+    obs = BaseMomentsObserver(max_size=5)
+    obs.with_epoch_context("empty", lambda: [])
+    obs.with_epoch_context("later", lambda: [Message.new().with_content("x")])
+    epoch = obs.new_epoch()
+    assert set(epoch.context) == {"later"}
 
 
 def test_epoch_baseline_registers_and_disposes():
     """with_epoch_baseline 注册 baseline 段, dispose 后移除."""
     obs = BaseMomentsObserver(max_size=5)
     disposer = obs.with_epoch_baseline("facade", lambda: "full facade")
-    epoch = obs.new_epoch([])
+    epoch = obs.new_epoch()
     assert epoch.baseline == {"facade": "full facade"}
     disposer()
-    epoch2 = obs.new_epoch([])
+    epoch2 = obs.new_epoch()
     assert epoch2.baseline == {}
 
 
@@ -246,7 +284,7 @@ def test_epoch_creating_fires_before_baseline():
     order: list[str] = []
     obs.on_epoch_creating(lambda _epoch: order.append("creating"))
     obs.with_epoch_baseline("facade", lambda: order.append("baseline") or "surface")
-    obs.new_epoch([])
+    obs.new_epoch()
     assert order == ["creating", "baseline"]
 
 

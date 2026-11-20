@@ -65,7 +65,7 @@ class TestDoloresEgoReasoningEffort:
         return SimpleNamespace(
             moment=Moment(index=0),
             observer=SimpleNamespace(
-                epoch=SimpleNamespace(id="0", index=0, memento=[], supplement=[], baseline={}),
+                epoch=SimpleNamespace(id="0", index=0, context={}, baseline={}),
             ),
             effort=lambda: effort,
         )
@@ -245,8 +245,7 @@ class TestDoloresEgoReasoningEffort:
         thinking = self._thinking("")
         thinking.observer.epoch = SimpleNamespace(
             id="e1", index=1,
-            memento=[Message.new(tag="memento").with_content("trail")],
-            supplement=[],
+            context={"memento": [Message.new(tag="memento").with_content("trail")]},
             baseline={"facade": "<facade/>"},
         )
 

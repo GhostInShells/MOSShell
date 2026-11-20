@@ -652,23 +652,24 @@ class Dolores(Ghost):
             yield ""
 
     def _open_cognition_epoch(self, supplement: "list[Message] | None" = None) -> None:
-        """Open a new cognition epoch — memento from the cache, supplement per epoch.
+        """Open a new cognition epoch — both buckets re-registered at this boundary.
 
-        The memento provider is registered fresh each time and reads the cache refreshed at this
-        boundary. The supplement is passed directly to ``new_epoch``: it belongs to this epoch
-        only and must never leak into the next one.
+        The ``<supplement>`` container is built here, not by the renderer: the epoch
+        concatenates context values as they are, and the memento view already carries its
+        own ``<memento>`` tag.
 
-        Both are captured **before** ``new_epoch`` because provider funcs run inside
-        ``BaseMomentsObserver.new_epoch``, which swallows their exceptions — re-reading there
-        could silently lose them after the surface was already replaced.
+        Both are captured **before** ``new_epoch`` because provider funcs run inside it and
+        swallow their exceptions.
         """
         observer = self.mindflow().observer
         memento = self._memento_view
-        observer.with_epoch_memento(
-            "trajectory",
-            lambda: [memento] if memento is not None else [],
+        extra = list(supplement or [])
+        observer.with_epoch_context("memento", lambda: [memento] if memento is not None else [])
+        observer.with_epoch_context(
+            "supplement",
+            lambda: [Message.new(tag="supplement").with_messages(*extra)] if extra else [],
         )
-        observer.new_epoch(list(supplement or []))
+        observer.new_epoch()
 
     def runtime_contracts(self) -> Contracts:
         """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""

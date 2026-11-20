@@ -293,11 +293,11 @@ async def test_runtime_wiring_epoch_baseline_is_full_facade():
     async with shell:
         async with MShellTrajectory(shell) as trajectory:
             _runtime_wire(obs, trajectory)
-            epoch = obs.new_epoch([])
+            epoch = obs.new_epoch()
             assert "facade" in epoch.baseline
             assert '<channel path="chan">' in epoch.baseline["facade"]
-            # supplement 槽位是开场增补, 不应再夹带 facade.
-            assert epoch.supplement == []
+            # baseline 是独立容器, 命令面不应再夹带进 context.
+            assert epoch.context == {}
 
 
 @pytest.mark.asyncio
@@ -324,7 +324,7 @@ async def test_runtime_wiring_epoch_creating_refreshes_trajectory_baseline():
             shell.main_channel.add_virtual_channel(chan)
             await shell.refresh_metas()
 
-            epoch = obs.new_epoch([])
+            epoch = obs.new_epoch()
             assert '<channel path="chan2">' in epoch.baseline["facade"]
 
 
@@ -362,7 +362,7 @@ async def test_epoch_zero_delivers_late_channel_and_frame_echo_stays_empty():
             assert '<channel path="mirror">' in leak.facade_delta()
 
             # 真实链路: 首次 observer epoch → 反向绑定 trajectory.new_epoch 重快照 (含 mirror).
-            epoch = obs.new_epoch([])
+            epoch = obs.new_epoch()
             # 第零帧交付: epoch baseline 含 mirror 全量 facade.
             assert '<channel path="mirror">' in epoch.baseline["facade"]
             # 反泄漏: epoch 之后首个 frame 的 facade_delta 为空, echo 不重复带 mirror.
