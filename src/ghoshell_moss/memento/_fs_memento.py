@@ -70,7 +70,7 @@ from ghoshell_moss.memento.abcd import (
     Note,
 )
 
-__all__ = ["FsBranch", 'FsMemento', 'new_local_memento']
+__all__ = ["FsBranch", 'FsMemento', 'new_local_memento', 'new_local_memento_from_root', 'owner_dir_for']
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +310,10 @@ class FsBranch(Branch):
         if self._index is None:  # one meta read per branch object, then memory
             self._index = self.meta().index
         return self._index
+
+    @property
+    def owner(self) -> str:
+        return self._memento.owner
 
     # ── reads (cached fast path) ──
     def commits(self) -> list[CommitRef]:
@@ -888,8 +892,11 @@ class FsMemento(Memento):
     one writable process per root — memento does not arbitrate.
     """
 
-    def __init__(self, root: Path, *, writable: bool = False):
+    def __init__(self, root: Path, *, owner: str = "", writable: bool = False):
         self._root = Path(root)
+        # An owner is one directory, so its name defaults to that directory's last segment.
+        # Openers that nest owners under a home pass the name explicitly.
+        self._owner = owner or self._root.name
         self._hooks: list[Callable[[BranchEvent], None]] = []
         self._branch_rows_cache: list[dict[str, Any]] | None = None
         # One live branch instance per branch_id: caches live there, and a caller that holds a
@@ -905,18 +912,22 @@ class FsMemento(Memento):
         self._writable = False
         self._gate: FileLocker | None = None
         if writable:
-            self._open_for_write()
+            self.open_for_write()
 
     @property
     def root(self) -> Path:
         return self._root
 
     @property
+    def owner(self) -> str:
+        return self._owner
+
+    @property
     def writable(self) -> bool:
         """Whether this process holds the owner gate (i.e. writes are allowed)."""
         return self._writable
 
-    def _open_for_write(self) -> None:
+    def open_for_write(self) -> None:
         """Take the owner gate once, for the life of this instance.
 
         The gate is this process's write permission, not a per-write lock: whoever holds it
@@ -1265,19 +1276,59 @@ weak, so an owner nobody uses (and its caches) is collected instead of accumulat
 """
 
 
-def new_local_memento(root: Path, *, writable: bool = False) -> FsMemento:
-    """Open (or reuse) the owner at ``root``.
+def _check_owner(owner: str) -> str:
+    """An owner names a directory under the memento home, so it may not leave it."""
+    path = Path(owner)
+    if not owner or path.is_absolute() or any(part in ("..", "") for part in path.parts):
+        raise ValueError(f"memento owner must be a relative path beneath the root, got {owner!r}")
+    return owner
+
+
+def new_local_memento(owner_dir: Path, *, owner: str = "", writable: bool = False) -> FsMemento:
+    """Open (or reuse) the owner whose directory is ``owner_dir``.
+
+    ``owner`` names it; empty falls back to the directory's last segment. Re-opening the same
+    directory under a different name is refused — one directory is one identity.
 
     ``writable`` is the owner's mode for this process: writable takes the owner gate once and
     keeps it; read-only refuses every write. Opening writable while another process holds the
     gate raises ``BlockingIOError`` — one writable process per root is the host's guarantee.
     """
-    key = str(Path(root).resolve())
+    key = str(Path(owner_dir).resolve())
     existing = _OWNERS.get(key)
     if existing is not None:
+        if owner and existing.owner != owner:
+            raise ValueError(
+                f"memento owner {key} is already open as {existing.owner!r}, not {owner!r}"
+            )
         if writable:
-            existing._open_for_write()
+            existing.open_for_write()
         return existing
-    owner = FsMemento(root, writable=writable)
-    _OWNERS[key] = owner
-    return owner
+    opened = FsMemento(owner_dir, owner=owner, writable=writable)
+    _OWNERS[key] = opened
+    return opened
+
+
+def owner_dir_for(memento_path: Path, owner: str) -> Path:
+    """The directory an owner name resolves to beneath a memento home.
+
+    The name may be nested (``dreamers/journal``) but may never leave the home, lexically or
+    after resolving symlinks.
+    """
+    home = Path(memento_path)
+    _check_owner(owner)
+    owner_dir = home / owner
+    home_resolved = home.resolve()
+    resolved = owner_dir.resolve()
+    if resolved != home_resolved and home_resolved not in resolved.parents:
+        raise ValueError(f"memento owner {owner!r} resolves outside {home}")
+    return owner_dir
+
+
+def new_local_memento_from_root(memento_path: Path, owner: str, *, writable: bool = False) -> FsMemento:
+    """Open the owner ``owner`` beneath the memento home ``memento_path``.
+
+    The name and the directory come from one input, so a nested owner (``dreamers/journal``)
+    keeps its full name instead of being reduced to its last segment.
+    """
+    return new_local_memento(owner_dir_for(memento_path, owner), owner=owner, writable=writable)

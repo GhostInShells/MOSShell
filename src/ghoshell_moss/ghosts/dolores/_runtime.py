@@ -50,8 +50,8 @@ from ._prompts import (
     dolores_inception,
 )
 
-# ego 轨迹索引的根目录 (相对 ghost_home); branch 名由 memento config 决定.
-_EGO_MEMENTO_DIR = ".memento/ego"
+# ego 轨迹索引的 owner 名. memento home 归 DoloresMementos 管; 名字进坐标, 不能从路径猜.
+_EGO_OWNER = "ego"
 
 # settings.yaml 里承载默认模型的 section 名 (dsh-agent-default-model 的 settings namespace).
 # 该段由 ghost 在首次 seed 时按 DoloresMeta.default_model 一次性写入, 之后归 ghost home 自治
@@ -675,9 +675,12 @@ class Dolores(Ghost):
         """Non-lifecycle contracts the ghost needs; the runtime instantiates them at boot."""
         from .configs import DoloresConfigStore
         from .journal.contract import DoloresJournal
+        from .mementos import DoloresMementos
         from .mindset.emanation_task import EmanationTasks
         from .mindset.prompter import PromptManager
-        return Contracts.new(DoloresConfigStore, PromptManager, EmanationTasks, DoloresJournal)
+        return Contracts.new(
+            DoloresConfigStore, PromptManager, EmanationTasks, DoloresJournal, DoloresMementos,
+        )
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
@@ -724,10 +727,12 @@ class Dolores(Ghost):
             await self._exit_stack.enter_async_context(self._dsh())
             # memento: the ego trajectory index at ghost_home/.memento/ego; the branch is the ego line.
             if self._home is not None:
-                from ghoshell_moss.memento import new_local_memento
+                from ghoshell_moss.ghosts.dolores.mementos import DoloresMementos
 
                 branch_name = self._load_config().memento.branch_name
-                self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR, writable=True)
+                self._memento = self._container.force_fetch(DoloresMementos).get(
+                    _EGO_OWNER, or_create=True, writable=True,
+                )
                 # Same rule as the connection: opened and closed here, so published here. The
                 # debug surface resolves coordinates through it.
                 from ghoshell_moss.memento import Memento

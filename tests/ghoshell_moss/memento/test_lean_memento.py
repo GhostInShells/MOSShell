@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from ghoshell_moss.memento.abcd import COMMIT_MEMENTO_FILE, MementoReadonlyError
-from ghoshell_moss.memento._fs_memento import FsMemento, new_local_memento
+from ghoshell_moss.memento._fs_memento import FsMemento, new_local_memento, new_local_memento_from_root
 
 
 @pytest.fixture
@@ -34,6 +35,19 @@ def test_writable_owner_is_one_instance_per_root(tmp_path: Path):
     second = new_local_memento(tmp_path / "owner")
     assert second is first
     first.create_branch("main")
+
+
+def test_a_dropped_writable_owner_releases_its_gate(tmp_path: Path):
+    """掉引用 = 释放门: 泄漏的 fd 会让 flock 一直挂着, 同进程重开也撞自己."""
+    root = tmp_path / "owner"
+    first = new_local_memento(root, writable=True)
+    first.create_branch("main")
+    del first
+    gc.collect()
+
+    again = new_local_memento(root, writable=True)
+    assert again.owner == "owner"
+    assert again.create_branch("next").owner == "owner"
 
 
 def test_list_branch_entries_carries_the_roster_ordinal(tmp_path: Path):
@@ -526,3 +540,38 @@ def test_fork_from_an_archived_branch_is_refused(memento):
 
     with pytest.raises(RuntimeError):
         idea.fork("leaf")
+
+
+# ── owner identity ──
+
+
+def test_owner_defaults_to_the_directory_name(tmp_path: Path):
+    memento = new_local_memento(tmp_path / "ego")
+    assert memento.owner == "ego"
+
+
+def test_owner_from_root_keeps_a_nested_name(tmp_path: Path):
+    memento = new_local_memento_from_root(tmp_path / ".memento", "dreamers/journal")
+    assert memento.owner == "dreamers/journal"
+    assert memento.root == tmp_path / ".memento" / "dreamers" / "journal"
+
+
+def test_a_branch_reports_its_owners_name(tmp_path: Path):
+    memento = new_local_memento_from_root(tmp_path / ".memento", "ego", writable=True)
+    branch = memento.create_branch("main")
+    assert branch.owner == "ego"
+
+
+def test_one_directory_is_one_owner_identity(tmp_path: Path):
+    owner_dir = tmp_path / ".memento" / "ego"
+    ego = new_local_memento(owner_dir, owner="ego", writable=True)
+
+    with pytest.raises(ValueError):
+        new_local_memento(owner_dir, owner="other")
+    assert ego.owner == "ego"
+
+
+@pytest.mark.parametrize("owner", ["", "../escape", "/absolute", "a/../../b"])
+def test_an_owner_may_not_leave_the_memento_root(tmp_path: Path, owner: str):
+    with pytest.raises(ValueError):
+        new_local_memento_from_root(tmp_path / ".memento", owner)

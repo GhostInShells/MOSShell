@@ -533,15 +533,34 @@ class FileLocker(Lock):
 
     def release(self) -> None:
         """
-        释放锁并关闭文件描述符。
+        释放锁并关闭文件描述符。每一步单独容错 —— fd 必须被关掉, 否则 flock 会一直挂着。
         """
-        if self._fd is not None:
-            try:
-                os.lseek(self._fd, 0, os.SEEK_SET)
-                _flock_un(self._fd)
-                os.close(self._fd)
-            finally:
-                self._fd = None
+        fd = self._fd
+        if fd is None:
+            return
+        self._fd = None
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+        except OSError:
+            pass
+        try:
+            _flock_un(fd)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def __del__(self) -> None:
+        """Drop the lock with the object — an fd left open keeps the flock held for the process's
+        whole life. Explicit ``release()`` is the normal path; this is the one for a collected owner."""
+        try:
+            self.release()
+        except Exception:
+            # Interpreter shutdown can tear the modules down before this runs; the process is
+            # exiting either way, and the kernel closes the descriptor then.
+            self._fd = None
 
     # __enter__/__exit__ 沿用 Lock ABC 默认: acquire() 无参 → self.acquire() 走
     # FileLocker.acquire 默认 timeout=0 fast-fail. 需要阻塞/超时语义时显式调

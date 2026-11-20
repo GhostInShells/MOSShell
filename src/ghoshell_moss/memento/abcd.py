@@ -688,6 +688,12 @@ class Branch(ABC):
 
     @property
     @abstractmethod
+    def owner(self) -> str:
+        """The owner this branch belongs to — the scope a coordinate is unique in. Available at
+        construction; never async."""
+
+    @property
+    @abstractmethod
     def index(self) -> int:
         """Branch ordinal within the owner (1-based, frozen at creation) — first half of the coordinate."""
 
@@ -933,6 +939,12 @@ class Memento(ABC):
     (the current pointer), ``branches/{branch_id}/`` (each branch's directory), and
     ``commits/{YYYY}/{MM}/cmt_{coord}/`` (the commit node space, created only by writers).
     """
+
+    @property
+    @abstractmethod
+    def owner(self) -> str:
+        """The owner's name — the identity every coordinate under it is scoped to, and the only
+        thing that makes a coordinate unique across owners."""
 
     @property
     @abstractmethod

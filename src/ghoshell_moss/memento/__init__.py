@@ -27,4 +27,6 @@ from ._fs_memento import (
     FsMemento,
     FsBranch,
     new_local_memento,
+    new_local_memento_from_root,
+    owner_dir_for,
 )
