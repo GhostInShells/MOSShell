@@ -157,6 +157,11 @@ cython_debug/
 
 # scratch area for live experiments (never committed)
 .playground/
+
+# ghost_func dsh address — per-launch token, local only
+.moss/runtime/dsh_url.txt
+# agent_func runtime cache — dsh URL + debug artifacts, never committed
+.moss/runtime/cache/
 # 第三方 clone / 外部假仓库：源码忽略，结论入库
 .vendors/*
 packages/ghoshell-dsh/.vendors/*

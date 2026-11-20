@@ -1,11 +1,13 @@
 import asyncio
 import contextlib
+import importlib
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -686,6 +688,9 @@ class Dolores(Ghost):
         await self._exit_stack.__aenter__()
         # file IO is offloaded to a thread; session.output stays on the main loop (avoid cross-thread).
         action = await asyncio.to_thread(self._sync_stubs)
+        # DOLORES capabilities live under <ghost_home>/python/src; register before any module
+        # that imports them is loaded.
+        self._register_ghost_python_path()
         # env first: the dsh home below is provisioned and the plugin installed by way of the
         # dsh binary, which the ghost home's .env is where we learn about.
         if self._home is not None:
@@ -872,6 +877,11 @@ class Dolores(Ghost):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
+            # agent_func sessions are owned by this loop: archive them before dsh exits.
+            from .agent_func import close_agent_func_runtime
+
+            with contextlib.suppress(Exception):
+                await close_agent_func_runtime()
             await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         finally:
             # The owner gate is process-lifetime, but a clean release makes a same-process
@@ -1058,6 +1068,7 @@ class Dolores(Ghost):
             self._session.output("system", log="starting dsh")
         async with launcher:
             url = launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
+            self._write_dsh_url(url)
             if self._session is not None:
                 self._session.output(
                     "system",
@@ -1078,6 +1089,41 @@ class Dolores(Ghost):
             )
 
     # ── stub sync ───────────────────────────────────
+
+    def _register_ghost_python_path(self) -> None:
+        """Put ``<ghost_home>/python/src`` on sys.path — the DOLORES capability tree.
+
+        Append, never insert: project and installed packages keep precedence, so a ghost
+        cannot shadow them. ``invalidate_caches`` covers a source tree edited after a
+        ``DOLORES`` module was first imported.
+        """
+        if self._home is None:
+            return
+        source = self._home / "python" / "src"
+        source.mkdir(parents=True, exist_ok=True)
+        if str(source) not in sys.path:
+            sys.path.append(str(source))
+        importlib.invalidate_caches()
+
+    def _write_dsh_url(self, url: str) -> None:
+        """Publish the dsh web URL (token included) where agent_func reads it.
+
+        Atomic write, mode 0600: the token is a credential. The path lives under the
+        workspace runtime cache, not the ghost home, so it never enters version control.
+        """
+        if self._matrix is None:
+            return
+        path = (
+            self._matrix.env.workspace_path
+            / "runtime"
+            / "cache"
+            / "dolores_dsh_url.txt"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(url + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(path)
 
     def _sync_stubs(self) -> str | None:
         """Sync the skeleton into ghost home. Returns 'init' | 'override' | None (no-op).
