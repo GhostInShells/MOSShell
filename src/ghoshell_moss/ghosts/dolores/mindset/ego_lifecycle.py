@@ -76,6 +76,8 @@ class CommitEvent:
     coord: str
     at: datetime
     branch: str = ""
+    # The memento owner the coordinate resolves under — a coordinate is unique within one.
+    owner: str = ""
 
 
 @dataclass(frozen=True, slots=True)

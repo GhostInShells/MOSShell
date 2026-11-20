@@ -5,6 +5,7 @@ document is reported, and what the root ``AGENTS.md`` carries. The mechanism-sid
 (triggers, memory) is not here yet; these tests pin the read/write surface it will stand on.
 """
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -84,6 +85,24 @@ class TestJournalRecord:
 
         assert Daily.load(Daily.filepath(journal.root, AT)).status == "pending"
         assert await journal.commits(AT) == ["1-784", "2-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_row_carries_the_journal_clock_owner_and_branch(self, tmp_path):
+        journal = _journal(tmp_path, tz="+08:00")
+        await journal.record_commit(
+            "1-784",
+            datetime(2026, 11, 19, 2, 30, tzinfo=timezone.utc),
+            owner="ego",
+            branch="main",
+        )
+
+        raw = Daily.commits_filepath(journal.root, AT).read_text(encoding="utf-8").strip()
+        assert json.loads(raw) == {
+            "at": "2026-11-19T10:30:00+08:00",
+            "coord": "1-784",
+            "owner": "ego",
+            "branch": "main",
+        }
 
     @pytest.mark.asyncio
     async def test_empty_coordinate_is_refused(self, tmp_path):

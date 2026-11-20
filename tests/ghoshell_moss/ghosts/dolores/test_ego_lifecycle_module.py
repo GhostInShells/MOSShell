@@ -59,7 +59,9 @@ class _FakeJournal:
         self.established.append(day)
         return day
 
-    async def record_commit(self, coord: str, at: datetime | None = None) -> None:
+    async def record_commit(
+            self, coord: str, at: datetime | None = None, *, owner: str = "", branch: str = "",
+    ) -> None:
         self.recorded.append((coord, at))
 
 

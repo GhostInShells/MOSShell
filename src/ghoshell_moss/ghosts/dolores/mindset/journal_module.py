@@ -64,7 +64,9 @@ class JournalModule:
     async def _record_commit(self, event: CommitEvent) -> None:
         if self._journal is None:
             return
-        await self._journal.record_commit(event.coord, event.at)
+        await self._journal.record_commit(
+            event.coord, event.at, owner=event.owner, branch=event.branch,
+        )
 
 
 class EgoLifecycleRegistryProvider(Provider[EgoLifecycleRegistry]):

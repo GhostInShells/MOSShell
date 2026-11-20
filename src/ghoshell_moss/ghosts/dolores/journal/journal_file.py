@@ -308,7 +308,14 @@ class FileJournal(DoloresJournal):
             return False
         return True
 
-    async def record_commit(self, coord: str, at: datetime | None = None) -> None:
+    async def record_commit(
+            self,
+            coord: str,
+            at: datetime | None = None,
+            *,
+            owner: str = "",
+            branch: str = "",
+    ) -> None:
         coord = coord.strip()
         if not coord:
             raise ValueError("journal: an anchor coordinate cannot be empty")
@@ -318,11 +325,17 @@ class FileJournal(DoloresJournal):
         commits.parent.mkdir(parents=True, exist_ok=True)
         # Append-only: the read side de-duplicates, so a racing duplicate is silence rather
         # than a reason to read the whole log before every anchor. The timestamp is the
-        # anchor's own instant, normalized to UTC — for whoever reads the file later.
+        # anchor's own instant in the journal's clock: a reader sees when it happened where it
+        # happened, not a UTC number it has to translate.
         moment = at or datetime.now(timezone.utc)
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=self._tz)
-        record = {"at": moment.astimezone(timezone.utc).isoformat(), "coord": coord}
+        record = {
+            "at": moment.astimezone(self._tz).isoformat(),
+            "coord": coord,
+            "owner": owner,
+            "branch": branch,
+        }
         async with aiofiles.open(commits, "a", encoding="utf-8") as stream:
             await stream.write(json.dumps(record, ensure_ascii=False) + "\n")
 

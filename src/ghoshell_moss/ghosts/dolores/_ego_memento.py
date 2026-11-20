@@ -431,6 +431,7 @@ class EgoMementoManager:
                 coord=f"{target.index}-{commit.seq}",
                 at=commit.created,
                 branch=branch or self.active_branch,
+                owner=self._memento.owner,
             ))
         return commit
 

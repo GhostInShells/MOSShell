@@ -542,11 +542,22 @@ class DoloresJournal(ABC):
         """
 
     @abstractmethod
-    async def record_commit(self, coord: str, at: datetime | None = None) -> None:
+    async def record_commit(
+            self,
+            coord: str,
+            at: datetime | None = None,
+            *,
+            owner: str = "",
+            branch: str = "",
+    ) -> None:
         """Attach a memento coordinate to the day it belongs to.
 
-        The day's documents are opened if missing (``pending``), then the coordinate is
-        appended to ``.commits``. Idempotent — one coordinate appears once, and an existing
-        document is read, never rewritten. Coordinates carry their branch, so a day shared by
-        the ego and its emanations holds all of their anchors in one list.
+        The day's documents are opened if missing (``pending``), then one row is appended to
+        ``.commits``. Idempotent — one coordinate appears once, and an existing document is
+        read, never rewritten. Coordinates carry their branch, so a day shared by the ego and
+        its emanations holds all of their anchors in one list.
+
+        A row carries the anchor's instant in the journal's clock (an offset, not UTC), the
+        coordinate, and the ``owner`` and ``branch`` names it resolves against — a coordinate
+        is only unique within its owner.
         """
