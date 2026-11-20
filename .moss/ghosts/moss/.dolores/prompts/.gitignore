@@ -6,7 +6,12 @@
 # Active:  a pointer in ../configs/prompts.yml, never the filename.
 #
 # The manager (mindset/prompter.py) is the contract; this file only sets the tracking policy.
-# Tracked: *.md. Ignored: drafts and scratch.
+#
+# The default version is materialized from the code seed on every boot — machine output, not
+# the ghost's, so it does not ship. Convention: every spec's default version is `v1`; a spec
+# that changes `default_version` must change this line with it.
+*/v1.md
+# Everything else is tracked: another version is a version the ghost wrote.
 *.tmp
 *.bak
 drafts/
