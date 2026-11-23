@@ -877,12 +877,9 @@ class Dolores(Ghost):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
-            # agent_func sessions are owned by this loop: archive them before dsh exits.
-            from .agent_func import close_agent_func_runtime
+            # agentic class sessions are owned by this loop: archive them before dsh exits.
             from .agentic_class_driver import close_agent_class_runtime
 
-            with contextlib.suppress(Exception):
-                await close_agent_func_runtime()
             with contextlib.suppress(Exception):
                 await close_agent_class_runtime()
             await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
@@ -1071,7 +1068,7 @@ class Dolores(Ghost):
             self._session.output("system", log="starting dsh")
         async with launcher:
             url = launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
-            self._write_dsh_url(url)
+            self._publish_agentic_class_environment(url)
             if self._session is not None:
                 self._session.output(
                     "system",
@@ -1108,25 +1105,26 @@ class Dolores(Ghost):
             sys.path.append(str(source))
         importlib.invalidate_caches()
 
-    def _write_dsh_url(self, url: str) -> None:
-        """Publish the dsh web URL (token included) where agent_func reads it.
+    def _publish_agentic_class_environment(self, url: str) -> None:
+        """Publish the environment declaration the agentic class driver reads.
 
-        Atomic write, mode 0600: the token is a credential. The path lives under the
-        workspace runtime cache, not the ghost home, so it never enters version control.
+        The driver owns the write path; this runtime only supplies the URL, the
+        workspace/project/ghost paths, and the dsh pid for its liveness probe.
         """
         if self._matrix is None:
             return
-        path = (
-            self._matrix.env.workspace_path
-            / "runtime"
-            / "cache"
-            / "dolores_dsh_url.txt"
+        from .agentic_class_driver import DoloresAgentClassDriver
+
+        process = getattr(getattr(self._dsh_launcher, "_dsh_process", None), "process", None)
+        pid = getattr(process, "pid", None)
+        DoloresAgentClassDriver.publish_environment(
+            dsh_url=url,
+            workspace_path=self._matrix.env.workspace_path,
+            project_path=self._matrix.env.project_path,
+            ghost_home=self._home,
+            default_workspace=self._matrix.env.project_path,
+            pid=pid,
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(url + "\n", encoding="utf-8")
-        tmp.chmod(0o600)
-        tmp.replace(path)
 
     def _sync_stubs(self) -> str | None:
         """Sync the skeleton into ghost home. Returns 'init' | 'override' | None (no-op).

@@ -130,7 +130,8 @@ agent_func 把 op 绑在函数上：一个函数一个 agent，session 按 modul
   时机，文档还没讲透。
 - 重试幂等、timeout 是否算一次 attempt、`cancel()` 的完整语义。
 - `debug_result_cap` 溢出文件的落点/命名/清理。
-- 下一轮：删除 `agent_func`；class 级是它的替代。
+- `agent_func` / `ghost_func` 已删除；class driver 自带 runtime 与环境声明
+  （`runtime/cache/agentic_class/dolores.json`，含 dsh pid 探针）。
 
 ## 非目标
 

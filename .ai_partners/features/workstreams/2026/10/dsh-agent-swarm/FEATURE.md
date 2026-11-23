@@ -22,7 +22,7 @@ status_note: >-
 
   D24: the class-level agent surface (agentic class) landed -- a class is the op table, an
   instance owns one session, and methods are blocking ops. It supersedes agent_func, which
-  is slated for removal. The swarm prototype itself is still not implemented.
+  is now removed. The swarm prototype itself is still not implemented.
 title: DSH Agent Swarm
 updated: '2026-11-24'
 ---

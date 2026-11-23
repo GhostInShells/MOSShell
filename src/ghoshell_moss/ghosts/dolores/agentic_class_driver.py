@@ -21,14 +21,19 @@ import atexit
 import contextlib
 import hashlib
 import inspect
+import json
 import linecache
 import logging
+import os
+import re
 import sys
 import threading
 import weakref
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from ghoshell_dsh.v0_2_0 import DSH_VERSION
 from ghoshell_dsh.v0_2_0.types.sessions import SessionCreateParams
@@ -51,12 +56,6 @@ from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.codex.compiler import Compiler
 from ghoshell_moss.deepseek_harness.v0_2_0 import DshConnection, DshConnectionConfig, DshSession
 from ghoshell_moss.deepseek_harness.v0_2_0.agent import DshAgentSession
-from ghoshell_moss.ghosts.dolores.agent_func import (
-    AgentFuncProtocolError,
-    AgentRuntime,
-    compile_generated,
-    parse_answer,
-)
 
 __all__ = ["DoloresAgentClassDriver", "close_agent_class_runtime"]
 
@@ -66,6 +65,8 @@ _LOOPS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, DoloresAgentClassDr
     weakref.WeakKeyDictionary()
 )
 _LOOPS_LOCK = threading.Lock()
+_ENV_RELATIVE = Path("runtime/cache/agentic_class/dolores.json")
+_CACHE_RELATIVE = Path("runtime/cache/agentic_class")
 
 _GENERATION_ERRORS = (
     SyntaxError,
@@ -85,8 +86,7 @@ class DoloresAgentClassDriver(AgentClassDriver[DshAgentSession]):
     """One per event loop; a bash subprocess is its usual owner."""
 
     def __init__(self) -> None:
-        self._agent_runtime = AgentRuntime()
-        self._project_path = Environment.discover(bootstrap=True).project_path
+        self._agent_runtime = _AgentRuntime()
         self._prepare_lock = asyncio.Lock()
         self._sessions: dict[str, tuple[DshAgentSession, bool]] = {}
         self._config: DshConnectionConfig | None = None
@@ -104,6 +104,35 @@ class DoloresAgentClassDriver(AgentClassDriver[DshAgentSession]):
                 driver = cls()
                 _LOOPS[loop] = driver
             return driver
+
+    @classmethod
+    def publish_environment(
+        cls,
+        *,
+        dsh_url: str,
+        workspace_path: Path | str,
+        project_path: Path | str,
+        ghost_home: Path | str | None = None,
+        default_workspace: Path | str | None = None,
+        pid: int | None = None,
+    ) -> Path:
+        """Publish Dolores' own runtime environment for the class driver to read."""
+        path = Path(workspace_path) / _ENV_RELATIVE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "dsh_url": dsh_url,
+            "workspace_path": str(Path(workspace_path)),
+            "project_path": str(Path(project_path)),
+            "ghost_home": str(ghost_home) if ghost_home else None,
+            "default_workspace": str(default_workspace or project_path),
+            "pid": pid,
+        }
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(path)
+        return path
 
     # -- prepare -------------------------------------------------------- #
 
@@ -138,7 +167,8 @@ class DoloresAgentClassDriver(AgentClassDriver[DshAgentSession]):
         connection = await self._agent_runtime.connection()
         self._config = connection.config
         config = ctx.config
-        workspace = _resolve_workspace(self._project_path, config.workspace)
+        env = self._agent_runtime.environment()
+        workspace = _resolve_workspace(env.project_path, config.workspace)
         writable = _resolve_writable(workspace, config.writable)
         cwd = str(workspace)
         title = ctx.title
@@ -316,7 +346,7 @@ class DoloresAgentClassDriver(AgentClassDriver[DshAgentSession]):
         attempt = 0
         debug_rounds = 0
         while True:
-            parsed = parse_answer(answer)
+            parsed = _parse_answer(answer)
             if parsed.run is not None:
                 try:
                     implementation = _compile(
@@ -473,6 +503,186 @@ def _resolve_writable(workspace: Path, value: str | None) -> Path:
     return path
 
 
+@dataclass(frozen=True)
+class _Environment:
+    dsh_url: str
+    workspace_path: Path
+    project_path: Path
+    ghost_home: Path | None
+    default_workspace: Path
+    pid: int | None
+
+
+class _AgentRuntime:
+    """Dolores-owned dsh connection, fed by its environment declaration."""
+
+    def __init__(self) -> None:
+        self._connection: DshConnection | None = None
+        self._lock = asyncio.Lock()
+        self._closed = False
+        self._environment: _Environment | None = None
+
+    def environment(self) -> _Environment:
+        if self._environment is not None:
+            return self._environment
+        env = Environment.discover(bootstrap=True)
+        path = env.workspace_path / _ENV_RELATIVE
+        if not path.is_file():
+            raise AgentMethodUnavailableError(
+                f"agentic class: no environment declaration at {path}; start Dolores first"
+            )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        pid = payload.get("pid")
+        if pid is not None:
+            try:
+                os.kill(int(pid), 0)
+            except (OSError, ValueError) as exc:
+                raise AgentMethodUnavailableError(
+                    f"agentic class: dsh pid {pid} is not alive"
+                ) from exc
+        self._environment = _Environment(
+            dsh_url=payload["dsh_url"],
+            workspace_path=Path(payload.get("workspace_path", env.workspace_path)),
+            project_path=Path(payload.get("project_path", env.project_path)),
+            ghost_home=Path(payload["ghost_home"]) if payload.get("ghost_home") else None,
+            default_workspace=Path(payload.get("default_workspace", env.project_path)),
+            pid=pid,
+        )
+        return self._environment
+
+    async def connection(self) -> DshConnection:
+        if self._closed:
+            raise AgentMethodUnavailableError("agentic class: runtime is closed")
+        current = self._connection
+        if current is not None and current.is_running():
+            return current
+        async with self._lock:
+            current = self._connection
+            if current is not None and current.is_running():
+                return current
+            env = self.environment()
+            config = _dsh_config(env.dsh_url)
+            connection = DshConnection(config)
+            try:
+                await connection.__aenter__()
+            except BaseException as exc:
+                with contextlib.suppress(Exception):
+                    await connection.__aexit__(type(exc), exc, exc.__traceback__)
+                raise AgentMethodUnavailableError(
+                    f"agentic class: cannot connect to dsh at {config.base_url}: {exc}"
+                ) from exc
+            self._connection = connection
+            logger.info("agentic class: connected to dsh %s", config.base_url)
+            return connection
+
+    async def debug_artifact(self, session_id: str, turn: int, text: str) -> Path:
+        path = (
+            self.environment().workspace_path
+            / _CACHE_RELATIVE
+            / session_id
+            / f"debug-{turn}.txt"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.__aexit__(None, None, None)
+
+
+def _dsh_config(url: str) -> DshConnectionConfig:
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise AgentMethodUnavailableError(f"agentic class: invalid dsh url {url!r}")
+    token = parse_qs(parsed.query).get("token", [None])[0]
+    return DshConnectionConfig(host=parsed.hostname, port=parsed.port or 3083, token=token)
+
+
+@dataclass(frozen=True)
+class ParsedAnswer:
+    run: str | None = None
+    debug: str | None = None
+
+
+_RUN_RE = re.compile(r"<\|?run\|?>\s*(.*?)\s*<\|?/run\|?>", re.DOTALL | re.IGNORECASE)
+_DEBUG_RE = re.compile(r"<\|?debug\|?>\s*(.*?)\s*<\|?/debug\|?>", re.DOTALL | re.IGNORECASE)
+_RUN_FENCE_RE = re.compile(r"```[^\n]*\brun\b[^\n]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_DEBUG_FENCE_RE = re.compile(r"```[^\n]*\bdebug\b[^\n]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_answer(text: str | None) -> ParsedAnswer:
+    if not text:
+        return ParsedAnswer()
+    run = _RUN_RE.search(text)
+    debug = _DEBUG_RE.search(text)
+    if run is None and debug is None:
+        run = _RUN_FENCE_RE.search(text)
+        debug = _DEBUG_FENCE_RE.search(text)
+    return ParsedAnswer(
+        run=_strip_fence(run.group(1)) if run is not None else None,
+        debug=_strip_fence(debug.group(1)) if debug is not None else None,
+    )
+
+
+def _strip_fence(code: str) -> str:
+    code = code.strip()
+    if not code.startswith("```"):
+        return code
+    lines = code.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _compile_generated(
+    namespace: ModuleType,
+    code: str,
+    name: str,
+    expected_signature: inspect.Signature | None = None,
+) -> Any:
+    try:
+        compiled = compile(code, f"<agentic_class:{namespace.__name__}>", "exec")
+        exec(compiled, namespace.__dict__)  # noqa: S102 — executing the answer is the contract
+    except (SyntaxError, IndentationError) as exc:
+        raise AgentMethodProtocolError(f"generated code does not compile: {exc}") from exc
+    fn = namespace.__dict__.get(name)
+    if name == "debug" and fn is None:
+        fn = namespace.__dict__.get("__debug__")
+    if fn is None:
+        raise AgentMethodProtocolError(f"generated code did not define {name}")
+    if not inspect.iscoroutinefunction(fn):
+        raise AgentMethodProtocolError(f"generated {name} is not an async def")
+    if expected_signature is not None:
+        actual = inspect.signature(fn)
+        if _signature_shape(actual) != _signature_shape(expected_signature):
+            raise AgentMethodProtocolError(
+                f"signature mismatch: expected {expected_signature}, got {actual}"
+            )
+    return fn
+
+
+def _signature_shape(signature: inspect.Signature) -> tuple[tuple[str, Any, str], ...]:
+    return tuple(
+        (parameter.name, parameter.kind, _default_repr(parameter.default))
+        for parameter in signature.parameters.values()
+    )
+
+
+def _default_repr(value: Any) -> str:
+    if value is inspect.Parameter.empty:
+        return "<empty>"
+    return _safe_repr(value)
+
+
 def _module_for(ctx: AgentCtx, target: object) -> ModuleType:
     module = sys.modules.get(ctx.modulename)
     if module is None:
@@ -595,10 +805,7 @@ def _compile(
 ) -> Any:
     if ctx.sandbox is None:
         raise AgentMethodProtocolError("agentic class: the module facsimile is not prepared")
-    try:
-        return compile_generated(ctx.sandbox, code, name, expected)
-    except AgentFuncProtocolError as exc:
-        raise AgentMethodProtocolError(str(exc)) from exc
+    return _compile_generated(ctx.sandbox, code, name, expected)
 
 
 def _protocol_retry(detail: object, previous: str) -> str:
