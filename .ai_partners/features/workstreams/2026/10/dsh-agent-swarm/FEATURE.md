@@ -19,8 +19,12 @@ status_note: >-
   into three domains plus one form and one mechanism; made case the life of a memento branch;
   dropped the cursor from team entirely; and decoupled case / team / agent into three
   directory trees whose only meeting point is kickoff(--wd, prompt). Still no implementation.
+
+  D24: the class-level agent surface (agentic class) landed -- a class is the op table, an
+  instance owns one session, and methods are blocking ops. It supersedes agent_func, which
+  is slated for removal. The swarm prototype itself is still not implemented.
 title: DSH Agent Swarm
-updated: '2026-11-02'
+updated: '2026-11-24'
 ---
 
 # DSH Agent Swarm
@@ -42,6 +46,7 @@ updated: '2026-11-02'
 | 03 | 默认协作体系 | `03-collaboration-system.md` | 先于 02 |
 
 | 05 | 总设计思想：纯代码规划 / 事件总线 / 文件真相 / task 第一公民 | `05-design-principles.md` | 与 00 并列：00 讲怎么开发，05 讲建什么 ||
+| 06 | Agentic class：类级 op surface、instance/session、组合、取消、反射与 debug | `06-agentic-class.md` | 与 02/03 并行的底 primitives；agent_func 的替代 |
 
 拆分标准是**按并行阻塞**（D28, thirdgerb）：现在没有集群，多个管线（claude code 等）并行推进，
 所以切的是"谁不挡谁"，不是"谁先落地"。

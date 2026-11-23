@@ -879,9 +879,12 @@ class Dolores(Ghost):
         try:
             # agent_func sessions are owned by this loop: archive them before dsh exits.
             from .agent_func import close_agent_func_runtime
+            from .agentic_class_driver import close_agent_class_runtime
 
             with contextlib.suppress(Exception):
                 await close_agent_func_runtime()
+            with contextlib.suppress(Exception):
+                await close_agent_class_runtime()
             await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         finally:
             # The owner gate is process-lifetime, but a clean release makes a same-process
