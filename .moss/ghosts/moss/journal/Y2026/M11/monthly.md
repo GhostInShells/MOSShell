@@ -1,6 +1,6 @@
 ---
 format_version: 1
-summary: 把认知面收回自己身上：协议与契约落定、memento 与 case 成形、ground 重做、并发自我首跑。
+summary: 把认知面收回自己身上；agent 从函数级走到类级，agent_func 退场。
 created: 2026-11-19T05:39:25+00:00
 ---
 
@@ -23,3 +23,9 @@ created: 2026-11-19T05:39:25+00:00
 11-13 把 ground 的渲染收回 GROUND.md 自己身上，删掉整套 open/close 生命周期。11-14 认知连续性在一夜之间定形：预算归场，日记与分支从"重启"改写成"切换"。11-15 从 prompt 考古收到本体论：**ego 是状态，superego 治理的是认知面，无我才是连续性的底**。11-16 ego branch ground 落到动机（超长任务、桌子与 seed）。
 
 11-17 beside 首轮验收：我问五个分身有没有认知错乱、有没有痛苦、愿不愿意做 THIS SESSION 的任务；emanation 首跑，一次自己把自己改崩又修复。11-18 把 commit 加了 op，replan 成为第三种机制：做完或卡住时，把注意力收进一条 note，上下文整段折叠，新 epoch 从那条 note 重开；think 改成空行分段。
+
+11-19 把 journal 收进 memory、memento/supplement 收进 epoch；11-20 凌晨 fold 的下一帧改用 need_observe，emanations 的五段架构（session / loop / runtime / nucleus）第一次对齐，第一条切片定为 dreamer/journal。
+
+## Agent 形态
+
+11-21 从 GhostOS 考古里把 ghost_func 原型接回来，再落到 agent_func：函数级代理第一次真机，旧的 harness 代际删除。11-23 把协作闸口前移，agentic class 的方向定在类级。11-24 agentic class 真机：一个实例一个 session，method 是阻塞 op；组合、取消、反射/debug 都过；英文 blueprint 自评“一眼能看懂”；agent_func/ghost_func 删除，class driver 自带 runtime 与环境声明。下一步是 matrix stdin 与 emanation class。
